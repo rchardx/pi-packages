@@ -36,8 +36,12 @@ When rules conflict, prefer:
 
 Use npm workspaces and the committed `package-lock.json`. Do not introduce another
 package manager, task runner, or build system without a concrete need.
-`.node-version` selects the development/CI runtime; `package.json#engines` defines
-the supported runtime floor.
+`.node-version` selects the default development runtime; `package.json#engines`
+defines the supported runtime floor. Keep `engines.node` as one `>=x.y.z` range
+so CI can derive the exact minimum. CI tests both that minimum and the default
+runtime; keep the required `check` job as their aggregate gate.
+Keep `@types/node` on the minimum supported Node major, even when developing on
+a newer runtime. Validate both runtimes before changing the compatibility record.
 
 Prepare a fresh environment, or restore it after dependency changes:
 
@@ -104,8 +108,9 @@ new assets with `git check-attr filter -- <path>` and `git lfs ls-files` before
 committing. LFS uses GitHub storage/bandwidth quotas; it does not make large assets
 free. Never rewrite existing history with `git lfs migrate` without authorization.
 
-CI runs the same checks and full test suite on PRs and main pushes. There is no
-affected-test selector or coverage threshold until the codebase warrants one.
+CI runs the same checks and full test suite on both Node runtimes for PRs and
+main pushes. There is no affected-test selector or coverage threshold until the
+codebase warrants one.
 
 ## Package boundaries
 

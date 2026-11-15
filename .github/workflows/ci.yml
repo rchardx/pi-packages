@@ -13,18 +13,45 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  check:
-    name: check
+  validate:
+    name: validate (${{ matrix.runtime }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [minimum, development]
     steps:
       - uses: actions/checkout@v7
         with:
           lfs: true
+      - name: Read minimum Node version
+        if: matrix.runtime == 'minimum'
+        id: minimum
+        run: |
+          node --input-type=module <<'JS'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const { engines } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const match = /^>=(\d+\.\d+\.\d+)$/.exec(engines?.node);
+          if (!match) throw new Error('engines.node must be a single >=x.y.z floor');
+          appendFileSync(process.env.GITHUB_OUTPUT, `version=${match[1]}\n`);
+          JS
       - uses: actions/setup-node@v7
         with:
+          node-version: ${{ steps.minimum.outputs.version }}
           node-version-file: .node-version
           cache: npm
       - run: npm ci
       - run: npm run check
       - run: npm test
       - run: git diff --check
+
+  check:
+    name: check
+    if: ${{ always() }}
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require both runtimes to pass
+        env:
+          RESULT: ${{ needs.validate.result }}
+        run: test "$RESULT" = success

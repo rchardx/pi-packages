@@ -117,7 +117,9 @@ multi-user service.
 
 ## Pi compatibility
 
-Latest verified compatible version: **Pi 1.5.2**.
+Latest verified compatible version: **Pi 1.5.2**. The verified Node runtimes are
+recorded in the repository's [Node.js compatibility](../../README.md#nodejs-compatibility)
+section; this package retains its `engines.node` minimum.
 
 The automated SDK test discovers this package through its `pi` manifest, loads
 its TypeScript extension, and executes `web_fetch` against a local HTTP fixture

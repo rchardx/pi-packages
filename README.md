@@ -9,8 +9,9 @@ packages from a checkout, not the repository root.
 
 ## Setup
 
-Install Pi, the Node.js version in [`.node-version`](.node-version), npm, and
-[Git LFS](https://git-lfs.com/). Clone the repository and install its dependencies:
+For development, install Pi, the default Node.js version in
+[`.node-version`](.node-version), npm, and [Git LFS](https://git-lfs.com/).
+Clone the repository and install its dependencies:
 
 ```bash
 git clone https://github.com/rchardx/pi-packages.git
@@ -50,6 +51,20 @@ file path for continuing with Pi's `read` tool.
 
 After updating the checkout, run `npm ci` when dependencies changed and restart Pi
 or use `/reload` to load the updated extension.
+
+## Node.js compatibility
+
+[`.node-version`](.node-version) selects the default development runtime.
+[`package.json`](package.json) defines the supported runtime floor; each package
+also declares its own `engines.node`. A newer development runtime does not raise
+the minimum version required to use the packages.
+
+Checks, tests, and Pi SDK package discovery, extension loading, and tool execution
+have been verified on **Node 22.19.0 and Node 26.13.1** with Pi 1.5.2.
+CI derives the exact minimum from the root `engines.node` and tests it alongside
+the default development version. Both must pass the required `check` gate.
+Node type declarations stay on the minimum supported major to help prevent use of
+newer-only APIs; runtime tests are still required to establish compatibility.
 
 ## Pi compatibility
 
