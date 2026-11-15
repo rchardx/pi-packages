@@ -89,6 +89,33 @@ test("job ids are random, fixed-width, and unique per session", async (t) => {
   for (const id of ids) assert.match(id, /^bg_[0-9a-f]{8}$/u);
 });
 
+test("running jobs and counts exclude ended entries before registry cleanup", async (t) => {
+  const session = createSessionJobs("running", await tempDir(t));
+  assert.deepEqual(session.runningJobs(), []);
+  assert.equal(session.runningCount(), 0);
+  const records = [0, 1, 2].map(
+    (index): JobRecord => ({
+      id: `bg_${index}`,
+      command: "true",
+      controller: new AbortController(),
+      startedAtMs: 0,
+      logPath: null,
+      log: null,
+      logBytes: 0,
+      tail: new TailBuffer(),
+      seed: new TailBuffer(),
+      state: index === 1 ? "ended" : "running",
+    }),
+  );
+  for (const job of records) session.jobs.set(job.id, job);
+  assert.deepEqual(session.runningJobs(), [records[0], records[2]]);
+  assert.equal(session.runningCount(), 2);
+  for (const job of records) job.state = "ended";
+  assert.equal(session.jobs.size, 3, "ended jobs may remain while logs close");
+  assert.deepEqual(session.runningJobs(), []);
+  assert.equal(session.runningCount(), 0);
+});
+
 // The actual process-tree kill is pi's built-in backend behavior, covered by
 // operations.test.ts; here we verify killAll aborts every running job exactly
 // once and records the reason in its log.

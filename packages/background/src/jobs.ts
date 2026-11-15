@@ -106,6 +106,7 @@ export interface SessionJobs {
   readonly dir: string;
   readonly jobs: Map<string, JobRecord>;
   shuttingDown: boolean;
+  runningJobs(): JobRecord[];
   runningCount(): number;
   newJobId(): string;
   ensureDir(): Promise<string>;
@@ -136,10 +137,11 @@ export function createSessionJobs(
     dir,
     jobs,
     shuttingDown: false,
+    runningJobs() {
+      return Array.from(jobs.values()).filter((job) => job.state === "running");
+    },
     runningCount() {
-      let count = 0;
-      for (const job of jobs.values()) if (job.state === "running") count += 1;
-      return count;
+      return state.runningJobs().length;
     },
     newJobId() {
       let id = "";

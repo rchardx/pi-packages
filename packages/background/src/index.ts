@@ -100,7 +100,7 @@ export default function background(pi: ExtensionAPI) {
     description: "Show running background jobs with elapsed time and full commands",
     handler: async (_args, ctx) => {
       const state = sessions.get(ctx.sessionManager.getSessionId());
-      const jobs = Array.from(state?.jobs.values() ?? []).filter((job) => job.state === "running");
+      const jobs = state?.runningJobs() ?? [];
       const now = Date.now();
       const rows = jobs.map(
         (job) =>
@@ -247,8 +247,10 @@ export default function background(pi: ExtensionAPI) {
       uiForwarding = false;
 
       if (outcome === "finished") {
-        session.jobs.delete(job.id);
-        updateStatus(ctx, session);
+        if (background === true) {
+          session.jobs.delete(job.id);
+          updateStatus(ctx, session);
+        }
         await session.closeLog(job);
         // Foreground commands keep no log: their output is the tool result.
         if (job.logPath) await rm(job.logPath, { force: true }).catch(() => {});
@@ -256,8 +258,10 @@ export default function background(pi: ExtensionAPI) {
       }
 
       tee.stopForwarding();
-      session.jobs.set(job.id, job);
-      updateStatus(ctx, session);
+      if (background !== true) {
+        session.jobs.set(job.id, job);
+        updateStatus(ctx, session);
+      }
       // Initialize before finalizing: execution can settle during mkdir, and
       // attaching handlers afterwards still observes that settlement.
       if (!job.log) await session.openLog(job);
@@ -304,7 +308,8 @@ async function finalizeJob(
   job: JobRecord,
   outcome: JobOutcome,
 ): Promise<void> {
-  if (job.state !== "running") return; // The session already ended this job.
+  // Shutdown marks registered jobs ended before ctx becomes stale, so skip UI access then.
+  if (job.state !== "running") return;
   job.state = "ended";
   updateStatus(ctx, session);
   const durationMs = Date.now() - job.startedAtMs;

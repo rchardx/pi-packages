@@ -82,8 +82,6 @@ per job; reaching the limit does not stop the command or its notification tail.
 Logs mark omitted early output when the pre-background seed buffer overflows.
 The footer shows the running job count; `/background` displays a read-only
 snapshot of elapsed times and full commands without starting a model turn.
-Background start results contain only the job id and log location or availability;
-completion cards collapse to one content row with a blank row above and below.
 Print and JSON modes remain foreground-only. See the
 [background usage guide](packages/background/README.md) for configuration and limits.
 

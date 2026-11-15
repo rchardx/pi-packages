@@ -72,6 +72,7 @@ async function loadSession(
   // SDK sessions default to print-mode bindings; bind the mode under test.
   const notices: string[] = [];
   const statuses = new Map<string, string>();
+  const statusUpdates: { key: string; text: string | undefined }[] = [];
   await session.bindExtensions({
     mode,
     uiContext: {
@@ -80,6 +81,7 @@ async function loadSession(
         notices.push(message);
       },
       setStatus: (key, text) => {
+        statusUpdates.push({ key, text });
         if (text === undefined) statuses.delete(key);
         else statuses.set(key, text);
       },
@@ -88,7 +90,7 @@ async function loadSession(
   assert.deepEqual(session.getActiveToolNames(), ["bash"]);
   const tool = session.agent.state.tools.find((candidate) => candidate.name === "bash");
   assert.ok(tool);
-  return { session, directory, tool, notices, statuses };
+  return { session, directory, tool, notices, statuses, statusUpdates };
 }
 
 function textOf(result: { content: unknown }): string {
@@ -143,6 +145,31 @@ test("/background is a user command and reports an empty session without a model
 });
 
 for (const mode of ["tui", "rpc"] as const) {
+  test(`foreground calls do not emit unchanged background status in ${mode}`, async (t) => {
+    const { tool, statusUpdates } = await loadSession(t, mode);
+    assert.deepEqual(statusUpdates, [{ key: "background", text: undefined }]);
+    for (const running of [false, true]) {
+      if (running) {
+        await tool.execute("idle-background", {
+          command: nodeScript("setTimeout(() => {}, 30000)"),
+          background: true,
+        });
+        assert.deepEqual(statusUpdates, [
+          { key: "background", text: undefined },
+          { key: "background", text: "bg: 1 running · /background" },
+        ]);
+      }
+      const updatesBefore: number = statusUpdates.length;
+      await tool.execute("foreground-success", { command: "true" });
+      await tool.execute("foreground-failure", { command: "exit 2" });
+      await assert.rejects(
+        tool.execute("foreground-invalid-timeout", { command: "true", timeout: -1 }),
+        /timeout/iu,
+      );
+      assert.equal(statusUpdates.length, updatesBefore);
+    }
+  });
+
   test(`/background shows a read-only snapshot of running jobs in ${mode}`, async (t) => {
     const { session, directory, tool, notices, statuses } = await loadSession(t, mode);
     let now = Date.now();
