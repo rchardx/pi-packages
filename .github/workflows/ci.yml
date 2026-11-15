@@ -35,7 +35,7 @@ jobs:
           if (!match) throw new Error('engines.node must be a single >=x.y.z floor');
           appendFileSync(process.env.GITHUB_OUTPUT, `version=${match[1]}\n`);
           JS
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.minimum.outputs.version }}
           node-version-file: .node-version
