@@ -21,7 +21,6 @@ import {
   NOTIFICATION_TYPE,
   type JobOutcome,
   type NotificationDetails,
-  oneLine,
   renderNotification,
   tailText,
 } from "./notify.ts";
@@ -45,12 +44,6 @@ const parameters = Type.Object({
   ),
 });
 
-const NO_POLL_INSTRUCTION =
-  "You will be notified automatically when it finishes — do not poll (no `sleep N; check` loops, " +
-  "no repeated reads of the log file to wait for completion), and do not start another copy while " +
-  "it runs. Continue with other work or, if everything left depends on the result, end your turn " +
-  "and you will be resumed.";
-
 function sleep(ms: number): { promise: Promise<void>; cancel: () => void } {
   let handle: NodeJS.Timeout | undefined;
   const promise = new Promise<void>((resolve) => {
@@ -63,6 +56,11 @@ function sleep(ms: number): { promise: Promise<void>; cancel: () => void } {
 /** Background execution needs a long-lived session that outlives the turn. */
 function backgroundAllowed(ctx: ExtensionContext): boolean {
   return ctx.mode === "tui" || ctx.mode === "rpc";
+}
+
+function updateStatus(ctx: ExtensionContext, session: SessionJobs): void {
+  const count = session.shuttingDown ? 0 : session.runningCount();
+  ctx.ui.setStatus("background", count > 0 ? `bg: ${count} running · /background` : undefined);
 }
 
 export default function background(pi: ExtensionAPI) {
@@ -82,7 +80,7 @@ export default function background(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    sessionJobs(ctx);
+    updateStatus(ctx, sessionJobs(ctx));
     await pruneOldLogs();
   });
 
@@ -92,10 +90,34 @@ export default function background(pi: ExtensionAPI) {
     if (!state) return;
     sessions.delete(sessionId);
     state.shuttingDown = true;
+    updateStatus(ctx, state);
     await state.killAll("session ended");
   });
 
   pi.registerMessageRenderer<NotificationDetails>(NOTIFICATION_TYPE, renderNotification);
+
+  pi.registerCommand("background", {
+    description: "Show running background jobs with elapsed time and full commands",
+    handler: async (_args, ctx) => {
+      const state = sessions.get(ctx.sessionManager.getSessionId());
+      const jobs = Array.from(state?.jobs.values() ?? []).filter((job) => job.state === "running");
+      const now = Date.now();
+      const rows = jobs.map(
+        (job) =>
+          `${job.id}  running  ${formatDuration(now - job.startedAtMs)}\n` +
+          job.command
+            .split("\n")
+            .map((line) => `  ${line}`)
+            .join("\n"),
+      );
+      ctx.ui.notify(
+        rows.length === 0
+          ? "No background jobs running."
+          : `Background jobs · ${rows.length} running\n\n${rows.join("\n\n")}`,
+        "info",
+      );
+    },
+  });
 
   pi.registerTool({
     name: "bash",
@@ -111,7 +133,8 @@ export default function background(pi: ExtensionAPI) {
       `jobs log up to ${LOG_OUTPUT_BYTES / (1024 * 1024)} MiB of raw output, then keep running ` +
       "with an updated in-memory tail. They notify you with the exit code and output tail when " +
       "they finish. Do not poll background jobs: no sleep-and-check loops and no repeated " +
-      "log reads to wait for completion. If you have nothing else to do, end your turn; " +
+      "log reads to wait for completion. Do not start another copy of a running job. " +
+      "If you have nothing else to do, end your turn; " +
       "you will be resumed when the job finishes.",
     ...(builtin.promptSnippet ? { promptSnippet: builtin.promptSnippet } : {}),
     promptGuidelines: [
@@ -161,6 +184,7 @@ export default function background(pi: ExtensionAPI) {
       // never background (explicit timeout, print/json mode) never touch disk.
       if (background === true) {
         session.jobs.set(job.id, job);
+        updateStatus(ctx, session);
         await session.openLog(job);
       }
 
@@ -224,6 +248,7 @@ export default function background(pi: ExtensionAPI) {
 
       if (outcome === "finished") {
         session.jobs.delete(job.id);
+        updateStatus(ctx, session);
         await session.closeLog(job);
         // Foreground commands keep no log: their output is the tool result.
         if (job.logPath) await rm(job.logPath, { force: true }).catch(() => {});
@@ -232,6 +257,7 @@ export default function background(pi: ExtensionAPI) {
 
       tee.stopForwarding();
       session.jobs.set(job.id, job);
+      updateStatus(ctx, session);
       // Initialize before finalizing: execution can settle during mkdir, and
       // attaching handlers afterwards still observes that settlement.
       if (!job.log) await session.openLog(job);
@@ -239,6 +265,7 @@ export default function background(pi: ExtensionAPI) {
         () =>
           void finalizeJob(
             pi,
+            ctx,
             session,
             job,
             tee.outcome() ?? { kind: "error", message: "bash tool returned no result" },
@@ -246,6 +273,7 @@ export default function background(pi: ExtensionAPI) {
         (error: unknown) =>
           void finalizeJob(
             pi,
+            ctx,
             session,
             job,
             tee.outcome() ?? {
@@ -256,17 +284,14 @@ export default function background(pi: ExtensionAPI) {
       );
       const tail = tailText(job.tail.text());
       const logLine = job.logPath
-        ? `Output is appended to: ${job.logPath} (up to ${LOG_OUTPUT_BYTES / (1024 * 1024)} MiB of raw output)`
-        : "No log file could be created (the agent directory is not writable); " +
-          "only the completion notification's output tail will be available.";
+        ? `Log: ${job.logPath}`
+        : "Log unavailable; completion notification will include the output tail.";
       const text =
         background === true
-          ? `Started background job ${job.id}: ${oneLine(command)}\n` +
-            `${logLine}\n${NO_POLL_INSTRUCTION}`
-          : `Command did not finish within ${config.thresholdSeconds}s and was moved to ` +
-            `background job ${job.id}.\n` +
-            (tail ? `\nOutput so far:\n${tail}\n\n` : "\n") +
-            `${logLine}\n${NO_POLL_INSTRUCTION}`;
+          ? `Started background job ${job.id}.\n${logLine}`
+          : `Command exceeded the ${config.thresholdSeconds}s foreground threshold.\n` +
+            `Moved to background job ${job.id}.\n${logLine}` +
+            (tail ? `\n\nOutput so far:\n${tail}` : "");
       return { content: [{ type: "text", text }], details: undefined };
     },
   });
@@ -274,12 +299,14 @@ export default function background(pi: ExtensionAPI) {
 
 async function finalizeJob(
   pi: ExtensionAPI,
+  ctx: ExtensionContext,
   session: SessionJobs,
   job: JobRecord,
   outcome: JobOutcome,
 ): Promise<void> {
   if (job.state !== "running") return; // The session already ended this job.
   job.state = "ended";
+  updateStatus(ctx, session);
   const durationMs = Date.now() - job.startedAtMs;
   const { content, details } = buildNotification(job, outcome, durationMs);
   const trailer =
