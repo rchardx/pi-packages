@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Configuration-free web fetching for Pi coding agent",
+  "description": "Independent web fetching and opt-in DeepSeek search for Pi coding agent",
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"

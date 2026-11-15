@@ -7,7 +7,7 @@ import type { AllowRange } from "./config.ts";
 
 export const MAX_URL_LENGTH = 2048;
 export const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
-export const TIMEOUT_MS = 20_000;
+export const TIMEOUT_MS = 60_000;
 export const MAX_REDIRECTS = 5;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 

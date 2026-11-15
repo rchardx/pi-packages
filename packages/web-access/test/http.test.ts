@@ -258,8 +258,9 @@ test("enforces the network deadline while DNS is stalled", async (t) => {
     lookup: () => new Promise(() => {}),
     open: neverOpen,
   });
+  assert.equal(TIMEOUT_MS, 60_000);
   t.mock.timers.tick(TIMEOUT_MS);
-  await assert.rejects(pending, /timed out/u);
+  await assert.rejects(pending, /timed out after 60000 ms/u);
 });
 
 test("cancellation closes a stalled response body", async (t) => {

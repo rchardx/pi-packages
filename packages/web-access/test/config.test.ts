@@ -21,6 +21,12 @@ for (const value of [
   { allowRanges: null },
   { allowRanges: "198.18.0.0/16" },
   { allowRanges: [42] },
+  { search: null },
+  { search: false },
+  { search: [] },
+  { search: {} },
+  { search: { provider: "auto" } },
+  { search: { provider: "deepseek", apiKey: "not-allowed" } },
 ]) {
   test(`rejects malformed configuration ${JSON.stringify(value)}`, () => {
     assert.throws(() => parseConfig(value));
@@ -47,6 +53,17 @@ for (const cidr of [
     assert.throws(() => parseConfig({ allowRanges: [cidr] }));
   });
 }
+
+test("search is an explicit opt-in independent of network exceptions", () => {
+  assert.deepEqual(parseConfig({ search: { provider: "deepseek" } }), {
+    allowRanges: [],
+    search: { provider: "deepseek" },
+  });
+  const config = parseConfig({ allowRanges: ["198.18.0.0/16"], search: { provider: "deepseek" } });
+  assert.equal(config.search?.provider, "deepseek");
+  assert.doesNotThrow(() => assertAllowedAddress("198.18.1.2", config.allowRanges));
+  assert.throws(() => assertAllowedAddress("127.0.0.1", config.allowRanges), /non-public/u);
+});
 
 test("CIDR exceptions are additive, family-aware and limited to their boundaries", () => {
   const { allowRanges } = parseConfig({ allowRanges: ["198.18.0.1/16", "fd12:3456::/48"] });
