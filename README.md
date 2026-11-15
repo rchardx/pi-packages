@@ -28,6 +28,7 @@ a temporary session or a persistent install, not both for the same package.
 | Package | Tools | Try for one session | Install for your Pi user | Usage guide |
 | --- | --- | --- | --- | --- |
 | web-access | `web_fetch` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
+| background | `bash` (override) | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
 
 ### web-access
 
@@ -48,6 +49,15 @@ For TUN/fake-IP networks, configure your trusted address pool through the option
 user-level [`allowRanges` setting](packages/web-access/README.md#network-configuration-allowranges).
 Normal public networks require no configuration. Long responses return a local
 file path for continuing with Pi's `read` tool.
+
+### background
+
+Run long `bash` commands in the background in interactive or RPC mode and receive
+completion notifications instead of polling. Logs retain up to 8MiB of raw output
+per job; reaching the limit does not stop the command or its notification tail.
+Logs mark omitted early output when the pre-background seed buffer overflows.
+Print and JSON modes remain foreground-only. See the
+[background usage guide](packages/background/README.md) for configuration and limits.
 
 After updating the checkout, run `npm ci` when dependencies changed and restart Pi
 or use `/reload` to load the updated extension.
