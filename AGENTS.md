@@ -9,6 +9,12 @@ PR conventions. This file defines execution constraints and completion requireme
 - Prioritize correctness and observable contracts over smaller diffs. Use the
   smallest complete design for current needs, with one authority per fact or rule.
   Avoid speculative abstractions, placeholders, and unrelated cleanup.
+- Trust Pi's documented API and type contracts. Do not repeat checks,
+  normalization, or fallbacks for values and behavior the host already guarantees.
+  Handle contractually optional or nullable values, and retain validation of
+  untrusted inputs and guards for extension-owned state, resources, and lifecycle
+  races. Prefer fixing host contract violations upstream over defensive wrappers
+  or speculative compatibility code.
 - Use English for code, comments, documentation, commits, and PR/issue content;
   non-English test data is appropriate when testing language-related behavior.
 - Ask before adding major runtime dependencies, frameworks/subsystems, or changing
