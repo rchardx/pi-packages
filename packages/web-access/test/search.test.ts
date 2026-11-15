@@ -73,7 +73,9 @@ test("sends only search arguments, preserves operators and provider order, and d
   assert.ok(text.includes(entry.date));
   assert.match(text, /Untrusted search results/u);
   assert.doesNotMatch(text, /Full page content|Short excerpt|icon\.png|test-only-deepseek-key/u);
-  assert.deepEqual(result.details, {
+  const { display, ...details } = result.details;
+  assert.equal(display.previewLength, result.content[0]?.text.length);
+  assert.deepEqual(details, {
     provider: "deepseek",
     query,
     requestedCount: 10,
@@ -187,18 +189,18 @@ test("enforces DeepSeek's Unicode limit without restricting the public schema or
   }
 });
 
-for (const [status, message] of [
-  [400, "Invalid search request"],
-  [401, "Missing or invalid"],
-  [402, "Insufficient"],
-  [403, "denied"],
-  [408, "timed out"],
-  [422, "Invalid search parameters"],
-  [429, "rate limit"],
-  [500, "failed"],
-  [504, "timed out"],
-  [302, "failed"],
-  [206, "failed"],
+for (const [status, message, retryHint] of [
+  [400, "Invalid search request", false],
+  [401, "Missing or invalid", false],
+  [402, "Insufficient", false],
+  [403, "denied", false],
+  [408, "timed out", true],
+  [422, "Invalid search parameters", false],
+  [429, "rate limit", true],
+  [500, "failed", true],
+  [504, "timed out", true],
+  [302, "failed", false],
+  [206, "failed", false],
 ] as const) {
   test(`HTTP ${status} is a sanitized error with no retry`, async () => {
     let calls = 0;
@@ -211,6 +213,7 @@ for (const [status, message] of [
         assert.ok(error instanceof Error);
         assert.ok(error.message.includes(String(status)));
         assert.ok(error.message.includes(message));
+        assert.equal(error.message.includes("This may be transient; retry later."), retryHint);
         assert.ok(!error.message.includes(key));
         return true;
       },

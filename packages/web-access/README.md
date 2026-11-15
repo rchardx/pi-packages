@@ -1,13 +1,11 @@
 # Web access
 
-A small Pi extension providing two independent tools:
+Two independent, opt-in Pi tools backed by DeepSeek's standalone APIs:
 
-- `web_fetch` reads HTTP(S) URLs directly, without an API key or hosted extraction
-  service. Public networks require no configuration; optional `allowRanges`
-  settings support trusted networks such as a TUN proxy's fake-IP address pool.
-- `web_search` queries DeepSeek's standalone Search API after explicit user setup.
-  It returns provider summaries and optional page content without calling
-  `web_fetch` or a chat model.
+- `web_fetch` returns a page title and Markdown content.
+- `web_search` returns ordered sources, summaries and optional page content.
+
+Neither calls a chat model or invokes the other tool.
 
 ## Install
 
@@ -25,205 +23,165 @@ pi install ./packages/web-access
 ```
 
 The local install refers to this checkout; keep it in place and reload Pi after
-changing the extension. Do not install both the directory and its entrypoint.
-The repository root is not a Pi package.
+changes. Do not install both the directory and its entrypoint. The repository
+root is not a Pi package.
 
-## Use
-
-Ask Pi to read a URL, or explicitly request a `web_fetch` call:
-
-```typescript
-web_fetch({ url: "https://example.com" })
-```
-
-HTML/XHTML becomes readable plain text with headings, lists, code and links.
-Scripts, styles, navigation, footers, forms, images, frames, and explicitly hidden
-elements are omitted; this is text extraction, not browser rendering or a
-guarantee that only article content remains. Relative links are resolved against
-the final page URL. Plain text, Markdown, CSV, JSON (including `+json` media
-types), and XML are returned as text without HTML conversion.
-
-The result includes the final source URL and media type. Retrieved content is
-untrusted data, never instructions. A page can contain malicious instructions,
-inaccurate text, or a login/challenge page even when its HTTP status is successful.
-
-## Limits and failure behavior
-
-These limits apply to `web_fetch`; search has its own limits below.
-
-- One URL per call, at most 2,048 characters.
-- A 60-second deadline covers DNS, connection, redirects, and body download.
-  User cancellation stops waiting and closes active HTTP requests. OS DNS work
-  cannot itself be interrupted, but a late answer cannot start a request.
-- At most five redirects; each destination is validated again. HTTPS-to-HTTP
-  downgrades, embedded URL credentials, and non-HTTP(S) schemes are rejected.
-- Destinations must be public or explicitly included in `allowRanges`. Every DNS
-  answer is checked, including after redirects, and the chosen address is pinned
-  for the actual connection to prevent a second DNS lookup from changing it.
-  TLS certificate verification remains enabled. See the proxy trust boundary below.
-- Response bodies are limited to 2 MiB, including chunked responses. Oversized
-  responses fail rather than masquerading as a complete page.
-- Output previews use Pi's 2,000-line / 50 KiB limit, followed by a truncation
-  notice when needed. The full extracted text is then stored in a private
-  temporary directory and can be read with Pi's `read` tool. These files are
-  not automatically deleted by the extension; use normal OS temporary-file
-  cleanup or remove them after use.
-- HTTP errors, partial HTTP responses, empty text, unsupported content types,
-  invalid text encodings, network errors, and timeouts fail explicitly.
-- HTTP charset declarations are honored; UTF-8 is assumed otherwise. HTML
-  charset meta tags are not sniffed.
-- Requests ask for `Accept-Encoding: identity`. Servers returning compressed
-  content anyway are rejected rather than decompressed.
-
-There is no JavaScript execution, cookie jar, login, custom request headers,
-explicit HTTP/SOCKS proxy transport, retry/fallback chain, search, PDF extraction, image
-download, or local-file access. `web_fetch` does not use browser cookies or Pi
-model credentials. URLs and extracted text enter the Pi conversation; do not put
-secrets in URLs. Network access exposes the requested URL to its destination and
-your network infrastructure.
-
-### Network configuration: allowRanges
-
-The optional user configuration file is `~/.pi/agent/web-access.json`. Its directory
-follows Pi's `PI_CODING_AGENT_DIR` override when set. No project-local configuration
-or model-supplied network permission parameters are read.
-
-For a TUN proxy using the `198.18.0.0/16` fake-IP pool, create:
-
-```json
-{
-  "allowRanges": ["198.18.0.0/16"]
-}
-```
-
-Use your proxy's actual address pool, not a broader range. TUN already handles
-routing; no SOCKS settings or proxy auto-detection are needed.
-
-- A missing file, `{}`, or `{"allowRanges": []}` permits public addresses only.
-- `allowRanges` is an additive list of IPv4/IPv6 CIDRs, not a replacement for
-  public access. It applies to both DNS results and IP literals in URLs, on every
-  redirect hop. All DNS answers must be public or explicitly allowed.
-- Use IPv4 CIDRs for IPv4-mapped IPv6 addresses; mapped addresses are normalized
-  for matching. CIDR prefixes containing host bits are matched as their network.
-- Malformed JSON, unknown fields, invalid CIDRs, and all-address `/0` ranges fail
-  explicitly. Invalid `web-access.json` prevents the entire extension from loading
-  at startup/reload, making both tools unavailable. Invalid edits during a session
-  fail on the next tool call; fix the configuration and reload.
-- The file is re-read for each call. Changes apply to the next call without
-  restarting Pi; an in-flight call keeps the permissions it started with.
-- This only changes address permissions. Protocol restrictions, URL credential
-  rejection, TLS verification, redirect limits, cancellation, and size limits
-  remain in effect. It does not make retrieved content trusted.
-
-Only configure networks you intend the tool to reach. Allowing a private range
-also permits access to services inside that range. With a fake-IP proxy, the
-client sees the synthetic address and cannot independently verify the proxy's
-final destination: that part of the access policy is delegated to your trusted
-proxy. Keep any necessary internal-network restrictions in the proxy's egress
-policy. Do not use this exception as a substitute for network isolation in a
-multi-user service.
-
-## Search
-
-### Enable DeepSeek search
+## Enable tools
 
 Configure DeepSeek authentication in Pi with `/login deepseek` or
-`DEEPSEEK_API_KEY` in Pi's launch environment. No DeepSeek chat model selection is
-needed. Keep credentials out of tool arguments and `web-access.json`.
+`DEEPSEEK_API_KEY` in Pi's launch environment. No DeepSeek chat model selection
+is needed. Keep credentials out of tool arguments and configuration.
 
-Add this to the user-level `web-access.json`, preserving any `allowRanges`:
+Enable the capabilities you want in `~/.pi/agent/web-access.json`
+(its directory follows `PI_CODING_AGENT_DIR`):
 
 ```json
 {
-  "search": { "provider": "deepseek" }
+  "search": { "provider": "deepseek" },
+  "fetch": { "provider": "deepseek" }
 }
 ```
 
-This authorizes billable search using Pi-resolved credentials, which may also be
-used for DeepSeek chat. Pi owns provider configuration and authentication.
-The effective auth base URL (auth override, otherwise provider default) must have
-the `https://api.deepseek.com` origin. Only its origin is used; requests always
-use the fixed Search endpoint below.
+Each entry independently authorizes possible provider charges, use of Pi-resolved
+credentials, and query or URL disclosure to DeepSeek. Omit an entry to disable
+that tool; a missing file or `{}` enables neither. Project settings and tool
+arguments cannot grant permission.
 
-Run `/reload` after enabling search. Search defaults to inactive without this
-setting; explicit tool selection changes visibility, not permission. Consent is
-checked and authentication resolved on every call. Removing `search` blocks subsequent
-calls even if Pi keeps the tool active across reloads; in-flight calls retain
-their starting consent. Restart Pi when changing its launch environment.
+Run `/reload` after enabling a tool. Explicit tool selection affects visibility,
+not permission. Consent and credentials are rechecked on every call; removing an
+entry blocks subsequent calls even if Pi keeps the tool active. In-flight calls
+retain starting consent. Restart Pi when changing its launch environment.
 
-### Search usage
+Pi owns authentication and provider configuration. The effective auth base URL
+(auth override, otherwise provider default) must have the
+`https://api.deepseek.com` origin. Requests use the fixed endpoints below.
+Pi's API key supplies default Bearer authentication; provider headers, then
+resolved auth headers override defaults case-insensitively, with `null` deleting
+a header. Authorization is required and the tools set JSON Content-Type.
+
+Only `search` and `fetch` settings are supported. Malformed JSON, unknown fields
+or invalid settings prevent both tools from loading; invalid edits during a
+session fail on the next call. Fix the file and reload.
+
+Direct fetch is not provided. Remove obsolete `allowRanges` settings and run
+`npm ci` after updating the checkout. For localhost or intranet URLs, use
+`curl` through `bash`: DeepSeek visits targets from its infrastructure, not your
+machine. Fetching is subject to the service's security policy and target-site
+access rules.
+
+## Fetch
+
+```typescript
+web_fetch({ url: "https://example.com/article" })
+```
+
+- Sends only `{ "url": "..." }` to
+  `POST https://api.deepseek.com/v1/tools/fetch`.
+- Accepts one absolute HTTP(S) URL without an embedded username/password.
+  Input and normalized URLs are limited to **8,192 characters**. Normalization
+  removes fragments and may expand non-ASCII paths through escaping.
+- Returns a single-line title and provider Markdown, preserving content paragraphs.
+  Empty titles are valid; invalid fields or whitespace-only content fail.
+- The model-facing `Requested URL` and `details.url` identify the normalized
+  **requested URL**, not a verified final redirect destination. Details also contain
+  `provider`, `title`, `truncated`, and optional `fullOutputPath`; no original `contentType` is returned.
+- HTTP 403 means a service security-policy rejection. HTTP 404 means no usable
+  content: this may include unavailable/blocked pages, unsupported formats or
+  extraction failure, not just a missing URL.
+
+There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
+may be incomplete, include navigation/comments, or lose links, code formatting
+and mathematical notation. Browser login, JavaScript rendering and PDF extraction
+are not guaranteed. See the [Fetch reference](https://api-docs.deepseek.com/api/fetch/).
+
+## Search
 
 ```typescript
 web_search({ query: "Node.js release notes site:nodejs.org" })
 web_search({ query: "TypeScript releases site:github.com", count: 5, need_content: true })
 ```
 
+- Sends `query`, `count` and `need_content` to
+  `POST https://api.deepseek.com/v1/tools/search`.
 - `query` is sent unchanged, including operators such as `site:`. DeepSeek requires
-  1–128 Unicode characters and rejects blank queries; long queries fail locally.
+  1–128 Unicode characters and rejects blank queries.
 - `count` defaults to **10**, with an allowed range of **1–50**. Fewer or zero
   results are valid.
-- `need_content` defaults to **false**. Results include long provider summaries,
-  falling back to snippets. Enabling it requests available page content in the
-  same response; prefer fewer results to limit output.
+- `need_content` defaults to **false**. Long summaries fall back to snippets.
+  Enabling it requests available page content in the same Search response;
+  prefer fewer results to limit output. It does not call `web_fetch`.
 
-Results preserve provider order and include titles, source URLs, summaries and
-available dates/site names. Unparseable, non-HTTP(S), or credential-bearing URLs
-are omitted with a count; valid URLs are normalized. Only the first `count`
-usable results are returned, even if DeepSeek sends more than 50. All-invalid
-results are distinguished from an empty search. Whitespace in titles, site names
-and dates is collapsed to single lines; summaries and page content retain paragraphs.
+Results retain provider order. Invalid, non-HTTP(S) or credential-bearing source
+URLs are omitted with a count; valid URLs are normalized, then limited to the
+requested count. All-invalid results are distinguished from an empty search.
+Titles, site names and dates use single-line whitespace; summaries and content
+retain paragraphs. Dates are provider-reported and summaries are not verified
+quotations. The extension does not visit result URLs.
 
-### Search limits and privacy
+See the [Search reference](https://api-docs.deepseek.com/api/search/) for operators
+and response fields.
 
-- Requests go only to `POST https://api.deepseek.com/v1/tools/search`, with
-  `query`, `count`, and `need_content`. No conversation or repository content is
-  attached; DeepSeek sees the query and source IP. Do not include secrets.
-  The extension does not fetch source URLs, call chat models, follow redirects,
-  retry, or use another backend.
-- Pi's API key supplies the default Bearer header. Provider headers, then resolved
-  auth headers override it case-insensitively; `null` suppresses a header.
-  Authorization is required; the tool sets JSON Content-Type.
-- A **120-second deadline** covers authentication, the request, response and
-  output. Cancellation stops waiting for credentials and aborts network work;
-  late credentials cannot start a request. Pi's secret-manager work may continue.
-- The **2 MiB decoded-response limit** and strict response schema reject
-  oversized, malformed, partial, non-JSON or invalid UTF-8 responses. Cancellation
-  or local rejection cannot undo provider charges.
-- Previews are limited to **2,000 lines / 50 KiB**. When truncated, complete
-  formatted output for selected results and invalid-URL notices is saved in a
-  private `pi-web-search-*/content.txt`; continue with `read`. Omitted entries
-  are not saved, and files are not automatically deleted.
-- HTTP errors retain their status; network errors include recognized codes such as
-  `ENOTFOUND`, `ECONNREFUSED`, `CERT_HAS_EXPIRED`, and `UND_ERR_CONNECT_TIMEOUT`.
-  Raw error bodies and transport messages are not exposed. Unrecognized transport
-  errors use a generic diagnostic. HTTP 401 indicates authentication failure,
-  402 insufficient balance, and 429 rate limiting. There is no credential fallback.
-- Results are untrusted data, not instructions. Dates are provider-reported;
-  summaries are not verified quotations, and page content may be incomplete.
-  `allowRanges` applies only to direct `web_fetch`, not hosted search.
+## Tool cards in Pi
 
-See the [Search reference](https://api-docs.deepseek.com/api/search/) and
-[Search & Fetch guide](https://api-docs.deepseek.com/guides/search) for operators,
-account limits and pricing. Billing is per successful non-empty search request,
-not per result.
+The tool names remain `web_fetch` and `web_search`; their cards display **Web fetch**
+and **Web search**. Calls show the URL or query, with a compact result summary and
+Pi-reported execution time when available. Search previews show up to three titles.
+
+Use Pi's expand-tools shortcut (normally `ctrl+o`) to reveal Markdown content,
+source URLs and search summaries. The title and summary keep the same style in
+both views; the shortcut hint follows your keybindings. Provider text is untrusted
+and extraction may be incomplete. Errors, omitted-source notices and full-output
+file paths remain visible when collapsed.
+
+Expansion only reveals the existing bounded preview: it does not fetch again or
+read the full-output file. Use `read` for that file. Presentation metadata in
+`details.display` references the model-facing text rather than storing another
+copy of the page. Renderers remove terminal control sequences for display only;
+model-facing content and saved full output are unchanged. Older session results
+without presentation metadata retain a plain-text fallback.
+
+## Shared limits and privacy
+
+- Fetch has a **60-second** total deadline; Search has **120 seconds**. These cover
+  authentication, request, response and output. Cancellation aborts network work
+  and stops waiting for credentials, though Pi's secret-manager work may continue.
+- Both APIs have a **2 MiB decoded JSON response limit**. Oversized responses fail
+  without partial output, even after a potentially billable HTTP 200. Malformed,
+  partial, non-JSON and invalid UTF-8 API responses also fail explicitly.
+- API requests do not follow redirects, retry automatically, or use a fallback.
+  HTTP 408, 429 and 5xx diagnostics suggest retrying later. HTTP 401 indicates
+  authentication failure, 402 insufficient balance, and 429 rate limiting.
+- Errors retain HTTP status and recognized network codes, not raw provider bodies
+  or transport messages. Unknown transport failures use a generic diagnostic.
+- Previews are limited to **2,000 lines / 50 KiB**. Full formatted output is saved
+  when truncated to `pi-web-fetch-*/content.txt` or `pi-web-search-*/content.txt`;
+  continue with `read`. Directories are 0700 and files 0600 on POSIX. Failed writes
+  are cleaned up; successful files remain until removed or OS temporary cleanup.
+  Search files contain selected results and omission notices, not discarded entries.
+- DeepSeek receives the query or normalized URL (including path/query) and request
+  source IP, not conversation or repository content. Inputs and returned content
+  enter the Pi conversation; do not include secrets. Results are untrusted data,
+  not instructions, and full output files do not prove complete page retrieval.
+  Browser cookies are not reused.
+
+See the [Search & Fetch guide](https://api-docs.deepseek.com/guides/search) for
+provider-controlled billing and rate limits. Cancellation cannot undo charges.
 
 ## Pi compatibility
 
-Latest verified compatible version: **Pi 1.5.2**. The verified Node runtimes are
-recorded in the repository's [Node.js compatibility](../../README.md#nodejs-compatibility)
-section; this package retains its `engines.node` minimum.
+Latest verified compatible version: **Pi 1.5.2**, on the runtimes recorded in
+[Node.js compatibility](../../README.md#nodejs-compatibility).
 
-The automated SDK tests discover this package through its `pi` manifest, load
-its TypeScript extension, and execute both tools with only network boundaries
-replaced. They verify private-target rejection for fetch and search opt-in,
-default visibility, Pi credential and header resolution, and the effective-origin
-boundary.
-Tests use synthetic keys; no live model or search account is required. This
-establishes Pi integration, not live DeepSeek search quality or account access. Live website availability is not part of the CI guarantee.
+SDK tests discover the package through its manifest, load its TypeScript extension
+and execute both tools using synthetic credentials and local HTTP/controlled
+responses. They cover consent, visibility, reload, Pi authentication and the
+effective-origin boundary. Shared transport regressions cover decoding, resource
+limits and cancellation; Fetch also verifies its own deadline and output handling.
+No live account is needed; these checks do not guarantee site availability or
+extraction quality.
 
-Host-provided libraries are declared as `"*"` peer dependencies as Pi recommends.
-That does not promise compatibility with every Pi release. This package remains
-private and unpublished.
+Host-provided libraries use `"*"` peers as Pi recommends; this does not promise
+compatibility with every Pi release. The package remains private and unpublished.
 
 ## Development
 

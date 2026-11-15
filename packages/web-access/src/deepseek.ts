@@ -6,7 +6,7 @@ const MISSING_AUTH =
 
 type Registry = Pick<ModelRegistry, "getProvider" | "getProviderAuth">;
 
-function isSearchOrigin(value: string | undefined): boolean {
+function isDeepSeekOrigin(value: string | undefined): boolean {
   if (!value) return false;
   try {
     return new URL(value).origin === DEEPSEEK_API_ORIGIN;
@@ -28,9 +28,9 @@ export async function resolveDeepSeekHeaders(registry: Registry): Promise<Header
     throw new Error("Cannot resolve DeepSeek credentials through Pi; check the provider setup.");
   }
   if (!resolved) throw new Error(MISSING_AUTH);
-  if (!isSearchOrigin(resolved.auth.baseUrl ?? provider?.baseUrl)) {
+  if (!isDeepSeekOrigin(resolved.auth.baseUrl ?? provider?.baseUrl)) {
     throw new Error(
-      `DeepSeek Search requires Pi's effective auth origin to be ${DEEPSEEK_API_ORIGIN}.`,
+      `DeepSeek web tools require Pi's effective auth origin to be ${DEEPSEEK_API_ORIGIN}.`,
     );
   }
   const headers = new Headers();
