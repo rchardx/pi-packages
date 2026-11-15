@@ -143,8 +143,12 @@ codebase warrants one.
 - Keep extension registration thin and test behavior through its public boundary.
   Do not add hooks, custom TUI, configuration files, or provider abstractions
   without a current caller.
-- Packages remain private/unpublished until distribution and licensing are
-  explicitly chosen. Validate a package's tarball when its packaging changes.
+- The root [LICENSE](LICENSE) owns the repository's MIT terms. Include a copy in
+  each package so its tarball carries the copyright and permission notice.
+  Keep package license metadata aligned; third-party licenses remain separate.
+- Packages remain `private: true` and unpublished until publication is explicitly
+  approved. Source licensing is not an instruction to publish to npm. Validate a
+  package's tarball when its packaging changes.
 
 ## Pi compatibility
 

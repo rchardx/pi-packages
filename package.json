@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Personal Pi coding agent packages",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rchardx/pi-packages.git"

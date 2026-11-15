@@ -143,3 +143,7 @@ npm pack --workspace @rchardx/pi-web-access --dry-run
 ```
 
 See [repository development rules](../../AGENTS.md).
+
+## License
+
+[MIT](LICENSE). Third-party dependencies retain their own licenses.

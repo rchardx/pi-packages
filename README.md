@@ -90,7 +90,8 @@ Install this checkout's Git/LFS hooks with `npm run hooks:install`, then run
 `git lfs pull` to materialize any LFS assets. Binary file patterns are maintained
 in [`.gitattributes`](.gitattributes).
 Development rules, package boundaries, and the English Conventional Commit
-contract are defined in [AGENTS.md](AGENTS.md).
+contract are defined in [AGENTS.md](AGENTS.md). See [CONTRIBUTING.md](CONTRIBUTING.md)
+for contributor setup and the pull request workflow.
 
 ## Distribution
 
@@ -98,5 +99,10 @@ The repository root is private development infrastructure, not an installable
 Pi bundle. `pi install git:github.com/rchardx/pi-packages` is not a substitute for
 the individual package installations above.
 
-No npm publication or open-source license has been selected. Public source
-visibility does not itself grant a license.
+Packages remain marked `private: true` and have not been published to npm.
+Publication is a separate decision from source licensing.
+
+## License
+
+This repository and its packages are licensed under the [MIT License](LICENSE).
+Third-party dependencies retain their own licenses.
