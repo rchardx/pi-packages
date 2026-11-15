@@ -93,6 +93,18 @@ post-commit, and post-merge. Preserve those hooks when changing local automation
 Hooks check the working tree, not an isolated staged snapshot. Review partially
 staged changes deliberately.
 
+### Dependency updates
+
+[Dependabot configuration](.github/dependabot.yml) owns the automated update policy.
+Keep routine Node type updates within the minimum supported major. Upgrade Pi
+and its matching host development libraries through the compatibility procedure
+below, rather than accepting independent routine version bumps. Security update
+PRs remain eligible and must pass the same compatibility checks; do not suppress
+alerts or force a runtime upgrade to make a dependency update pass.
+
+Bot PRs follow the same title/body contract as other contributions. Normalize
+that metadata before merging; do not bypass the required `pr-message` check.
+
 ### Git LFS
 
 `.gitattributes` owns LFS patterns for images, PDFs, archives, media, native
