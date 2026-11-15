@@ -142,7 +142,8 @@ npm test
 npm pack --workspace @rchardx/pi-web-access --dry-run
 ```
 
-See [repository development rules](../../AGENTS.md).
+See the [contribution workflow](../../CONTRIBUTING.md) and
+[repository constraints](../../AGENTS.md).
 
 ## License
 

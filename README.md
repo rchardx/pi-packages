@@ -75,23 +75,13 @@ newer-only APIs; runtime tests are still required to establish compatibility.
 
 Each package's README records the scope of its compatibility checks and network
 limitations. npm's latest release is not automatically a supported version.
-See [compatibility rules](AGENTS.md#pi-compatibility) for how this is maintained.
+See [compatibility rules](AGENTS.md#compatibility) for how this is maintained.
 
 ## Development
 
-After [setup](#setup), run the repository checks:
-
-```bash
-npm run check
-npm test
-```
-
-Install this checkout's Git/LFS hooks with `npm run hooks:install`, then run
-`git lfs pull` to materialize any LFS assets. Binary file patterns are maintained
-in [`.gitattributes`](.gitattributes).
-Development rules, package boundaries, and the English Conventional Commit
-contract are defined in [AGENTS.md](AGENTS.md). See [CONTRIBUTING.md](CONTRIBUTING.md)
-for contributor setup and the pull request workflow.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for checkout setup, validation, signed
+commits, and the pull request workflow. [AGENTS.md](AGENTS.md) defines execution
+constraints, package boundaries, and compatibility requirements.
 
 ## Distribution
 
