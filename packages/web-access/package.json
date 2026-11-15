@@ -1,0 +1,36 @@
+{
+  "name": "@rchardx/pi-web-access",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Configuration-free web fetching for Pi coding agent",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rchardx/pi-packages.git",
+    "directory": "packages/web-access"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "dependencies": {
+    "html-to-text": "10.0.1",
+    "ipaddr.js": "2.5.0"
+  }
+}
