@@ -29,6 +29,7 @@ a temporary session or a persistent install, not both for the same package.
 | --- | --- | --- | --- | --- |
 | web-access | `web_fetch`, `web_search` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
 | background | `bash` (override) | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
+| subagents | `subagent`, `subagent_cancel` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
 
 ### web-access
 
@@ -84,6 +85,19 @@ The footer shows the running job count; `/background` displays a read-only
 snapshot of elapsed times and full commands without starting a model turn.
 Print and JSON modes remain foreground-only. See the
 [background usage guide](packages/background/README.md) for configuration and limits.
+
+### subagents
+
+Delegate well-scoped work to background child agents with fresh context and a
+shared working directory. Children can edit files and run commands; completion
+steers the parent automatically without polling. Use `subagent_cancel` to stop a
+child. Tasks belong to the root session and do not survive its shutdown.
+See the [subagents usage guide](packages/subagents/README.md) for resource reloading,
+model access, process requirements, and limits. Children rebuild their own system
+prompts and retain supported parent CLI restrictions and explicit prompt inputs.
+Indirectly callable deferred/codemode tools stay available without being
+implicitly added to the tools declared to the model.
+No role configuration or agent messaging is exposed yet.
 
 After updating the checkout, run `npm ci` when dependencies changed and restart Pi
 or use `/reload` to load the updated extension.
