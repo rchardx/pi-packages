@@ -41,15 +41,16 @@ writes when the disk is slow. At the limit, logging stops but the command keeps
 running and its 16KB in-memory tail keeps updating. Notifications can therefore
 contain recent output absent from the capped log. Notification tails normalize
 CRLF and carriage-return progress updates to newlines; logs keep raw bytes.
-Collapsed completion cards occupy one content row, truncating to the terminal
-width, with one blank row above and below. Expanding reveals the log path and
-output tail without extra padding between fields. Pi retains its normal spacing
-between messages.
+Collapsed completion cards show the job id, status, and duration before the
+command so long commands truncate first. Cards occupy one content row with one
+blank row above and below. Expanding reveals the log path and output tail without
+extra padding between fields. Pi retains its normal spacing between messages.
 
-The tool description and prompt guidelines explain completion notifications,
-log limits, and waiting without polling or duplicate commands. These fixed rules
-are not repeated in each result. Explicit background starts return only the job
-id and log path (or a log-unavailable notice). Automatic transitions also report
+The tool description summarizes foreground and background results. Prompt
+guidelines explain waiting for completion notifications without polling or
+duplicate commands; these rules are not repeated in each result. Explicit
+background starts return only the job id and log path (or a log-unavailable
+notice). Automatic transitions also report
 the foreground threshold and any buffered output preview. Completion messages
 mention the log size limit only when it was reached.
 
@@ -71,10 +72,10 @@ pi install ./packages/background
 
 ### Inspect running jobs
 
-While jobs are running, Pi's footer shows `bg: N running · /background` in its
-extension status area. The count updates on lifecycle changes without polling,
-and disappears when no jobs remain or the session shuts down. The extension
-does not replace Pi's footer; RPC clients receive the corresponding status update.
+While jobs are running, Pi's native footer status area shows
+`bg: N running · /background`. The count updates on lifecycle changes and
+disappears when no jobs remain or the session shuts down. RPC clients receive
+the corresponding status update.
 
 Enter `/background` in Pi to show a snapshot of this session's running
 background jobs:
@@ -96,11 +97,10 @@ hours (for example, three days is `72h0m`). With no
 running jobs it displays `No background jobs running.` Completed jobs are
 omitted; their results remain in the existing completion notifications.
 
-This is a user slash command, not a model tool. It reads only the in-memory
-registry and shows a Pi UI notification in interactive or RPC mode; it does not
-start a model turn, add model-context messages, read logs, or poll processes.
-There is no automatic refresh: enter `/background` again for a new snapshot.
-The command has no arguments or aliases and does not manage or stop jobs.
+This user slash command shows a read-only snapshot of the in-memory registry
+through a Pi UI notification in interactive or RPC mode, without starting a model
+turn or adding model-context messages. There is no automatic refresh: enter
+`/background` again for a new snapshot.
 
 ## Settings
 

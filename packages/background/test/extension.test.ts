@@ -130,13 +130,36 @@ function notificationMessages(session: {
     }));
 }
 
+test("bash exposes a concise description and separates usage guidelines", async (t) => {
+  const { session, tool } = await loadSession(t);
+  assert.equal(
+    tool.description,
+    "Execute a bash command in the current working directory. Set " +
+      "background: true to run in the background (tui/rpc only).\n\n" +
+      "Foreground execution returns stdout and stderr, truncated to the last " +
+      "2000 lines or 50KB (whichever is hit first). If truncated, full output " +
+      "is saved to a temp file.\n\n" +
+      "Background execution returns a job id and available log path, then " +
+      "notifies automatically on completion.\n\n" +
+      "Optionally provide a timeout in seconds.",
+  );
+  const metadata = session.getAllTools().find((candidate) => candidate.name === "bash");
+  assert.ok(metadata);
+  const guidelines = metadata.promptGuidelines?.join("\n") ?? "";
+  assert.match(guidelines, /PI_\* environment variables/u);
+  assert.match(guidelines, /Use bash background execution.*when available/u);
+  assert.match(guidelines, /Do not poll background jobs or launch duplicate copies/u);
+  assert.match(guidelines, /end your turn and wait for the completion notification/u);
+  assert.match(session.systemPrompt, /Execute bash commands \(ls, grep, find, etc\.\)/u);
+  assert.match(session.systemPrompt, /Do not poll background jobs or launch duplicate copies/u);
+  assert.match(session.systemPrompt, /PI_\* environment variables/u);
+});
+
 test("/background is a user command and reports an empty session without a model turn", async (t) => {
   const { session, notices, statuses } = await loadSession(t);
   assert.equal(statuses.has("background"), false);
   const command = session.extensionRunner.getCommand("background");
   assert.ok(command);
-  assert.equal(session.extensionRunner.getCommand("bg"), undefined);
-  assert.equal(session.extensionRunner.getCommand("ps"), undefined);
   assert.deepEqual(session.getActiveToolNames(), ["bash"]);
   const messages = [...session.messages];
   await session.prompt("/background");
@@ -293,10 +316,6 @@ test("background: true returns immediately, notifies on completion, and logs out
   const startedText = textOf(started);
   const jobId = /Started background job (bg_[0-9a-f]{8})\./u.exec(startedText)?.[1];
   assert.ok(jobId, startedText);
-  assert.match(tool.description, /Do not poll background jobs/u);
-  assert.match(tool.description, /Do not start another copy/u);
-  assert.match(tool.description, /end your turn/u);
-  assert.match(tool.description, /8 MiB/u);
   const logPath = new RegExp(`Log: (\\S+${jobId}\\.log)`, "u").exec(startedText)?.[1];
   assert.ok(logPath);
   assert.ok(logPath.startsWith(join(directory, "bash-jobs")), logPath);
@@ -572,16 +591,8 @@ test("a backgrounded job survives aborting the turn signal (Esc) that spawned it
 
 for (const mode of ["print", "json"] as const) {
   test(`${mode} mode documents and rejects background, and never auto-backgrounds`, async (t) => {
-    const { directory, session, tool } = await loadSession(t, mode);
-    assert.match(tool.description, /available only in tui\/rpc mode/u);
-    assert.match(tool.description, /0 disables it/u);
-    const metadata = session.getAllTools().find((candidate) => candidate.name === "bash");
-    assert.ok(metadata);
-    assert.ok(
-      metadata.promptGuidelines?.some((line) =>
-        line.includes("In print/json mode, run the command in the foreground"),
-      ),
-    );
+    const { directory, tool } = await loadSession(t, mode);
+    assert.match(tool.description, /background: true to run in the background \(tui\/rpc only\)/u);
     await assert.rejects(
       tool.execute("pr-1", { command: nodeScript("process.exit(0)"), background: true }),
       new RegExp(`unavailable in ${mode} mode`, "u"),

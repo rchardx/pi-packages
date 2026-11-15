@@ -98,6 +98,39 @@ test("completion notifications mention the log limit only when reached", () => {
   assert.match(content, /latest output/u);
 });
 
+test("collapsed cards keep exit status and duration before long commands", () => {
+  const theme = {
+    bg: (_token: string, text: string) => text,
+    fg: (_token: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const job = {
+    ...fakeJob("output tail"),
+    command: `printf '${"中文 output ".repeat(20)}'\nprintf done`,
+  };
+  for (const exitCode of [0, 2]) {
+    const { details } = buildNotification(job, { kind: "exit", exitCode }, 72_000);
+    const collapsed = renderNotification({ details }, { expanded: false, outputPad: 1 }, theme);
+    assert.ok(collapsed);
+    for (const width of [40, 80]) {
+      const lines = collapsed.render(width);
+      assert.equal(lines.length, 3);
+      const headline = lines[1] ?? "";
+      assert.ok(headline.includes(`bg_a1b2c3d4 · exit ${exitCode} · 1m12s`));
+      assert.ok(visibleWidth(headline) <= width);
+      assert.ok(!headline.includes(details.command), "truncate the command, not the summary");
+    }
+    const narrow = collapsed.render(30);
+    assert.equal(narrow.length, 3);
+    assert.ok(narrow.every((line) => visibleWidth(line) <= 30));
+    const expanded = renderNotification({ details }, { expanded: true, outputPad: 1 }, theme);
+    assert.ok(expanded);
+    const expandedText = expanded.render(200).join("\n");
+    assert.ok(expandedText.includes(details.command));
+    assert.match(expandedText, /output tail/u);
+  }
+});
+
 test("renderNotification draws a one-line card, expandable to the tail", () => {
   const { details } = buildNotification(
     fakeJob("line of output"),
@@ -122,7 +155,7 @@ test("renderNotification draws a one-line card, expandable to the tail", () => {
   assert.equal(narrow.length, 3, "collapsed content truncates rather than wrapping");
   assert.ok(visibleWidth(narrow[1] ?? "") <= 30);
   const render = (component: typeof collapsed): string => component.render(120).join("\n");
-  assert.match(render(collapsed), /bg_a1b2c3d4 npm test · exit 0 · 1m12s/u);
+  assert.match(render(collapsed), /bg_a1b2c3d4 · exit 0 · 1m12s · npm test/u);
   assert.doesNotMatch(render(collapsed), /line of output/u);
   assert.match(render(expanded), /line of output/u);
   assert.match(render(expanded), /bg_a1b2c3d4\.log/u);

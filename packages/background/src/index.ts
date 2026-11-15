@@ -1,6 +1,8 @@
 import { rm } from "node:fs/promises";
 import {
   createBashToolDefinition,
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -9,7 +11,6 @@ import { loadConfig } from "./config.ts";
 import {
   createSessionJobs,
   type JobRecord,
-  LOG_OUTPUT_BYTES,
   pruneOldLogs,
   SEED_BYTES,
   type SessionJobs,
@@ -36,10 +37,7 @@ const parameters = Type.Object({
   ),
   background: Type.Optional(
     Type.Boolean({
-      description:
-        "In tui/rpc mode only, run the command in the background and return immediately " +
-        "with a job id and log path. You will be notified when it finishes. " +
-        "Unavailable in print/json mode.",
+      description: "Run the command in the background and return immediately.",
     }),
   ),
 });
@@ -123,23 +121,18 @@ export default function background(pi: ExtensionAPI) {
     name: "bash",
     label: builtin.label,
     description:
-      builtin.description +
-      " Background execution is available only in tui/rpc mode; in print/json mode, " +
-      "run commands in the foreground (optionally with timeout). In tui/rpc mode, set " +
-      "background to true for long-running commands (builds, test suites, dev servers, " +
-      "downloads) to return immediately while the command keeps running. When automatic " +
-      "backgrounding is enabled and no explicit timeout is set, commands still running " +
-      "after the threshold (default 120s; 0 disables it) move to the background. Background " +
-      `jobs log up to ${LOG_OUTPUT_BYTES / (1024 * 1024)} MiB of raw output, then keep running ` +
-      "with an updated in-memory tail. They notify you with the exit code and output tail when " +
-      "they finish. Do not poll background jobs: no sleep-and-check loops and no repeated " +
-      "log reads to wait for completion. Do not start another copy of a running job. " +
-      "If you have nothing else to do, end your turn; " +
-      "you will be resumed when the job finishes.",
+      "Execute a bash command in the current working directory. Set " +
+      "background: true to run in the background (tui/rpc only).\n\n" +
+      "Foreground execution returns stdout and stderr, truncated to the last " +
+      `${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output ` +
+      "is saved to a temp file.\n\n" +
+      "Background execution returns a job id and available log path, then " +
+      "notifies automatically on completion.\n\n" +
+      "Optionally provide a timeout in seconds.",
     ...(builtin.promptSnippet ? { promptSnippet: builtin.promptSnippet } : {}),
     promptGuidelines: [
       ...(builtin.promptGuidelines ?? []),
-      "For bash, do not write `sleep N; command` chains to wait for an uncertain duration. In tui/rpc mode, use background: true and act on its completion notification. In print/json mode, run the command in the foreground, optionally with timeout.",
+      "Use bash background execution for long-running commands when available. Do not poll background jobs or launch duplicate copies; continue other work or end your turn and wait for the completion notification.",
     ],
     parameters,
     ...(builtin.outputSchema ? { outputSchema: builtin.outputSchema } : {}),

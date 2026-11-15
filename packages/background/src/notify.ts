@@ -129,7 +129,7 @@ export function renderNotification(
   const succeeded = details.outcome === "completed";
   const icon = succeeded ? theme.fg("success", "✓") : theme.fg("error", "✗");
   const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
-  const headline = `${icon} ${theme.bold(details.jobId)} ${details.command} · ${summaryPhrase(details)}`;
+  const headline = `${icon} ${theme.bold(details.jobId)} · ${summaryPhrase(details)} · ${details.command}`;
   box.addChild(options.expanded ? new Text(headline, 0, 0) : new TruncatedText(headline, 0, 0));
   if (options.expanded) {
     if (details.logPath) box.addChild(new Text(theme.fg("dim", details.logPath), 0, 0));
