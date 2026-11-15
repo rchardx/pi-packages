@@ -25,7 +25,7 @@ including output truncation, temp files, and aborting with Esc. Foreground
 commands leave no log files on disk.
 
 When a background job finishes, Pi receives a `bash-job:notification` message
-(with a collapsible card in the TUI) containing the exit code, duration, an
+(with a compact, collapsible card in the TUI) containing the exit code, duration, an
 ANSI-stripped tail of the output, and the log path, and is resumed
 automatically. The raw output is at
 `~/.pi/agent/bash-jobs/<sessionId>/<jobId>.log`; use `read` or `grep` on it.
@@ -41,10 +41,20 @@ writes when the disk is slow. At the limit, logging stops but the command keeps
 running and its 16KB in-memory tail keeps updating. Notifications can therefore
 contain recent output absent from the capped log. Notification tails normalize
 CRLF and carriage-return progress updates to newlines; logs keep raw bytes.
+Collapsed completion cards show the job id, status, and duration before the
+command so long commands truncate first. Cards occupy one content row with one
+blank row above and below. Expanding reveals the log path and output tail without
+extra padding between fields. Pi retains its normal spacing between messages.
 
-The tool description tells the model to prefer background execution over
-`sleep N; check` polling loops, so no special wording is needed in prompts.
-Asking Pi to "run the tests in the background" also works.
+The tool description summarizes foreground and background results. Prompt
+guidelines explain waiting for completion notifications without polling or
+duplicate commands; these rules are not repeated in each result. Explicit
+background starts return only the job id and log path (or a log-unavailable
+notice). Automatic transitions also report
+the foreground threshold and any buffered output preview. Completion messages
+mention the log size limit only when it was reached.
+
+Asking Pi to "run the tests in the background" works without special wording.
 
 ## Usage
 
@@ -59,6 +69,38 @@ Install persistently:
 ```bash
 pi install ./packages/background
 ```
+
+### Inspect running jobs
+
+While jobs are running, Pi's native footer status area shows
+`bg: N running · /background`. The count updates on lifecycle changes and
+disappears when no jobs remain or the session shuts down. RPC clients receive
+the corresponding status update.
+
+Enter `/background` in Pi to show a snapshot of this session's running
+background jobs:
+
+```text
+Background jobs · 2 running
+
+bg_6f6bb444  running  1m23s
+  npm run build
+
+bg_a812c903  running  18s
+  npm test
+```
+
+Each entry includes its job id, elapsed time since command startup (including
+any foreground time), and full command, preserving multiple lines. Durations
+use seconds, minutes/seconds, or hours/minutes; multi-day jobs keep accumulating
+hours (for example, three days is `72h0m`). With no
+running jobs it displays `No background jobs running.` Completed jobs are
+omitted; their results remain in the existing completion notifications.
+
+This user slash command shows a read-only snapshot of the in-memory registry
+through a Pi UI notification in interactive or RPC mode, without starting a model
+turn or adding model-context messages. There is no automatic refresh: enter
+`/background` again for a new snapshot.
 
 ## Settings
 

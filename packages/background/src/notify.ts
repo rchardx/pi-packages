@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text, TruncatedText } from "@earendil-works/pi-tui";
 import { stripAnsi } from "./ansi.ts";
 import { type JobRecord, LOG_OUTPUT_BYTES } from "./jobs.ts";
 import type { JobOutcome } from "./operations.ts";
@@ -110,7 +110,10 @@ export function buildNotification(
     `\`${details.command}\`` +
     (tail ? `\n\nLast output:\n\`\`\`\n${tail}\n\`\`\`` : "") +
     (job.logPath
-      ? `\n\nOutput log: ${job.logPath} (up to ${LOG_OUTPUT_BYTES / (1024 * 1024)} MiB of raw output) — use read or grep if you need more than the tail above.`
+      ? `\n\nLog: ${job.logPath}` +
+        (job.logBytes >= LOG_OUTPUT_BYTES
+          ? `\nLog output limit reached (${LOG_OUTPUT_BYTES / (1024 * 1024)} MiB).`
+          : "")
       : "");
   return { content, details };
 }
@@ -118,20 +121,19 @@ export function buildNotification(
 /** Collapsed one-line card; expanded view adds the log path and output tail. */
 export function renderNotification(
   message: { details?: NotificationDetails },
-  options: { expanded: boolean },
+  options: { expanded: boolean; outputPad: number },
   theme: Pick<Theme, "bg" | "fg" | "bold">,
 ) {
   const details = message.details;
   if (!details) return undefined;
   const succeeded = details.outcome === "completed";
   const icon = succeeded ? theme.fg("success", "✓") : theme.fg("error", "✗");
-  const box = new Box(1, 1, (text) => theme.bg("customMessageBg", text));
-  box.addChild(
-    new Text(`${icon} ${theme.bold(details.jobId)} ${details.command} · ${summaryPhrase(details)}`),
-  );
+  const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
+  const headline = `${icon} ${theme.bold(details.jobId)} · ${summaryPhrase(details)} · ${details.command}`;
+  box.addChild(options.expanded ? new Text(headline, 0, 0) : new TruncatedText(headline, 0, 0));
   if (options.expanded) {
-    if (details.logPath) box.addChild(new Text(theme.fg("dim", details.logPath)));
-    if (details.tail) box.addChild(new Text(theme.fg("muted", details.tail)));
+    if (details.logPath) box.addChild(new Text(theme.fg("dim", details.logPath), 0, 0));
+    if (details.tail) box.addChild(new Text(theme.fg("muted", details.tail), 0, 0));
   }
   return box;
 }

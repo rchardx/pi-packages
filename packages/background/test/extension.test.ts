@@ -23,7 +23,7 @@ function nodeScript(script: string): string {
 
 async function loadSession(
   t: TestContext,
-  mode: "tui" | "print" | "json" = "tui",
+  mode: "tui" | "rpc" | "print" | "json" = "tui",
   settings?: { shellCommandPrefix?: string; shellPath?: string },
 ) {
   const directory = await mkdtemp(join(tmpdir(), "pi-background-extension-"));
@@ -64,13 +64,33 @@ async function loadSession(
     sessionManager: SessionManager.inMemory(directory),
     tools: ["bash"],
   });
-  t.after(() => session.dispose());
+  t.after(async () => {
+    await session.abort();
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    session.dispose();
+  });
   // SDK sessions default to print-mode bindings; bind the mode under test.
-  await session.bindExtensions({ mode });
+  const notices: string[] = [];
+  const statuses = new Map<string, string>();
+  const statusUpdates: { key: string; text: string | undefined }[] = [];
+  await session.bindExtensions({
+    mode,
+    uiContext: {
+      ...session.extensionRunner.createContext().ui,
+      notify: (message) => {
+        notices.push(message);
+      },
+      setStatus: (key, text) => {
+        statusUpdates.push({ key, text });
+        if (text === undefined) statuses.delete(key);
+        else statuses.set(key, text);
+      },
+    },
+  });
   assert.deepEqual(session.getActiveToolNames(), ["bash"]);
   const tool = session.agent.state.tools.find((candidate) => candidate.name === "bash");
   assert.ok(tool);
-  return { session, directory, tool };
+  return { session, directory, tool, notices, statuses, statusUpdates };
 }
 
 function textOf(result: { content: unknown }): string {
@@ -110,8 +130,162 @@ function notificationMessages(session: {
     }));
 }
 
+test("bash exposes a concise description and separates usage guidelines", async (t) => {
+  const { session, tool } = await loadSession(t);
+  assert.equal(
+    tool.description,
+    "Execute a bash command in the current working directory. Set " +
+      "background: true to run in the background (tui/rpc only).\n\n" +
+      "Foreground execution returns stdout and stderr, truncated to the last " +
+      "2000 lines or 50KB (whichever is hit first). If truncated, full output " +
+      "is saved to a temp file.\n\n" +
+      "Background execution returns a job id and available log path, then " +
+      "notifies automatically on completion.\n\n" +
+      "Optionally provide a timeout in seconds.",
+  );
+  const metadata = session.getAllTools().find((candidate) => candidate.name === "bash");
+  assert.ok(metadata);
+  const guidelines = metadata.promptGuidelines?.join("\n") ?? "";
+  assert.match(guidelines, /PI_\* environment variables/u);
+  assert.match(guidelines, /Use bash background execution.*when available/u);
+  assert.match(guidelines, /Do not poll background jobs or launch duplicate copies/u);
+  assert.match(guidelines, /end your turn and wait for the completion notification/u);
+  assert.match(session.systemPrompt, /Execute bash commands \(ls, grep, find, etc\.\)/u);
+  assert.match(session.systemPrompt, /Do not poll background jobs or launch duplicate copies/u);
+  assert.match(session.systemPrompt, /PI_\* environment variables/u);
+});
+
+test("/background is a user command and reports an empty session without a model turn", async (t) => {
+  const { session, notices, statuses } = await loadSession(t);
+  assert.equal(statuses.has("background"), false);
+  const command = session.extensionRunner.getCommand("background");
+  assert.ok(command);
+  assert.deepEqual(session.getActiveToolNames(), ["bash"]);
+  const messages = [...session.messages];
+  await session.prompt("/background");
+  assert.deepEqual(notices, ["No background jobs running."]);
+  assert.deepEqual(session.messages, messages);
+});
+
+for (const mode of ["tui", "rpc"] as const) {
+  test(`foreground calls do not emit unchanged background status in ${mode}`, async (t) => {
+    const { tool, statusUpdates } = await loadSession(t, mode);
+    assert.deepEqual(statusUpdates, [{ key: "background", text: undefined }]);
+    for (const running of [false, true]) {
+      if (running) {
+        await tool.execute("idle-background", {
+          command: nodeScript("setTimeout(() => {}, 30000)"),
+          background: true,
+        });
+        assert.deepEqual(statusUpdates, [
+          { key: "background", text: undefined },
+          { key: "background", text: "bg: 1 running · /background" },
+        ]);
+      }
+      const updatesBefore: number = statusUpdates.length;
+      await tool.execute("foreground-success", { command: "true" });
+      await tool.execute("foreground-failure", { command: "exit 2" });
+      await assert.rejects(
+        tool.execute("foreground-invalid-timeout", { command: "true", timeout: -1 }),
+        /timeout/iu,
+      );
+      assert.equal(statusUpdates.length, updatesBefore);
+    }
+  });
+
+  test(`/background shows a read-only snapshot of running jobs in ${mode}`, async (t) => {
+    const { session, directory, tool, notices, statuses } = await loadSession(t, mode);
+    let now = Date.now();
+    t.mock.method(Date, "now", () => now);
+    const idle = nodeScript("setTimeout(() => {}, 30000)");
+    const firstLine = `printf '中文 ${"long command ".repeat(10)}'`;
+    const commands = [idle, `${firstLine}\n${idle}`];
+    const ids: string[] = [];
+    for (const command of commands) {
+      const started = await tool.execute(`snapshot-${ids.length}`, { command, background: true });
+      const id = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(started))?.[1];
+      assert.ok(id);
+      ids.push(id);
+      assert.equal(statuses.get("background"), `bg: ${ids.length} running · /background`);
+    }
+    // Listing is independent of config parsing and never modifies model context.
+    await writeFile(join(directory, "background.json"), "{");
+    const messages = [...session.messages];
+    now += 72_000;
+    await session.prompt("/background");
+    assert.equal(notices.length, 1);
+    assert.equal(
+      notices[0],
+      `Background jobs · 2 running\n\n${ids[0]}  running  1m12s\n  ${idle}\n\n` +
+        `${ids[1]}  running  1m12s\n  ${firstLine}\n  ${idle}`,
+    );
+    assert.deepEqual(session.messages, messages);
+    now += 1000;
+    await session.prompt("/background");
+    assert.equal(notices.length, 2);
+    assert.ok(notices[1]?.includes("running  1m13s"));
+    assert.deepEqual(session.messages, messages);
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    assert.equal(statuses.has("background"), false);
+    await session.prompt("/background");
+    assert.equal(notices.at(-1), "No background jobs running.");
+  });
+}
+
+test("footer counts fall on success and failure without changing other status entries", async (t) => {
+  const { session, directory, tool, statuses } = await loadSession(t);
+  statuses.set("other-extension", "unchanged");
+  for (const exitCode of [0, 2]) {
+    const script = `const fs = require('node:fs'); const finish = () => {
+      if (!fs.existsSync('finish-${exitCode}')) return;
+      watcher.close(); process.exitCode = ${exitCode};
+    }; const watcher = fs.watch('.', finish); finish();`.replaceAll("\n", " ");
+    await tool.execute(`footer-${exitCode}`, { command: nodeScript(script), background: true });
+  }
+  assert.equal(statuses.get("background"), "bg: 2 running · /background");
+  await writeFile(join(directory, "finish-0"), "finish");
+  await waitFor(() =>
+    notificationMessages(session).find((message) => message.content.includes("exited with code 0")),
+  );
+  assert.equal(statuses.get("background"), "bg: 1 running · /background");
+  await writeFile(join(directory, "finish-2"), "finish");
+  await waitFor(() =>
+    notificationMessages(session).find((message) => message.content.includes("exited with code 2")),
+  );
+  assert.equal(statuses.has("background"), false);
+  assert.equal(statuses.get("other-extension"), "unchanged");
+});
+
+test("early failure and cancellation leave no background footer status", async (t) => {
+  const { session, tool, statuses } = await loadSession(t);
+  await assert.rejects(
+    tool.execute("bad-timeout", {
+      command: "true",
+      background: true,
+      timeout: -1,
+    }),
+    /timeout/iu,
+  );
+  assert.equal(statuses.has("background"), false);
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(
+    tool.execute(
+      "cancelled",
+      {
+        command: "true",
+        background: true,
+      },
+      controller.signal,
+    ),
+    /abort/iu,
+  );
+  assert.equal(statuses.has("background"), false);
+  assert.equal(notificationMessages(session).length, 0);
+});
+
 test("foreground commands behave like the built-in bash tool and leave no logs", async (t) => {
-  const { directory, tool } = await loadSession(t);
+  const { directory, tool, statuses } = await loadSession(t);
   const result = await tool.execute("fg-1", { command: nodeScript('console.log("hello")') });
   assert.equal(textOf(result), "hello\n");
   const failure = await tool.execute("fg-2", { command: nodeScript("process.exit(2)") });
@@ -127,25 +301,25 @@ test("foreground commands behave like the built-in bash tool and leave no logs",
     await readdir(join(directory, "bash-jobs"), { recursive: true }).catch(() => [] as string[])
   ).filter((entry) => entry.endsWith(".log"));
   assert.deepEqual(jobFiles, []);
+  assert.equal(statuses.has("background"), false);
 });
 
 test("background: true returns immediately, notifies on completion, and logs output", async (t) => {
-  const { session, directory, tool } = await loadSession(t);
+  const { session, directory, tool, notices, statuses } = await loadSession(t);
   const start = Date.now();
   const started = await tool.execute("bg-1", {
     command: nodeScript('setTimeout(() => console.log("job done"), 400)'),
     background: true,
   });
   assert.ok(Date.now() - start < 400, "the tool call must return before the command finishes");
+  assert.equal(statuses.get("background"), "bg: 1 running · /background");
   const startedText = textOf(started);
-  const jobId = /Started background job (bg_[0-9a-f]{8}):/u.exec(startedText)?.[1];
+  const jobId = /Started background job (bg_[0-9a-f]{8})\./u.exec(startedText)?.[1];
   assert.ok(jobId, startedText);
-  assert.match(startedText, /do not poll/u);
-  const logPath = new RegExp(`Output is appended to: (\\S+${jobId}\\.log)`, "u").exec(
-    startedText,
-  )?.[1];
+  const logPath = new RegExp(`Log: (\\S+${jobId}\\.log)`, "u").exec(startedText)?.[1];
   assert.ok(logPath);
   assert.ok(logPath.startsWith(join(directory, "bash-jobs")), logPath);
+  assert.equal(startedText, `Started background job ${jobId}.\nLog: ${logPath}`);
 
   const notification = await waitFor(() =>
     notificationMessages(session).find((message) => message.customType === "bash-job:notification"),
@@ -153,24 +327,44 @@ test("background: true returns immediately, notifies on completion, and logs out
   assert.match(notification.content, /✓/u);
   assert.match(notification.content, new RegExp(`${jobId} exited with code 0`, "u"));
   assert.match(notification.content, /job done/u);
+  assert.equal(statuses.has("background"), false);
 
   const log = await readFile(logPath, "utf8");
   assert.match(log, /job done/u);
   assert.match(log, /\[pi-background\] job bg_[0-9a-f]{8} completed \(exit 0\)/u);
+  await session.prompt("/background");
+  assert.equal(notices.at(-1), "No background jobs running.");
+});
+
+test("background start reports unavailable logs without repeating tool instructions", async (t) => {
+  const { session, directory, tool } = await loadSession(t);
+  await writeFile(join(directory, "bash-jobs"), "not a directory");
+  const result = await tool.execute("no-log", {
+    command: nodeScript('setTimeout(() => console.log("tail-only output"), 200)'),
+    background: true,
+  });
+  assert.match(
+    textOf(result),
+    /^Started background job bg_[0-9a-f]{8}\.\nLog unavailable; completion notification will include the output tail\.$/u,
+  );
+  const notification = await waitFor(() => notificationMessages(session)[0]);
+  assert.match(notification.content, /tail-only output/u);
+  assert.doesNotMatch(notification.content, /Log:|MiB/u);
 });
 
 test("a slow foreground command moves to the background at the threshold", async (t) => {
-  const { session, directory, tool } = await loadSession(t);
+  const { session, directory, tool, statuses } = await loadSession(t);
   await writeFile(join(directory, "background.json"), JSON.stringify({ thresholdSeconds: 0.2 }));
   const start = Date.now();
   const moved = await tool.execute("bg-2", {
     command: nodeScript('setTimeout(() => console.log("late output"), 800)'),
   });
   assert.ok(Date.now() - start < 800, "the tool call must return at the threshold");
+  assert.equal(statuses.get("background"), "bg: 1 running · /background");
   const movedText = textOf(moved);
   assert.match(
     movedText,
-    /did not finish within 0\.2s and was moved to background job bg_[0-9a-f]{8}/u,
+    /^Command exceeded the 0\.2s foreground threshold\.\nMoved to background job bg_[0-9a-f]{8}\.\nLog: /u,
   );
   const jobId = /background job (bg_[0-9a-f]{8})/u.exec(movedText)?.[1];
   assert.ok(jobId);
@@ -183,13 +377,14 @@ test("a slow foreground command moves to the background at the threshold", async
   );
   assert.match(notification.content, /exited with code 0/u);
   assert.match(notification.content, /late output/u);
+  assert.equal(statuses.has("background"), false);
 });
 
 for (const ending of ["completed", "failed", "shutdown"] as const) {
   test(`auto-background log initialization precedes ${ending} finalization`, {
     timeout: 10_000,
   }, async (t) => {
-    const { session, directory, tool } = await loadSession(t);
+    const { session, directory, tool, statuses } = await loadSession(t);
     await writeFile(
       join(directory, "background.json"),
       JSON.stringify({ thresholdSeconds: 0.001 }),
@@ -253,10 +448,13 @@ for (const ending of ["completed", "failed", "shutdown"] as const) {
     if (ending === "shutdown") {
       await setImmediate();
       assert.equal(streamMock.mock.callCount(), 0, "shutdown must not open a late log stream");
+      assert.equal(statuses.has("background"), false);
       assert.equal(notificationMessages(session).length, 0);
       return;
     }
-    const logPath = /Output is appended to: (\S+)/u.exec(textOf(result))?.[1];
+    assert.match(textOf(result), /Output so far:/u);
+    assert.match(textOf(result), /finished during mkdir/u);
+    const logPath = /Log: (\S+)/u.exec(textOf(result))?.[1];
     assert.ok(logPath);
     const notification = await waitFor(() => notificationMessages(session)[0]);
     assert.ok(notification.content.includes(logPath));
@@ -276,6 +474,7 @@ for (const ending of ["completed", "failed", "shutdown"] as const) {
     assert.ok(log);
     assert.equal(log.writableFinished, true);
     assert.equal(notificationMessages(session).length, 1);
+    assert.equal(statuses.has("background"), false);
   });
 }
 
@@ -287,12 +486,12 @@ test("capped logs do not stop output draining or completion tails", async (t) =>
     ),
     background: true,
   });
-  const logPath = /Output is appended to: (\S+)/u.exec(textOf(result))?.[1];
+  const logPath = /Log: (\S+)/u.exec(textOf(result))?.[1];
   assert.ok(logPath);
   const notification = await waitFor(() => notificationMessages(session)[0]);
   assert.match(notification.content, /exited with code 0/u);
   assert.match(notification.content, /latest tail after cap/u);
-  assert.match(notification.content, /up to 8 MiB/u);
+  assert.match(notification.content, /Log output limit reached \(8 MiB\)/u);
   const log = await readFile(logPath, "utf8");
   assert.ok(Buffer.byteLength(log) < 8 * 1024 * 1024 + 512);
   assert.match(log, /output limit reached/u);
@@ -376,7 +575,7 @@ test("a backgrounded job survives aborting the turn signal (Esc) that spawned it
     { command: nodeScript('setTimeout(() => console.log("survived"), 300)'), background: true },
     turnSignal.signal,
   );
-  const jobId = /Started background job (bg_[0-9a-f]{8}):/u.exec(textOf(started))?.[1];
+  const jobId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(started))?.[1];
   assert.ok(jobId);
   // Esc after backgrounding must not reach the job.
   turnSignal.abort();
@@ -392,16 +591,8 @@ test("a backgrounded job survives aborting the turn signal (Esc) that spawned it
 
 for (const mode of ["print", "json"] as const) {
   test(`${mode} mode documents and rejects background, and never auto-backgrounds`, async (t) => {
-    const { directory, session, tool } = await loadSession(t, mode);
-    assert.match(tool.description, /available only in tui\/rpc mode/u);
-    assert.match(tool.description, /0 disables it/u);
-    const metadata = session.getAllTools().find((candidate) => candidate.name === "bash");
-    assert.ok(metadata);
-    assert.ok(
-      metadata.promptGuidelines?.some((line) =>
-        line.includes("In print/json mode, run the command in the foreground"),
-      ),
-    );
+    const { directory, tool } = await loadSession(t, mode);
+    assert.match(tool.description, /background: true to run in the background \(tui\/rpc only\)/u);
     await assert.rejects(
       tool.execute("pr-1", { command: nodeScript("process.exit(0)"), background: true }),
       new RegExp(`unavailable in ${mode} mode`, "u"),

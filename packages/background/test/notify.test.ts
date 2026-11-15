@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { TailBuffer, type JobRecord } from "../src/jobs.ts";
 import {
   buildNotification,
@@ -32,6 +33,8 @@ test("formatDuration renders compact durations", () => {
   assert.equal(formatDuration(45_000), "45s");
   assert.equal(formatDuration(72_000), "1m12s");
   assert.equal(formatDuration(3_780_000), "1h3m");
+  assert.equal(formatDuration(259_200_000), "72h0m");
+  assert.equal(formatDuration(271_500_000), "75h25m");
 });
 
 test("oneLine flattens and caps commands", () => {
@@ -65,7 +68,8 @@ test("buildNotification reports success and failure with tail and log path", () 
     /✓ Background job bg_a1b2c3d4 exited with code 0 after 1m12s: `npm test`/u,
   );
   assert.match(success.content, /all 42 tests passed/u);
-  assert.match(success.content, /Output log: \/tmp\/jobs\/sess\/bg_a1b2c3d4\.log/u);
+  assert.ok(success.content.endsWith("\n\nLog: /tmp/jobs/sess/bg_a1b2c3d4.log"));
+  assert.doesNotMatch(success.content, /MiB|use read|use grep/u);
   assert.equal(success.details.outcome, "completed");
   assert.equal(success.details.exitCode, 0);
 
@@ -81,6 +85,52 @@ test("buildNotification reports success and failure with tail and log path", () 
   assert.match(timeout.content, /hit its 30s timeout and was killed/u);
 });
 
+test("completion notifications mention the log limit only when reached", () => {
+  const job = fakeJob("latest output");
+  job.logBytes = 8 * 1024 * 1024 - 1;
+  assert.doesNotMatch(
+    buildNotification(job, { kind: "exit", exitCode: 0 }, 1000).content,
+    /limit|MiB/u,
+  );
+  job.logBytes++;
+  const { content } = buildNotification(job, { kind: "exit", exitCode: 0 }, 1000);
+  assert.ok(content.endsWith("\nLog output limit reached (8 MiB)."));
+  assert.match(content, /latest output/u);
+});
+
+test("collapsed cards keep exit status and duration before long commands", () => {
+  const theme = {
+    bg: (_token: string, text: string) => text,
+    fg: (_token: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const job = {
+    ...fakeJob("output tail"),
+    command: `printf '${"中文 output ".repeat(20)}'\nprintf done`,
+  };
+  for (const exitCode of [0, 2]) {
+    const { details } = buildNotification(job, { kind: "exit", exitCode }, 72_000);
+    const collapsed = renderNotification({ details }, { expanded: false, outputPad: 1 }, theme);
+    assert.ok(collapsed);
+    for (const width of [40, 80]) {
+      const lines = collapsed.render(width);
+      assert.equal(lines.length, 3);
+      const headline = lines[1] ?? "";
+      assert.ok(headline.includes(`bg_a1b2c3d4 · exit ${exitCode} · 1m12s`));
+      assert.ok(visibleWidth(headline) <= width);
+      assert.ok(!headline.includes(details.command), "truncate the command, not the summary");
+    }
+    const narrow = collapsed.render(30);
+    assert.equal(narrow.length, 3);
+    assert.ok(narrow.every((line) => visibleWidth(line) <= 30));
+    const expanded = renderNotification({ details }, { expanded: true, outputPad: 1 }, theme);
+    assert.ok(expanded);
+    const expandedText = expanded.render(200).join("\n");
+    assert.ok(expandedText.includes(details.command));
+    assert.match(expandedText, /output tail/u);
+  }
+});
+
 test("renderNotification draws a one-line card, expandable to the tail", () => {
   const { details } = buildNotification(
     fakeJob("line of output"),
@@ -92,13 +142,24 @@ test("renderNotification draws a one-line card, expandable to the tail", () => {
     fg: (_token: string, text: string) => text,
     bold: (text: string) => text,
   };
-  const collapsed = renderNotification({ details }, { expanded: false }, theme);
-  const expanded = renderNotification({ details }, { expanded: true }, theme);
+  const collapsed = renderNotification({ details }, { expanded: false, outputPad: 1 }, theme);
+  const expanded = renderNotification({ details }, { expanded: true, outputPad: 1 }, theme);
   assert.ok(collapsed && expanded);
+  const lines = collapsed.render(120);
+  assert.equal(lines.length, 3, "one content row with one blank row above and below");
+  assert.equal(lines[0]?.trim(), "");
+  assert.equal(lines[2]?.trim(), "");
+  assert.equal(expanded.render(120).length, 5, "only the outer box adds vertical padding");
+  assert.ok(lines[1]?.startsWith(" ✓"), "honor Pi's horizontal output padding");
+  const narrow = collapsed.render(30);
+  assert.equal(narrow.length, 3, "collapsed content truncates rather than wrapping");
+  assert.ok(visibleWidth(narrow[1] ?? "") <= 30);
   const render = (component: typeof collapsed): string => component.render(120).join("\n");
-  assert.match(render(collapsed), /bg_a1b2c3d4 npm test · exit 0 · 1m12s/u);
+  assert.match(render(collapsed), /bg_a1b2c3d4 · exit 0 · 1m12s · npm test/u);
   assert.doesNotMatch(render(collapsed), /line of output/u);
   assert.match(render(expanded), /line of output/u);
   assert.match(render(expanded), /bg_a1b2c3d4\.log/u);
-  assert.equal(renderNotification({}, { expanded: false }, theme), undefined);
+  assert.equal(renderNotification({}, { expanded: false, outputPad: 1 }, theme), undefined);
+  const unpadded = renderNotification({ details }, { expanded: false, outputPad: 0 }, theme);
+  assert.ok(unpadded?.render(120)[1]?.startsWith("✓"));
 });

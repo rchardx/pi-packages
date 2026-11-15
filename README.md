@@ -80,6 +80,8 @@ Run long `bash` commands in the background in interactive or RPC mode and receiv
 completion notifications instead of polling. Logs retain up to 8MiB of raw output
 per job; reaching the limit does not stop the command or its notification tail.
 Logs mark omitted early output when the pre-background seed buffer overflows.
+The footer shows the running job count; `/background` displays a read-only
+snapshot of elapsed times and full commands without starting a model turn.
 Print and JSON modes remain foreground-only. See the
 [background usage guide](packages/background/README.md) for configuration and limits.
 
