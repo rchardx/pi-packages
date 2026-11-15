@@ -1,0 +1,33 @@
+{
+  "name": "@rchardx/pi-background",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Background execution for Pi's bash tool with completion notifications",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rchardx/pi-packages.git",
+    "directory": "packages/background"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}

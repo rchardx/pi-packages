@@ -1,0 +1,125 @@
+# @rchardx/pi-background
+
+Background execution for Pi's `bash` tool with completion notifications. Long
+commands stop blocking the turn: they keep running, append output to a log file,
+and send Pi a message with the exit code and output tail when they finish.
+
+## What changes
+
+This package replaces Pi's built-in `bash` tool with a same-named override that
+adds one optional parameter:
+
+- In interactive (`tui`) and RPC modes, `background: true` returns immediately
+  with a job id and log path while the command keeps running. Print and JSON
+  modes support foreground execution only.
+- When automatic backgrounding is enabled and no explicit `timeout` is set,
+  any command still running after the threshold
+  (default **120s**) moves to the background automatically instead of blocking
+  the turn. The process is **not** killed.
+- An explicit `timeout` keeps the built-in semantics: the process tree is
+  killed at the deadline and the call fails.
+
+Foreground commands that finish before the threshold behave exactly like the
+built-in `bash` tool — this package wraps pi's own local shell backend —
+including output truncation, temp files, and aborting with Esc. Foreground
+commands leave no log files on disk.
+
+When a background job finishes, Pi receives a `bash-job:notification` message
+(with a collapsible card in the TUI) containing the exit code, duration, an
+ANSI-stripped tail of the output, and the log path, and is resumed
+automatically. The raw output is at
+`~/.pi/agent/bash-jobs/<sessionId>/<jobId>.log`; use `read` or `grep` on it.
+Log files are created only once a command is backgrounded — foreground
+commands never touch the disk. For auto-backgrounded commands, the log starts
+at the threshold, seeded with up to the last 256KB of earlier output. If that
+buffer overflowed, the log begins with `[pi-background] earlier output omitted`.
+The seed buffer is cleared after writing and is no longer updated once the log
+is open; explicit-background jobs with a log do not collect a seed.
+Each log accepts at most **8MiB of raw output**, including that seed, plus
+truncation markers and a lifecycle trailer. The same budget bounds pending output
+writes when the disk is slow. At the limit, logging stops but the command keeps
+running and its 16KB in-memory tail keeps updating. Notifications can therefore
+contain recent output absent from the capped log. Notification tails normalize
+CRLF and carriage-return progress updates to newlines; logs keep raw bytes.
+
+The tool description tells the model to prefer background execution over
+`sleep N; check` polling loops, so no special wording is needed in prompts.
+Asking Pi to "run the tests in the background" also works.
+
+## Usage
+
+Try for one session from the repository checkout:
+
+```bash
+pi -e ./packages/background
+```
+
+Install persistently:
+
+```bash
+pi install ./packages/background
+```
+
+## Settings
+
+Optional user configuration at `~/.pi/agent/background.json`, re-read on every
+command. Invalid or unreadable configuration fails the call before the command
+starts; it does not silently restore defaults or enable automatic backgrounding.
+A missing file uses defaults.
+
+```json
+{
+  "thresholdSeconds": 120,
+  "maxJobs": 16
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `thresholdSeconds` | `120` | Foreground commands running longer than this move to the background; `0` disables auto-backgrounding. Only applies without an explicit `timeout`. |
+| `maxJobs` | `16` | Concurrent background jobs; starting more fails until one finishes. |
+
+## Behavior notes
+
+- **Esc kills foreground commands only.** Interrupting the turn kills a command
+  still in its foreground window, like the built-in tool; a job that already
+  moved to the background is independent of the turn and survives Esc. Aborted
+  jobs never send a completion notification.
+- **Print and JSON mode have no background execution.** `background: true` is
+  rejected and commands never auto-background, because the session ends when
+  the turn ends and would kill the job; commands block as with the built-in
+  tool. RPC and interactive sessions are unaffected.
+- **Session end kills jobs.** Quit, `/reload`, `/new`, resume, and fork all
+  emit `session_shutdown`, which kills the session's remaining background jobs
+  and appends a `killed: session ended` trailer to their logs. A subagent
+  session's jobs end with the subagent's run.
+- **Sensitive output of background jobs lands on disk** (log files are mode
+  `0600` under `~/.pi/agent/bash-jobs/`) until pruned; redirect secrets away
+  from stdout as usual. At session start, logs whose last modification was more
+  than 24 hours ago are pruned across session directories. This is an age-based
+  cleanup, not a liveness check: it can remove another session's log if that job
+  has been silent for over 24 hours (or has stopped logging at the size cap).
+  If the agent directory is not writable, jobs run without a log file and
+  only the notification's output tail remains available.
+- `maxJobs` caps jobs started explicitly with `background: true`. Commands
+  that move to the background at the threshold are always allowed — the
+  process is already running at that point, and killing it would break the
+  no-kill promise. `maxJobs` is therefore not a bound on concurrent
+  processes; parallel foreground commands can exceed it as well.
+- **Stopping a job:** there is no dedicated kill action yet. Ask Pi to stop
+  it with `pkill -f <command pattern>` or similar; ending the session also
+  kills all of its jobs.
+- If several background jobs are running, each completion sends its own
+  notification; Pi sees them queued in order.
+- The tool keeps the built-in `outputSchema`, but a result that moved to the
+  background carries no `structuredContent` — codemode scripts receive the
+  text form (which states the job id and log path) instead of
+  `{ output, exit_code, … }`.
+- If another extension also replaces `bash`, the last one registered wins (Pi
+  emits no warning). Do not combine this package with other `bash` overrides.
+
+## Compatibility
+
+Developed and tested against Pi `1.5.2` on Linux. The process-tree cleanup also
+covers macOS (process groups) and Windows (`taskkill /T`), but those platforms
+are not continuously tested.
