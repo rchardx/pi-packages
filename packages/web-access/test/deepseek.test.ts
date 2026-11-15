@@ -72,7 +72,7 @@ for (const baseUrl of [
       else registry.getProviderAuth = async () => ({ auth: { apiKey: "test-only-key", baseUrl } });
       await assert.rejects(resolveDeepSeekHeaders(registry), {
         message:
-          "DeepSeek Search requires Pi's effective auth origin to be https://api.deepseek.com.",
+          "DeepSeek web tools require Pi's effective auth origin to be https://api.deepseek.com.",
       });
     });
   }

@@ -33,47 +33,39 @@ a temporary session or a persistent install, not both for the same package.
 
 ### web-access
 
-Read a public web page or text URL without an API key. After loading the package,
-ask Pi, for example:
+Use DeepSeek's standalone APIs to search the web or fetch a page as Markdown.
+Both tools require [independent user opt-in](packages/web-access/README.md#enable-tools)
+and DeepSeek authentication configured in Pi (`/login deepseek` or
+`DEEPSEEK_API_KEY`). Enabling a tool authorizes possible provider charges and
+query or URL disclosure; selecting it alone never grants permission.
 
-> Use web_fetch to read <https://example.com> and summarize the page.
-
-The model calls this tool; it is not a shell command or a slash command:
+After setup and `/reload`, ask Pi to use either tool:
 
 ```typescript
 web_fetch({ url: "https://example.com" })
-```
-
-HTML becomes readable text; Markdown, JSON, CSV, XML, and plain text are preserved
-as text. Fetching does not support JavaScript rendering, login, or PDF extraction.
-For TUN/fake-IP networks, configure your trusted address pool through the optional
-user-level [`allowRanges` setting](packages/web-access/README.md#network-configuration-allowranges).
-Normal public networks require no configuration. Long responses return a local
-file path for continuing with Pi's `read` tool.
-
-The independent `web_search` tool uses DeepSeek's Search API. Enable it through
-[user-level search setup](packages/web-access/README.md#enable-deepseek-search) and
-configure the official DeepSeek provider's API key in Pi (`/login deepseek` or
-`DEEPSEEK_API_KEY`). This explicitly authorizes using that credential for billable
-search. Run `/reload` after first enabling search, then ask, for example:
-
-> Use web_search to find the official Node.js release notes.
-
-```typescript
 web_search({ query: "Node.js release notes site:nodejs.org" })
 ```
 
-Search starts inactive unless enabled in configuration or explicitly selected in
-Pi; selecting the tool alone never grants permission to use credentials or search.
-Pi resolves authentication for use with the official Search origin.
-Search defaults to 10 results with long summaries. `need_content: true` requests
-page content from DeepSeek in the same call; search does not invoke `web_fetch`.
-DeepSeek limits queries to 128 Unicode characters. Search network errors include
-recognized error codes without raw transport messages. Native model search and
-other search backends are not implemented. Search is opt-in and billable; public
-`web_fetch` remains configuration-free and requires no API key. If a
-`web-access.json` file exists but is invalid, the entire extension fails to load,
-so neither tool is available until the configuration is fixed and reloaded.
+Fetch returns the provider's title and Markdown, with a 60-second total deadline.
+Search defaults to 10 results with long summaries and a 120-second total deadline;
+`need_content: true` requests available page content in the same Search call.
+Search does not invoke fetch. Each API response is limited to 2 MiB; long output
+is saved in a private local file for continuing with Pi's `read` tool.
+Content is untrusted and may be incomplete or lose original formatting.
+Pi displays compact **Web fetch** / **Web search** cards; expanding adds Markdown
+content beneath the same summary without changing the model-facing output.
+
+Fetching is performed by DeepSeek, not your local network. Use `curl` through
+`bash` for localhost or intranet URLs. Direct fetch is not provided; remove the
+obsolete `allowRanges` field from existing configuration. There is no fallback,
+automatic research workflow, or native model web integration.
+
+Missing configuration enables neither tool. Invalid `web-access.json` prevents
+the entire extension from loading until fixed and reloaded. Authentication is
+resolved by Pi for the official DeepSeek origin, not silently sent around an
+effective gateway route. Errors retain HTTP status or recognized network codes
+without exposing raw provider bodies or transport messages. HTTP 408, 429 and
+5xx errors suggest retrying later; the extension does not retry automatically.
 
 ### background
 

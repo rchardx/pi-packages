@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Independent web fetching and opt-in DeepSeek search for Pi coding agent",
+  "description": "Opt-in DeepSeek web search and page fetching for Pi coding agent",
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
@@ -22,15 +22,12 @@
   ],
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
   "pi": {
     "extensions": [
       "./src/index.ts"
     ]
-  },
-  "dependencies": {
-    "html-to-text": "10.0.1",
-    "ipaddr.js": "2.5.0"
   }
 }

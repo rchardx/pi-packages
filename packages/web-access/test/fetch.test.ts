@@ -1,90 +1,330 @@
 import assert from "node:assert/strict";
-import { readFile, rm, stat } from "node:fs/promises";
+import { once } from "node:events";
+import fs, { access, readFile, rm, stat } from "node:fs/promises";
+import type { RequestListener } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname } from "node:path";
-import { test } from "node:test";
-import { fetchPage } from "../src/fetch.ts";
+import { test, type TestContext } from "node:test";
+import { Check } from "typebox/value";
+import {
+  FETCH_TIMEOUT_MS,
+  FetchParameters,
+  fetchDeepSeek,
+  MAX_FETCH_RESPONSE_BYTES,
+} from "../src/fetch.ts";
 import { fixture } from "./_server.ts";
 
-test("extracts readable HTML, preserves headings/code/links and removes non-content", async (t) => {
-  const { network } = await fixture(t, (_request, response) => {
-    response.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end(`<!doctype html>
-      <html><head><script>danger()</script><style>.x { color: red }</style></head>
-      <body><nav>Navigation noise</nav><main><h1>Guide &amp; examples</h1>
-      <p>Hello 世界. <a href="../next">Next page</a></p><ul><li>First item</li></ul>
-      <pre>const answer = 42;</pre><p hidden>Secret decoration</p>
-      <p aria-hidden="true">Hidden label</p><img src="/pixel">
-      <script>fetch('/tracking')</script></main><footer>Footer noise</footer></body></html>`);
+const key = "fetch-test-only-key";
+const credentials = async () => new Headers({ Authorization: `Bearer ${key}` });
+const url = "https://example.test/article";
+const page = { title: "An article", content: "# An article\n\nProvider Markdown.\n" };
+const response = () => Response.json(page);
+
+async function localTransport(t: TestContext, handler: RequestListener): Promise<typeof fetch> {
+  const { server } = await fixture(t, handler);
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  return (endpoint, init) => {
+    assert.equal(endpoint, "https://api.deepseek.com/v1/tools/fetch");
+    return fetch(`http://127.0.0.1:${address.port}/v1/tools/fetch`, init);
+  };
+}
+
+test("sends only a normalized URL to the fixed Fetch endpoint, with Pi headers and no redirects", async () => {
+  const headers = new Headers({
+    authorization: "Custom auth",
+    "X-Provider": "value",
+    "content-type": "text/plain",
   });
-  const result = await fetchPage("https://example.test/docs/start", undefined, network);
-  const text = result.content[0]?.text ?? "";
-  assert.match(text, /GUIDE & EXAMPLES/u);
-  assert.match(text, /Hello 世界/u);
-  assert.match(text, /Next page \[https:\/\/example.test\/next\]/u);
-  assert.match(text, /First item/u);
-  assert.match(text, /const answer = 42;/u);
-  assert.match(text, /Untrusted web content/u);
-  assert.doesNotMatch(
-    text,
-    /danger|tracking|Navigation noise|Footer noise|Secret decoration|Hidden label|pixel/u,
+  let calls = 0;
+  const result = await fetchDeepSeek(
+    " HTTPS://EXAMPLE.test:443/article#private-fragment ",
+    async () => headers,
+    undefined,
+    async (endpoint, init) => {
+      calls++;
+      assert.equal(endpoint, "https://api.deepseek.com/v1/tools/fetch");
+      assert.equal(init?.method, "POST");
+      assert.equal(init?.redirect, "error");
+      assert.equal(init?.body, '{"url":"https://example.test/article"}');
+      assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
+        authorization: "Custom auth",
+        "x-provider": "value",
+        "content-type": "application/json",
+      });
+      return response();
+    },
   );
-  assert.deepEqual(result.details, {
-    url: "https://example.test/docs/start",
-    contentType: "text/html",
+  assert.equal(calls, 1);
+  assert.equal(headers.get("content-type"), "text/plain");
+  const { display, ...details } = result.details;
+  assert.equal(display.previewLength, result.content[0]?.text.length);
+  assert.deepEqual(details, {
+    provider: "deepseek",
+    url,
+    title: page.title,
     truncated: false,
   });
+  const text = result.content[0]?.text ?? "";
+  assert.match(text, /Provider: DeepSeek Fetch/u);
+  assert.match(text, /Requested URL: https:\/\/example.test\/article/u);
+  assert.match(text, /Untrusted provider-returned web content/u);
+  assert.match(text, /completeness is not guaranteed/u);
+  assert.ok(text.endsWith(page.content));
+  assert.doesNotMatch(text, /private-fragment|Custom auth|Content-Type:/u);
 });
 
-for (const contentType of [
-  "text/plain",
-  "text/markdown",
-  "text/csv",
-  "application/json",
-  "application/problem+json",
-  "application/xml",
-  "text/xml",
+test("preserves provider Markdown and paragraphs without local HTML extraction, with single-line titles", async () => {
+  const content = "\n# 标题\n\n<b>Literal HTML</b>\n\n```js\n  const n = 1;\n```\n";
+  for (const title of ["  Page\r\nTitle\u2028Here ", ""]) {
+    const result = await fetchDeepSeek(url, credentials, undefined, async () =>
+      Response.json({ title, content, extra: true }),
+    );
+    const text = result.content[0]?.text ?? "";
+    assert.ok(text.includes(`Title: ${title ? "Page Title Here" : "Not provided."}\n`));
+    assert.ok(text.endsWith(content));
+  }
+});
+
+test("the registered fetch schema bounds input and disallows per-call credentials or provider selection", () => {
+  for (const args of [{ url }, { url: `https://example.test/${"a".repeat(8192 - 21)}` }]) {
+    assert.equal(Check(FetchParameters, args), true);
+  }
+  for (const args of [
+    {},
+    { url: "" },
+    { url: null },
+    { url: "x".repeat(8193) },
+    { url, apiKey: key },
+    { url, provider: "other" },
+  ]) {
+    assert.equal(Check(FetchParameters, args), false);
+  }
+});
+
+for (const input of [
+  "",
+  "relative/path",
+  "//example.test",
+  "file:///tmp/page",
+  "ftp://example.test/page",
+  "javascript:alert(1)",
+  "https://user:secret@example.test",
+  `https://example.test/${"a".repeat(8192)}`,
+  `https://example.test/${"界".repeat(1000)}`,
 ]) {
-  test(`preserves ${contentType} rather than stripping markup`, async (t) => {
-    const text = '# Literal text\n{"value":"<b>not HTML</b>"}\n';
-    const { network } = await fixture(t, (_request, response) =>
-      response.writeHead(200, { "content-type": contentType }).end(text),
+  test(`invalid or oversized URL is rejected before authentication (${input.slice(0, 40)})`, async () => {
+    let resolutions = 0;
+    let calls = 0;
+    await assert.rejects(
+      fetchDeepSeek(
+        input,
+        async () => {
+          resolutions++;
+          return credentials();
+        },
+        undefined,
+        async () => {
+          calls++;
+          return response();
+        },
+      ),
+      /URL/u,
     );
-    assert.ok(
-      (await fetchPage("https://example.test", undefined, network)).content[0]?.text.endsWith(text),
-    );
+    assert.equal(resolutions, 0);
+    assert.equal(calls, 0);
   });
 }
 
-for (const body of ["", "<html><body><script>renderApp()</script></body></html>"]) {
-  test(`reports an empty or script-only page (${body.length} bytes)`, async (t) => {
-    const { network } = await fixture(t, (_request, response) =>
-      response.writeHead(200, { "content-type": "text/html" }).end(body),
-    );
-    await assert.rejects(fetchPage("http://example.test", undefined, network), /No readable text/u);
-  });
-}
+test("supports HTTP URLs and the documented 8192-character limit without contacting the target", async () => {
+  for (const input of [
+    "http://127.0.0.1/private",
+    `https://example.test/${"a".repeat(8192 - 21)}`,
+  ]) {
+    await fetchDeepSeek(input, credentials, undefined, async (endpoint, init) => {
+      assert.equal(endpoint, "https://api.deepseek.com/v1/tools/fetch");
+      assert.equal(init?.body, JSON.stringify({ url: input }));
+      return response();
+    });
+  }
+});
 
-for (const [name, body] of [
-  ["line limit", "Line\n".repeat(2100)],
-  ["byte limit", "世界".repeat(12_000)],
+for (const [status, diagnostic] of [
+  [400, "Invalid fetch request."],
+  [401, "Missing or invalid DeepSeek API key."],
+  [402, "Insufficient DeepSeek account balance."],
+  [403, "Fetch denied by the security policy."],
+  [404, "No usable page content could be retrieved."],
+  [408, "Request timed out. This may be transient; retry later."],
+  [413, "Fetch request body is too large."],
+  [422, "Invalid fetch parameters."],
+  [429, "DeepSeek fetch rate limit exceeded. This may be transient; retry later."],
+  [500, "Fetch request failed. This may be transient; retry later."],
+  [504, "Upstream fetch timed out. This may be transient; retry later."],
+  [302, "Fetch request failed."],
+  [206, "Fetch request failed."],
 ] as const) {
-  test(`truncates at the ${name} and retains complete UTF-8 text in a private local file`, async (t) => {
-    const { network } = await fixture(t, (_request, response) =>
-      response.writeHead(200, { "content-type": "text/plain" }).end(body),
+  test(`HTTP ${status} is sanitized without retry or direct-fetch fallback`, async () => {
+    let calls = 0;
+    await assert.rejects(
+      fetchDeepSeek(url, credentials, undefined, async () => {
+        calls++;
+        return new Response(`PRIVATE ${key}`, { status });
+      }),
+      { message: `DeepSeek Fetch HTTP ${status}: ${diagnostic}` },
     );
-    const result = await fetchPage("http://example.test", undefined, network);
-    assert.equal(result.details.truncated, true);
+    assert.equal(calls, 1);
+  });
+}
+
+for (const data of [
+  null,
+  [],
+  {},
+  { title: null, content: "text" },
+  { title: "Title" },
+  { title: "Title", content: 42 },
+]) {
+  test(`rejects invalid page schema ${JSON.stringify(data)}`, async () => {
+    await assert.rejects(
+      fetchDeepSeek(url, credentials, undefined, async () => Response.json(data)),
+      /invalid page schema/u,
+    );
+  });
+}
+for (const content of ["", " \n\t"]) {
+  test(`reports empty provider content (${content.length} characters)`, async () => {
+    await assert.rejects(
+      fetchDeepSeek(url, credentials, undefined, async () =>
+        Response.json({ title: "Empty", content }),
+      ),
+      /no readable page content/u,
+    );
+  });
+}
+test("closes HTTP streams exceeding the cumulative decoded response limit", {
+  timeout: 5000,
+}, async (t) => {
+  let closed: Promise<unknown[]> | undefined;
+  const request = await localTransport(t, (_incoming, reply) => {
+    closed = once(reply, "close");
+    reply.writeHead(200, { "content-type": "application/json" });
+    reply.write(Buffer.alloc(MAX_FETCH_RESPONSE_BYTES));
+    reply.write(Buffer.alloc(1));
+  });
+  await assert.rejects(fetchDeepSeek(url, credentials, undefined, request), /2 MiB/u);
+  assert.ok(closed);
+  await closed;
+});
+
+test("credential waiting has a 60-second deadline and late rejection is handled", async (t) => {
+  assert.equal(FETCH_TIMEOUT_MS, 60_000);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let reject: (error: Error) => void = () => {};
+  const pending = new Promise<Headers>((_resolve, fail) => {
+    reject = fail;
+  });
+  let calls = 0;
+  const result = fetchDeepSeek(
+    url,
+    () => pending,
+    undefined,
+    async () => {
+      calls++;
+      return response();
+    },
+  );
+  const rejected = assert.rejects(result, /DeepSeek Fetch timed out after 60 seconds/u);
+  t.mock.timers.tick(60_000);
+  await rejected;
+  reject(new Error("late credential error"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls, 0);
+});
+
+test("credential resolution does not reset the deadline for the HTTP body", {
+  timeout: 5000,
+}, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let closed: Promise<unknown[]> | undefined;
+  const request = await localTransport(t, (_incoming, reply) => {
+    closed = once(reply, "close");
+    reply.writeHead(200, { "content-type": "application/json" }).flushHeaders();
+  });
+  await assert.rejects(
+    fetchDeepSeek(
+      url,
+      async () => {
+        t.mock.timers.tick(30_000);
+        return credentials();
+      },
+      undefined,
+      async (endpoint, init) => {
+        const response = await request(endpoint, init);
+        t.mock.timers.tick(30_000);
+        return response;
+      },
+    ),
+    /timed out after 60 seconds/u,
+  );
+  assert.ok(closed);
+  await closed;
+});
+
+for (const content of ["Line\n".repeat(2100), "世界".repeat(12_000)]) {
+  test("long provider content is retained in a private file with a bounded UTF-8 preview", async (t) => {
+    const result = await fetchDeepSeek(url, credentials, undefined, async () =>
+      Response.json({ title: "Long", content }),
+    );
     const path = result.details.fullOutputPath;
     assert.ok(path);
     t.after(() => rm(dirname(path), { recursive: true, force: true }));
     const preview = result.content[0]?.text ?? "";
-    assert.match(preview, /Output truncated/u);
+    assert.match(preview, /Output truncated.*Full fetched content/su);
     assert.ok(preview.includes(path));
-    assert.doesNotMatch(preview, /\uFFFD/u);
     assert.ok(Buffer.byteLength(preview) < 53_000);
-    assert.ok((await readFile(path, "utf8")).endsWith(body));
+    assert.doesNotMatch(preview, /\uFFFD/u);
+    assert.ok((await readFile(path, "utf8")).endsWith(content));
     if (process.platform !== "win32") {
       assert.equal((await stat(path)).mode & 0o777, 0o600);
       assert.equal((await stat(dirname(path))).mode & 0o777, 0o700);
     }
+  });
+}
+
+for (const ending of ["write failure", "cancellation", "deadline"] as const) {
+  test(`output cleanup removes partial files on ${ending}`, async (t) => {
+    const controller = new AbortController();
+    const writeFile = fs.writeFile;
+    let path: string | undefined;
+    if (ending === "deadline") t.mock.timers.enable({ apis: ["setTimeout"] });
+    const mocked = t.mock.method(fs, "writeFile", async (...args: Parameters<typeof writeFile>) => {
+      assert.ok(typeof args[0] === "string");
+      path = args[0];
+      await writeFile(...args);
+      if (ending === "write failure") throw new Error("storage unavailable");
+      if (ending === "cancellation") controller.abort(new Error("caller cancelled"));
+      if (ending === "deadline") t.mock.timers.tick(60_000);
+    });
+    syncBuiltinESMExports();
+    t.after(async () => {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+      if (path) await rm(dirname(path), { recursive: true, force: true });
+    });
+    const message =
+      ending === "write failure"
+        ? "storage unavailable"
+        : ending === "cancellation"
+          ? "caller cancelled"
+          : "DeepSeek Fetch timed out after 60 seconds.";
+    await assert.rejects(
+      fetchDeepSeek(url, credentials, controller.signal, async () =>
+        Response.json({ title: "Long", content: "line\n".repeat(2100) }),
+      ),
+      { message },
+    );
+    assert.ok(path);
+    await assert.rejects(access(dirname(path)), { code: "ENOENT" });
   });
 }
