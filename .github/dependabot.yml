@@ -5,6 +5,22 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 5
+    ignore:
+      # Keep Node API declarations on the minimum supported major.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      # Routine host-library upgrades require coordinated Pi compatibility checks.
+      # Semver update-type exclusions do not suppress security updates.
+      - dependency-name: "@earendil-works/pi-coding-agent"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
+      - dependency-name: typebox
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+          - version-update:semver-patch
     groups:
       development:
         dependency-type: development
