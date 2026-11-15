@@ -16,7 +16,7 @@ about: Define a change through scope, contracts, and acceptance.
 
 ## Delivery and acceptance
 
-<!-- List independently verifiable outcomes. Refer to AGENTS.md for quality gates. -->
+<!-- List independently verifiable outcomes. See CONTRIBUTING.md for validation and submission. -->
 
 ## Background and evidence
 
