@@ -1,0 +1,29 @@
+name: PR message
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-message:
+    name: pr-message
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - name: Validate PR title and body as a commit message
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          message_file="$(mktemp)"
+          trap 'rm -f "$message_file"' EXIT
+          printf '%s\n\n%s\n' "$PR_TITLE" "$PR_BODY" > "$message_file"
+          node --import tsx scripts/check-commit-message.ts "$message_file"
