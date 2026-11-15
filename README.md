@@ -27,7 +27,7 @@ a temporary session or a persistent install, not both for the same package.
 
 | Package | Tools | Try for one session | Install for your Pi user | Usage guide |
 | --- | --- | --- | --- | --- |
-| web-access | `web_fetch` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
+| web-access | `web_fetch`, `web_search` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
 | background | `bash` (override) | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
 
 ### web-access
@@ -44,11 +44,35 @@ web_fetch({ url: "https://example.com" })
 ```
 
 HTML becomes readable text; Markdown, JSON, CSV, XML, and plain text are preserved
-as text. JavaScript rendering, login, search, and PDF extraction are not supported.
+as text. Fetching does not support JavaScript rendering, login, or PDF extraction.
 For TUN/fake-IP networks, configure your trusted address pool through the optional
 user-level [`allowRanges` setting](packages/web-access/README.md#network-configuration-allowranges).
 Normal public networks require no configuration. Long responses return a local
 file path for continuing with Pi's `read` tool.
+
+The independent `web_search` tool uses DeepSeek's Search API. Enable it through
+[user-level search setup](packages/web-access/README.md#enable-deepseek-search) and
+configure the official DeepSeek provider's API key in Pi (`/login deepseek` or
+`DEEPSEEK_API_KEY`). This explicitly authorizes using that credential for billable
+search. Run `/reload` after first enabling search, then ask, for example:
+
+> Use web_search to find the official Node.js release notes.
+
+```typescript
+web_search({ query: "Node.js release notes site:nodejs.org" })
+```
+
+Search starts inactive unless enabled in configuration or explicitly selected in
+Pi; selecting the tool alone never grants permission to use credentials or search.
+Pi resolves authentication for use with the official Search origin.
+Search defaults to 10 results with long summaries. `need_content: true` requests
+page content from DeepSeek in the same call; search does not invoke `web_fetch`.
+DeepSeek limits queries to 128 Unicode characters. Search network errors include
+recognized error codes without raw transport messages. Native model search and
+other search backends are not implemented. Search is opt-in and billable; public
+`web_fetch` remains configuration-free and requires no API key. If a
+`web-access.json` file exists but is invalid, the entire extension fails to load,
+so neither tool is available until the configuration is fixed and reloaded.
 
 ### background
 

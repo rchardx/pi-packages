@@ -6,12 +6,30 @@ import ipaddr from "ipaddr.js";
 
 export type AllowRange = ReturnType<typeof ipaddr.parseCIDR>;
 
-export function parseConfig(value: unknown): { allowRanges: AllowRange[] } {
+interface Config {
+  allowRanges: AllowRange[];
+  search?: { provider: "deepseek" };
+}
+
+export function parseConfig(value: unknown): Config {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("Expected a JSON object.");
   }
-  if (Object.keys(value).some((key) => key !== "allowRanges")) {
-    throw new Error("Unknown configuration field; only allowRanges is supported.");
+  if (Object.keys(value).some((key) => key !== "allowRanges" && key !== "search")) {
+    throw new Error("Unknown configuration field; only allowRanges and search are supported.");
+  }
+  if ("search" in value) {
+    const search = value.search;
+    if (
+      !search ||
+      typeof search !== "object" ||
+      Array.isArray(search) ||
+      Object.keys(search).some((key) => key !== "provider") ||
+      !("provider" in search) ||
+      search.provider !== "deepseek"
+    ) {
+      throw new Error('search must be { "provider": "deepseek" }; omit it to disable search.');
+    }
   }
   const entries = "allowRanges" in value ? value.allowRanges : [];
   if (!Array.isArray(entries)) throw new Error("allowRanges must be an array of CIDR strings.");
@@ -37,12 +55,15 @@ export function parseConfig(value: unknown): { allowRanges: AllowRange[] } {
     }
     return range;
   });
-  return { allowRanges };
+  return {
+    allowRanges,
+    ...("search" in value ? { search: { provider: "deepseek" as const } } : {}),
+  };
 }
 
 // User configuration only, re-read per invocation. Never load project settings
 // or let tool arguments change network permissions.
-export async function loadConfig(path = join(getAgentDir(), "web-access.json")) {
+export async function loadConfig(path = join(getAgentDir(), "web-access.json")): Promise<Config> {
   let source: string;
   try {
     source = await readFile(path, "utf8");
