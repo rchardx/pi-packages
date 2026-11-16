@@ -183,6 +183,31 @@ test("OpenAI Codex Search uses the Codex endpoint without unsupported include fi
   assert.equal(result.details.provider, "openai-codex");
 });
 
+test("search streams default to SSE when Content-Type is absent and honor explicit types", async () => {
+  const events = [
+    searchCall(),
+    message("Headerless answer.", [{ url: "https://example.test/cited", title: "Cited" }]),
+    completed,
+  ];
+  const bytes = new TextEncoder().encode(sseBody(events));
+  const run = (response: Response, provider: "openai" | "openai-codex" = "openai-codex") =>
+    searchOpenAI(provider, { query: "test" }, auth, {}, undefined, async () => response);
+  for (const provider of ["openai", "openai-codex"] as const) {
+    const result = await run(new Response(bytes), provider);
+    assert.equal(result.details.provider, provider);
+    assert.equal(result.details.resultCount, 1);
+    assert.match(result.content[0]?.text ?? "", /Headerless answer\./u);
+    assert.match(result.content[0]?.text ?? "", /URL: https:\/\/example\.test\/cited/u);
+  }
+  await assert.rejects(
+    run(new Response(bytes, { headers: { "content-type": "text/html" } })),
+    /non-event-stream response/u,
+  );
+  await assert.rejects(run(new Response(new TextEncoder().encode(`<html>${secret}</html>`))), {
+    message: "OpenAI Codex Search event stream ended before the response completed.",
+  });
+});
+
 test("Codex response.done ends the stream with its outcome taken from the response status", async (t) => {
   const done = (response: object) => ({ type: "response.done", response });
   const run = (events: object[]) =>

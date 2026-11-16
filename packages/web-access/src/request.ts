@@ -78,9 +78,10 @@ function openBody(
 ) {
   const { label } = errorOptions;
   if (response.status !== 200) throw httpError(response.status, errorOptions);
-  if (
-    response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== contentType
-  ) {
+  const effectiveType =
+    response.headers.get("content-type") ??
+    (contentType === "text/event-stream" ? "text/event-stream" : null);
+  if (effectiveType?.split(";", 1)[0]?.trim().toLowerCase() !== contentType) {
     throw new Error(
       `${label} returned a ${contentType === "application/json" ? "non-JSON" : "non-event-stream"} response.`,
     );
