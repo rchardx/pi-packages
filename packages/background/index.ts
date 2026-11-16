@@ -58,7 +58,7 @@ function backgroundAllowed(ctx: ExtensionContext): boolean {
 
 function updateStatus(ctx: ExtensionContext, session: SessionJobs): void {
   const count = session.shuttingDown ? 0 : session.runningCount();
-  ctx.ui.setStatus("background", count > 0 ? `bg: ${count} running · /background` : undefined);
+  ctx.ui.setStatus("background", count > 0 ? `background: ${count} running` : undefined);
 }
 
 export default function background(pi: ExtensionAPI) {

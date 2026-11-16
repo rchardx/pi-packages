@@ -7,6 +7,7 @@ import {
   CHILD_ENV,
   DEADLINE_MS,
   isResult,
+  MAX_REQUESTS,
   record,
   STARTUP_MS,
   STOP_GRACE_MS,
@@ -96,7 +97,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   );
   const deadline = setTimeout(
     () => stop("timed_out", "Child execution deadline exceeded."),
-    options.deadlineMs ?? DEADLINE_MS,
+    options.deadlineMs ?? launch.deadlineMs ?? DEADLINE_MS,
   );
   const send = (message: object) => {
     if (!child.connected) return;
@@ -115,6 +116,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           provider: launch.provider,
           model: launch.model,
           modelConfig: launch.modelConfig,
+          maxRequests: launch.maxRequests ?? MAX_REQUESTS,
         });
         break;
       case "ready":

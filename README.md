@@ -25,11 +25,12 @@ a temporary session or a persistent install, not both for the same package.
 
 ## Packages: installation and usage
 
-| Package | Tools | Try for one session | Install for your Pi user | Usage guide |
+| Package | Surface | Try for one session | Install for your Pi user | Usage guide |
 | --- | --- | --- | --- | --- |
 | web-access | `web_fetch`, `web_search` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
-| background | `bash` (override) | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
-| subagents | `subagent`, `subagent_cancel` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
+| background | `bash` (override), `/background` | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
+| subagents | `subagent`, `subagent_cancel`, `/subagents` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
+| statusline | Interactive TUI footer | `pi -e ./packages/statusline` | `pi install ./packages/statusline` | [Usage, limits, and compatibility](packages/statusline/README.md) |
 
 ### web-access
 
@@ -78,23 +79,33 @@ Run long `bash` commands in the background in interactive or RPC mode and receiv
 completion notifications instead of polling. Logs retain up to 8MiB of raw output
 per job; reaching the limit does not stop the command or its notification tail.
 Logs mark omitted early output when the pre-background seed buffer overflows.
-The footer shows the running job count; `/background` displays a read-only
+The status area shows `background: N running`; `/background` displays a read-only
 snapshot of elapsed times and full commands without starting a model turn.
 Print and JSON modes remain foreground-only. See the
 [background usage guide](packages/background/README.md) for configuration and limits.
 
 ### subagents
 
-Delegate well-scoped work to background child agents with fresh context and a
-shared working directory. Children can edit files and run commands; completion
-steers the parent automatically without polling. Use `subagent_cancel` to stop a
-child. Tasks belong to the root session and do not survive its shutdown.
+Delegate well-scoped work to background child agents (up to 8 concurrent by
+default) with fresh context and a shared working directory. Children can edit
+files and run commands; completion steers the parent automatically with a
+collapsible TUI card and without polling. Use `subagent_cancel` to stop a child
+and `/subagents` to inspect running tasks. Tasks belong to the root session and
+do not survive its shutdown.
 See the [subagents usage guide](packages/subagents/README.md) for resource reloading,
-model access, process requirements, and limits. Children rebuild their own system
-prompts and retain supported parent CLI restrictions and explicit prompt inputs.
-Indirectly callable deferred/codemode tools stay available without being
-implicitly added to the tools declared to the model.
-No role configuration or agent messaging is exposed yet.
+model access, process requirements, optional `~/.pi/agent/subagents.json` limits,
+and boundaries. Children rebuild their own system prompts and retain supported
+parent CLI restrictions and explicit prompt inputs. Indirectly callable
+deferred/codemode tools stay available without being implicitly added to the
+tools declared to the model. No role configuration or agent messaging is exposed yet.
+
+### statusline
+
+Replace Pi's interactive footer with a fixed two-line layout that renders active
+extension statuses inline after `~/path (branch)` (`subagents` first, then
+`background`, then other keys alphabetically) while keeping token, cost, context,
+and model statistics on line 2. Print, JSON, and RPC modes are unaffected. See
+the [statusline usage guide](packages/statusline/README.md) for behavior notes.
 
 After updating the checkout, run `npm ci` when dependencies changed and restart Pi
 or use `/reload` to load the updated extension.

@@ -69,9 +69,11 @@ test("background handoff returns a UUID, survives turn abort, and reports once",
   await tasks.shutdown();
 });
 
-test("concurrent startups reserve capacity before any await", async () => {
+test("concurrent startups reserve capacity before any await and honor custom limits", async () => {
   const children = Array.from({ length: MAX_CONCURRENT }, fake);
+  assert.equal(MAX_CONCURRENT, 8);
   let i = 0;
+  let changes = 0;
   const tasks = new Tasks(
     () => {},
     () => {
@@ -79,13 +81,33 @@ test("concurrent startups reserve capacity before any await", async () => {
       assert.ok(child);
       return child.execution;
     },
+    () => {
+      changes++;
+    },
   );
   const pending = children.map(() => tasks.launch(launch));
+  assert.equal(tasks.runningCount(), 0, "unhanded startups are not yet running");
+  assert.equal(changes, 0);
   const observed = Promise.allSettled(pending);
-  await assert.rejects(tasks.launch(launch), /At most 4/u);
+  await assert.rejects(tasks.launch(launch), /At most 8/u);
   await tasks.shutdown();
   assert.ok((await observed).every((result) => result.status === "rejected"));
   assert.equal(tasks.records.size, 0);
+  assert.equal(changes, 0, "aborted startups emit no running-count transitions");
+
+  const limited = new Tasks(
+    () => {},
+    () => {
+      const child = fake();
+      child.ready.resolve();
+      return child.execution;
+    },
+  );
+  await limited.launch(launch, undefined, 1);
+  assert.equal(limited.runningCount(), 1);
+  await assert.rejects(limited.launch(launch, undefined, 1), /At most 1/u);
+  await limited.shutdown();
+  assert.equal(limited.runningCount(), 0);
 });
 
 test("startup cancellation, startup failure, and shutdown leave no orphan", async () => {

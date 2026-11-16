@@ -72,10 +72,9 @@ pi install ./packages/background
 
 ### Inspect running jobs
 
-While jobs are running, Pi's native footer status area shows
-`bg: N running · /background`. The count updates on lifecycle changes and
-disappears when no jobs remain or the session shuts down. RPC clients receive
-the corresponding status update.
+While jobs are running, Pi's status area shows `background: N running`.
+The count updates on lifecycle changes and disappears when no jobs remain or the
+session shuts down. RPC clients receive the corresponding status update.
 
 Enter `/background` in Pi to show a snapshot of this session's running
 background jobs:

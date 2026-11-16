@@ -179,7 +179,7 @@ for (const mode of ["tui", "rpc"] as const) {
         });
         assert.deepEqual(statusUpdates, [
           { key: "background", text: undefined },
-          { key: "background", text: "bg: 1 running · /background" },
+          { key: "background", text: "background: 1 running" },
         ]);
       }
       const updatesBefore: number = statusUpdates.length;
@@ -206,7 +206,7 @@ for (const mode of ["tui", "rpc"] as const) {
       const id = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(started))?.[1];
       assert.ok(id);
       ids.push(id);
-      assert.equal(statuses.get("background"), `bg: ${ids.length} running · /background`);
+      assert.equal(statuses.get("background"), `background: ${ids.length} running`);
     }
     // Listing is independent of config parsing and never modifies model context.
     await writeFile(join(directory, "background.json"), "{");
@@ -242,12 +242,12 @@ test("footer counts fall on success and failure without changing other status en
     }; const watcher = fs.watch('.', finish); finish();`.replaceAll("\n", " ");
     await tool.execute(`footer-${exitCode}`, { command: nodeScript(script), background: true });
   }
-  assert.equal(statuses.get("background"), "bg: 2 running · /background");
+  assert.equal(statuses.get("background"), "background: 2 running");
   await writeFile(join(directory, "finish-0"), "finish");
   await waitFor(() =>
     notificationMessages(session).find((message) => message.content.includes("exited with code 0")),
   );
-  assert.equal(statuses.get("background"), "bg: 1 running · /background");
+  assert.equal(statuses.get("background"), "background: 1 running");
   await writeFile(join(directory, "finish-2"), "finish");
   await waitFor(() =>
     notificationMessages(session).find((message) => message.content.includes("exited with code 2")),
@@ -312,7 +312,7 @@ test("background: true returns immediately, notifies on completion, and logs out
     background: true,
   });
   assert.ok(Date.now() - start < 400, "the tool call must return before the command finishes");
-  assert.equal(statuses.get("background"), "bg: 1 running · /background");
+  assert.equal(statuses.get("background"), "background: 1 running");
   const startedText = textOf(started);
   const jobId = /Started background job (bg_[0-9a-f]{8})\./u.exec(startedText)?.[1];
   assert.ok(jobId, startedText);
@@ -360,7 +360,7 @@ test("a slow foreground command moves to the background at the threshold", async
     command: nodeScript('setTimeout(() => console.log("late output"), 800)'),
   });
   assert.ok(Date.now() - start < 800, "the tool call must return at the threshold");
-  assert.equal(statuses.get("background"), "bg: 1 running · /background");
+  assert.equal(statuses.get("background"), "background: 1 running");
   const movedText = textOf(moved);
   assert.match(
     movedText,

@@ -1,0 +1,33 @@
+{
+  "name": "@rchardx/pi-statusline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Two-line TUI footer with inline extension statuses on the path line",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rchardx/pi-packages.git",
+    "directory": "packages/statusline"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
