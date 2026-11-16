@@ -4,11 +4,13 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   buildNotification,
   formatDuration,
+  formatPeerMessage,
   oneLine,
+  renderMessageNotification,
   renderNotification,
   sanitizeDisplayText,
 } from "../src/notify.ts";
-import type { Result } from "../src/protocol.ts";
+import type { MessageEnvelope, Result } from "../src/protocol.ts";
 
 const ESC = "\u001B";
 const CHILD_ID = "550e8400-e29b-41d4-a716-446655440000";
@@ -113,6 +115,49 @@ test("renderNotification draws a one-line collapsed card and keeps status before
       { expanded: false, outputPad: 1 },
       plainTheme,
     ),
+    undefined,
+  );
+});
+
+test("formatPeerMessage and renderMessageNotification format collapsible peer message cards", () => {
+  const envelope: MessageEnvelope = {
+    id: "msg-1",
+    from: CHILD_ID,
+    to: "main",
+    broadcast: false,
+    message: `${ESC}[31mNeed port confirmation${ESC}[0m\nDefaulting to 8080 unless overridden.`,
+    sentAt: 1_000,
+  };
+  assert.match(
+    formatPeerMessage(envelope),
+    new RegExp(`^Peer message from subagent ${CHILD_ID} \\(direct\\):`, "u"),
+  );
+
+  const collapsed = renderMessageNotification(
+    { details: envelope },
+    { expanded: false, outputPad: 1 },
+    plainTheme,
+  );
+  const expanded = renderMessageNotification(
+    { details: envelope },
+    { expanded: true, outputPad: 1 },
+    plainTheme,
+  );
+  assert.ok(collapsed && expanded);
+  const collapsedLines = collapsed.render(80);
+  assert.equal(collapsedLines.length, 3);
+  assert.ok((collapsedLines[1] ?? "").includes("✉ subagent 550e8400 · direct · Need port"));
+  assert.ok(visibleWidth(collapsedLines[1] ?? "") <= 80);
+
+  const expandedText = expanded
+    .render(120)
+    .map((line) => line.trimEnd())
+    .join("\n");
+  assert.match(expandedText, new RegExp(`${CHILD_ID} → main · direct`, "u"));
+  assert.match(expandedText, /Need port confirmation\n Defaulting to 8080/u);
+  assert.ok(!expandedText.includes(ESC));
+  assert.equal(
+    renderMessageNotification({}, { expanded: false, outputPad: 1 }, plainTheme),
     undefined,
   );
 });

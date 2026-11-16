@@ -29,7 +29,7 @@ a temporary session or a persistent install, not both for the same package.
 | --- | --- | --- | --- | --- |
 | web-access | `web_fetch`, `web_search` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
 | background | `bash` (override), `/background` | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
-| subagents | `subagent`, `subagent_cancel`, `/subagents` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
+| subagents | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
 | statusline | Interactive TUI footer | `pi -e ./packages/statusline` | `pi install ./packages/statusline` | [Usage, limits, and compatibility](packages/statusline/README.md) |
 
 ### web-access
@@ -91,15 +91,18 @@ Print and JSON modes remain foreground-only. See the
 Delegate well-scoped work to background child agents (up to 8 concurrent by
 default) with fresh context and a shared working directory. Children can edit
 files and run commands; completion steers the parent automatically with a
-collapsible TUI card and without polling. Use `subagent_cancel` to stop a child
-and `/subagents` to inspect running tasks. Tasks belong to the root session and
-do not survive its shutdown.
+collapsible TUI card and without polling. Live agents in the same root session
+can discover peers (`subagent_list`), exchange direct or broadcast messages
+(`subagent_send`), and wait for replies (`subagent_wait`); finished children
+exit immediately and never receive further messages. Use `subagent_cancel` to
+stop a child and `/subagents` to inspect running tasks. Tasks belong to the root
+session and do not survive its shutdown.
 See the [subagents usage guide](packages/subagents/README.md) for resource reloading,
 model access, process requirements, optional `~/.pi/agent/subagents.json` limits,
 and boundaries. Children rebuild their own system prompts and retain supported
 parent CLI restrictions and explicit prompt inputs. Indirectly callable
 deferred/codemode tools stay available without being implicitly added to the
-tools declared to the model. No role configuration or agent messaging is exposed yet.
+tools declared to the model. No role configuration or nested spawning is exposed yet.
 
 ### statusline
 

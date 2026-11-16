@@ -1,7 +1,17 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Box, stripTerminalSequences, Text, TruncatedText } from "@earendil-works/pi-tui";
-import { bounded, isResult, record, type Result, type Status } from "./protocol.ts";
+import {
+  bounded,
+  isMessageEnvelope,
+  isResult,
+  MAIN_AGENT_ID,
+  type MessageEnvelope,
+  record,
+  type Result,
+  type Status,
+} from "./protocol.ts";
 
+export { MESSAGE_TYPE } from "./protocol.ts";
 export const NOTIFICATION_TYPE = "subagent:result";
 
 const TASK_DISPLAY_CHARS = 80;
@@ -30,9 +40,9 @@ export function sanitizeDisplayText(value: string): string {
     );
 }
 
-/** Single-line, length-capped task summary for collapsed cards. */
-export function oneLine(task: string, max = TASK_DISPLAY_CHARS): string {
-  const flat = sanitizeDisplayText(task).trim().split("\n").join(" ⏎ ");
+/** Single-line, length-capped summary for collapsed cards and peer listings. */
+export function oneLine(text: string, max = TASK_DISPLAY_CHARS): string {
+  const flat = sanitizeDisplayText(text).trim().split("\n").join(" ⏎ ");
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
@@ -82,6 +92,12 @@ export function buildNotification(
   };
 }
 
+export function formatPeerMessage(envelope: MessageEnvelope): string {
+  const sender = envelope.from === MAIN_AGENT_ID ? MAIN_AGENT_ID : `subagent ${envelope.from}`;
+  const mode = envelope.broadcast ? "broadcast" : "direct";
+  return `Peer message from ${sender} (${mode}):\n\n${envelope.message}`;
+}
+
 /** Collapsed one-line card; expanded view adds full ID, usage counts, and report. */
 export function renderNotification(
   message: { details?: unknown },
@@ -105,6 +121,29 @@ export function renderNotification(
     );
     const report = sanitizeDisplayText(details.report).trim();
     if (report) box.addChild(new Text(theme.fg("muted", report), 0, 0));
+  }
+  return box;
+}
+
+/** Collapsed one-line peer message card; expanded view reveals full endpoints and body. */
+export function renderMessageNotification(
+  message: { details?: unknown },
+  options: { expanded: boolean; outputPad: number },
+  theme: Pick<Theme, "bg" | "fg" | "bold">,
+) {
+  const details = message.details;
+  if (!isMessageEnvelope(details)) return undefined;
+  const senderLabel =
+    details.from === MAIN_AGENT_ID ? MAIN_AGENT_ID : `subagent ${details.from.slice(0, 8)}`;
+  const mode = details.broadcast ? "broadcast" : "direct";
+  const preview = oneLine(details.message);
+  const headline = `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)} · ${mode} · ${preview}`;
+  const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
+  box.addChild(options.expanded ? new Text(headline, 0, 0) : new TruncatedText(headline, 0, 0));
+  if (options.expanded) {
+    box.addChild(new Text(theme.fg("dim", `${details.from} → ${details.to} · ${mode}`), 0, 0));
+    const body = sanitizeDisplayText(details.message).trim();
+    if (body) box.addChild(new Text(theme.fg("muted", body), 0, 0));
   }
   return box;
 }
