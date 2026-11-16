@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import { type AuthRegistry, resolveAnthropicAuth, resolveDeepSeekHeaders } from "./auth.ts";
-import type { ResolvedCapabilityTarget } from "./config.ts";
+import type { FetchProviderId, ResolvedCapabilityTarget } from "./config.ts";
 import { fetchAnthropic } from "./providers/anthropic.ts";
 import { FETCH_TIMEOUT_MS, fetchDeepSeek, MAX_RESPONSE_BYTES } from "./providers/deepseek.ts";
 import { MAX_FETCH_URL_CHARACTERS } from "./url.ts";
@@ -26,7 +26,7 @@ export const FetchParameters = Type.Object(
 );
 
 export function executeFetch(
-  target: ResolvedCapabilityTarget,
+  target: ResolvedCapabilityTarget<FetchProviderId>,
   url: string,
   registry: AuthRegistry,
   signal?: AbortSignal,

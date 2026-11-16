@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { type AuthRegistry, resolveAnthropicAuth, resolveDeepSeekHeaders } from "../src/auth.ts";
+import {
+  type AuthRegistry,
+  resolveAnthropicAuth,
+  resolveDeepSeekHeaders,
+  resolveOpenAICodexHeaders,
+  resolveOpenAIHeaders,
+} from "../src/auth.ts";
 
 async function deepSeekFixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), "pi-deepseek-auth-"));
@@ -329,4 +335,77 @@ test("Anthropic prepares Bearer and Claude Code headers for OAuth tokens and hon
     env: { ANTHROPIC_FEDERATION_RULE_ID: "rule-1" },
   });
   await assert.rejects(resolveAnthropicAuth(registry), /Configure Anthropic authentication/u);
+});
+
+async function providerFixture(t: TestContext, id: string, apiKey?: string) {
+  const directory = await mkdtemp(join(tmpdir(), `pi-${id}-auth-`));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const runtime = await ModelRuntime.create({
+    authPath: join(directory, "auth.json"),
+    modelsPath: null,
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  });
+  const provider = runtime.getProvider(id);
+  assert.ok(provider);
+  const registry: AuthRegistry = {
+    getProvider: (requested) => {
+      assert.equal(requested, id);
+      return provider;
+    },
+    getProviderAuth: async (requested) => {
+      assert.equal(requested, id);
+      return apiKey === undefined ? undefined : { auth: { apiKey } };
+    },
+  };
+  return { provider, registry };
+}
+
+function codexToken(claims: object): string {
+  return `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+}
+
+test("OpenAI sends API keys or Sign in with ChatGPT tokens as Bearer auth at the official origin", async (t) => {
+  for (const key of ["sk-openai-test", "chatgpt-access-token"]) {
+    const { registry } = await providerFixture(t, "openai", key);
+    assert.deepEqual(Object.fromEntries(await resolveOpenAIHeaders(registry)), {
+      authorization: `Bearer ${key}`,
+    });
+  }
+  const { registry, provider } = await providerFixture(t, "openai", "sk-openai-test");
+  registry.getProvider = () => ({ ...provider, baseUrl: "https://gateway.example.test/v1" });
+  await assert.rejects(resolveOpenAIHeaders(registry), {
+    message: "OpenAI web tools require Pi's effective auth origin to be https://api.openai.com.",
+  });
+  const missing = await providerFixture(t, "openai");
+  await assert.rejects(resolveOpenAIHeaders(missing.registry), /\/login openai or OPENAI_API_KEY/u);
+});
+
+test("OpenAI Codex binds the ChatGPT token and account claim over configured headers", async (t) => {
+  const token = codexToken({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-1" } });
+  const { registry, provider } = await providerFixture(t, "openai-codex", token);
+  registry.getProvider = () => ({
+    ...provider,
+    headers: { Authorization: "Bearer other", "chatgpt-account-id": "other", originator: "custom" },
+  });
+  assert.deepEqual(Object.fromEntries(await resolveOpenAICodexHeaders(registry)), {
+    authorization: `Bearer ${token}`,
+    "chatgpt-account-id": "acct-1",
+    "openai-beta": "responses=experimental",
+    originator: "custom",
+  });
+  registry.getProvider = () => ({
+    ...provider,
+    baseUrl: "https://chatgpt.example.test/backend-api",
+  });
+  await assert.rejects(resolveOpenAICodexHeaders(registry), /https:\/\/chatgpt\.com/u);
+
+  for (const invalid of ["not-a-jwt", codexToken({}), codexToken({ sub: "secret-subject" })]) {
+    const fixture = await providerFixture(t, "openai-codex", invalid);
+    await assert.rejects(resolveOpenAICodexHeaders(fixture.registry), {
+      message: "Cannot prepare OpenAI Codex authentication headers returned by Pi.",
+    });
+  }
+  const missing = await providerFixture(t, "openai-codex");
+  await assert.rejects(resolveOpenAICodexHeaders(missing.registry), /\/login openai-codex/u);
 });

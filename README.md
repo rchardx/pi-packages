@@ -34,12 +34,14 @@ a temporary session or a persistent install, not both for the same package.
 
 ### web-access
 
-Use user-enabled hosted providers (**DeepSeek** standalone tool APIs and
-**Anthropic** Messages `web_search` / `web_fetch`) to search the web or fetch a
-page. Both tools require [explicit per-provider opt-in](packages/web-access/README.md#enable-tools)
+Use user-enabled hosted providers (**DeepSeek** standalone tool APIs,
+**Anthropic** Messages `web_search` / `web_fetch`, and search-only **OpenAI** /
+**OpenAI Codex** Responses `web_search`) to search the web or fetch a page.
+Both tools require [explicit per-provider opt-in](packages/web-access/README.md#enable-tools)
 in `~/.pi/agent/web-access.json` and matching authentication configured in Pi
 (`/login deepseek` or `DEEPSEEK_API_KEY`; `/login anthropic`, `ANTHROPIC_API_KEY`,
-or `ANTHROPIC_AUTH_TOKEN`). Enabling a provider authorizes possible provider
+or `ANTHROPIC_AUTH_TOKEN`; `/login openai` or `OPENAI_API_KEY`;
+`/login openai-codex`). Enabling a provider authorizes possible provider
 charges and query or URL disclosure; tool selection alone never grants permission.
 
 After setup and `/reload`, ask Pi to use either tool:
@@ -69,7 +71,7 @@ Missing configuration enables neither tool. Invalid `web-access.json` prevents
 the entire extension from loading until fixed and reloaded. Authentication is
 resolved by Pi for each provider's official origin, not silently sent around an
 effective gateway route. Errors retain HTTP status, recognized provider tool
-error codes, or recognized network codes without exposing raw provider bodies or
+or stream error codes, or recognized network codes without exposing raw provider bodies or
 transport messages. HTTP 408, 429, and 5xx errors suggest retrying later; the
 extension does not retry automatically.
 

@@ -1,6 +1,12 @@
 import { type Static, Type } from "typebox";
-import { type AuthRegistry, resolveAnthropicAuth, resolveDeepSeekHeaders } from "./auth.ts";
-import type { ResolvedCapabilityTarget } from "./config.ts";
+import {
+  type AuthRegistry,
+  resolveAnthropicAuth,
+  resolveDeepSeekHeaders,
+  resolveOpenAICodexHeaders,
+  resolveOpenAIHeaders,
+} from "./auth.ts";
+import type { ResolvedCapabilityTarget, SearchProviderId } from "./config.ts";
 import { ANTHROPIC_MAX_QUERY_CHARACTERS, searchAnthropic } from "./providers/anthropic.ts";
 import {
   DEEPSEEK_MAX_QUERY_CHARACTERS,
@@ -9,6 +15,7 @@ import {
   SEARCH_TIMEOUT_MS,
   searchDeepSeek,
 } from "./providers/deepseek.ts";
+import { searchOpenAI } from "./providers/openai.ts";
 
 export {
   ANTHROPIC_MAX_QUERY_CHARACTERS,
@@ -18,6 +25,7 @@ export {
   SEARCH_TIMEOUT_MS,
   searchAnthropic,
   searchDeepSeek,
+  searchOpenAI,
 };
 
 const MAX_SEARCH_COUNT = 50;
@@ -46,20 +54,35 @@ export const SearchParameters = Type.Object(
 );
 
 export function executeSearch(
-  target: ResolvedCapabilityTarget,
+  target: ResolvedCapabilityTarget<SearchProviderId>,
   args: Static<typeof SearchParameters>,
   registry: AuthRegistry,
   signal?: AbortSignal,
   request: typeof fetch = globalThis.fetch,
 ) {
-  if (target.provider === "deepseek") {
-    return searchDeepSeek(args, () => resolveDeepSeekHeaders(registry), signal, request);
+  const options = target.model ? { model: target.model } : {};
+  switch (target.provider) {
+    case "deepseek":
+      return searchDeepSeek(args, () => resolveDeepSeekHeaders(registry), signal, request);
+    case "anthropic":
+      return searchAnthropic(args, () => resolveAnthropicAuth(registry), options, signal, request);
+    case "openai":
+      return searchOpenAI(
+        "openai",
+        args,
+        () => resolveOpenAIHeaders(registry),
+        options,
+        signal,
+        request,
+      );
+    case "openai-codex":
+      return searchOpenAI(
+        "openai-codex",
+        args,
+        () => resolveOpenAICodexHeaders(registry),
+        options,
+        signal,
+        request,
+      );
   }
-  return searchAnthropic(
-    args,
-    () => resolveAnthropicAuth(registry),
-    target.model ? { model: target.model } : {},
-    signal,
-    request,
-  );
 }
