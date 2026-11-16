@@ -1,33 +1,36 @@
-import { DEEPSEEK_API_ORIGIN } from "./deepseek.ts";
+export type WebToolKind = "search" | "fetch";
 
-type Tool = "search" | "fetch";
-const LABELS = { search: "DeepSeek Search", fetch: "DeepSeek Fetch" };
+export interface HttpErrorOptions {
+  label: string;
+  providerLabel: string;
+  tool: WebToolKind;
+  reasons?: Readonly<Record<number, string>>;
+}
 
-function httpError(tool: Tool, status: number) {
-  const reasons: Record<number, string> = {
+export function httpError(status: number, options: HttpErrorOptions): Error {
+  const { label, providerLabel, tool } = options;
+  const defaults: Record<number, string> = {
     400: `Invalid ${tool} request.`,
-    401: "Missing or invalid DeepSeek API key.",
-    402: "Insufficient DeepSeek account balance.",
+    401: `Missing or invalid ${providerLabel} credentials.`,
+    402: `Insufficient ${providerLabel} account balance.`,
     403: tool === "fetch" ? "Fetch denied by the security policy." : "Search access denied.",
     408: "Request timed out.",
+    413: `${tool === "fetch" ? "Fetch" : "Search"} request body is too large.`,
     422: `Invalid ${tool} parameters.`,
-    429: `DeepSeek ${tool} rate limit exceeded.`,
+    429: `${providerLabel} ${tool} rate limit exceeded.`,
     504: `Upstream ${tool} timed out.`,
-    ...(tool === "fetch"
-      ? {
-          404: "No usable page content could be retrieved.",
-          413: "Fetch request body is too large.",
-        }
-      : {}),
+    529: `${providerLabel} service is overloaded.`,
   };
   // Return stable, sanitized diagnostics rather than forwarding raw error bodies.
   const reason =
-    reasons[status] ?? (tool === "search" ? "Search request failed." : "Fetch request failed.");
+    options.reasons?.[status] ??
+    defaults[status] ??
+    (tool === "search" ? "Search request failed." : "Fetch request failed.");
   const retry =
     status === 408 || status === 429 || (status >= 500 && status < 600)
       ? " This may be transient; retry later."
       : "";
-  return new Error(`${LABELS[tool]} HTTP ${status}: ${reason}${retry}`);
+  return new Error(`${label} HTTP ${status}: ${reason}${retry}`);
 }
 
 // Only recognized codes are exposed; messages and arbitrary error properties stay private.
@@ -52,7 +55,7 @@ const NETWORK_ERROR_CODES = new Set([
   "UND_ERR_SOCKET",
 ]);
 
-function transportError(error: unknown, message: string): Error {
+export function transportError(error: unknown, message: string): Error {
   for (const candidate of [error, error instanceof Error ? error.cause : undefined]) {
     if (
       candidate &&
@@ -67,9 +70,13 @@ function transportError(error: unknown, message: string): Error {
   return new Error(`${message}.`);
 }
 
-async function readResponse(tool: Tool, response: Response, maxBytes: number): Promise<unknown> {
-  const label = LABELS[tool];
-  if (response.status !== 200) throw httpError(tool, response.status);
+async function readJsonResponse(
+  response: Response,
+  maxBytes: number,
+  errorOptions: HttpErrorOptions,
+): Promise<unknown> {
+  const { label } = errorOptions;
+  if (response.status !== 200) throw httpError(response.status, errorOptions);
   if (
     response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !==
     "application/json"
@@ -107,8 +114,8 @@ async function readResponse(tool: Tool, response: Response, maxBytes: number): P
   }
 }
 
-export async function withDeepSeekDeadline<T>(
-  tool: Tool,
+export async function withDeadline<T>(
+  label: string,
   timeoutMs: number,
   signal: AbortSignal | undefined,
   run: (signal: AbortSignal) => Promise<T>,
@@ -117,8 +124,7 @@ export async function withDeepSeekDeadline<T>(
   const controller = new AbortController();
   const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   const timer = setTimeout(
-    () =>
-      controller.abort(new Error(`${LABELS[tool]} timed out after ${timeoutMs / 1000} seconds.`)),
+    () => controller.abort(new Error(`${label} timed out after ${timeoutMs / 1000} seconds.`)),
     timeoutMs,
   );
   timer.unref();
@@ -134,41 +140,57 @@ export async function withDeepSeekDeadline<T>(
   }
 }
 
-export async function requestDeepSeek(
-  tool: Tool,
-  body: object,
-  resolveHeaders: () => Promise<Headers>,
+export async function resolveWithSignal<T>(
+  resolve: () => Promise<T>,
   signal: AbortSignal,
-  maxBytes: number,
-  request: typeof fetch,
-): Promise<unknown> {
+): Promise<T> {
   // Pi auth takes no signal. Race the wait; fetch owns request/body cancellation
   // through the same signal, including when credential completion races an abort.
+  signal.throwIfAborted();
   let onAbort = () => {};
   const aborted = new Promise<never>((_resolve, reject) => {
     onAbort = () => reject(signal.reason);
     signal.addEventListener("abort", onAbort, { once: true });
   });
-  let authHeaders: Headers;
   try {
-    authHeaders = await Promise.race([resolveHeaders(), aborted]);
+    const resolved = resolve();
+    resolved.catch(() => {});
+    return await Promise.race([resolved, aborted]);
   } finally {
     signal.removeEventListener("abort", onAbort);
   }
-  const headers = new Headers(authHeaders);
+}
+
+export interface JsonPostOptions<TAuth> {
+  endpoint: string;
+  resolveAuth: () => Promise<TAuth>;
+  buildRequest: (auth: TAuth) => { headers: Headers; body: object };
+  signal: AbortSignal;
+  maxBytes: number;
+  request: typeof fetch;
+  errorOptions: HttpErrorOptions;
+}
+
+export async function postJson<TAuth>(options: JsonPostOptions<TAuth>): Promise<unknown> {
+  const auth = await resolveWithSignal(options.resolveAuth, options.signal);
+  const built = options.buildRequest(auth);
+  const headers = new Headers(built.headers);
   // Authentication belongs to Pi; the JSON payload format belongs to this tool.
   headers.set("Content-Type", "application/json");
   let response: Response;
   try {
-    response = await request(`${DEEPSEEK_API_ORIGIN}/v1/tools/${tool}`, {
+    response = await options.request(options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(body),
+      body: JSON.stringify(built.body),
       redirect: "error",
-      signal,
+      signal: options.signal,
     });
   } catch (error) {
-    throw transportError(error, `Cannot reach ${LABELS[tool]}; network or redirect failure`);
+    throw transportError(
+      error,
+      `Cannot reach ${options.errorOptions.label}; network or redirect failure`,
+    );
   }
-  return readResponse(tool, response, maxBytes);
+  return readJsonResponse(response, options.maxBytes, options.errorOptions);
 }

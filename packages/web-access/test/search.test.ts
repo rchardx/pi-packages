@@ -195,6 +195,7 @@ for (const [status, message, retryHint] of [
   [402, "Insufficient", false],
   [403, "denied", false],
   [408, "timed out", true],
+  [413, "Search request body is too large", false],
   [422, "Invalid search parameters", false],
   [429, "rate limit", true],
   [500, "failed", true],

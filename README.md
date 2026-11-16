@@ -33,11 +33,13 @@ a temporary session or a persistent install, not both for the same package.
 
 ### web-access
 
-Use DeepSeek's standalone APIs to search the web or fetch a page as Markdown.
-Both tools require [independent user opt-in](packages/web-access/README.md#enable-tools)
-and DeepSeek authentication configured in Pi (`/login deepseek` or
-`DEEPSEEK_API_KEY`). Enabling a tool authorizes possible provider charges and
-query or URL disclosure; selecting it alone never grants permission.
+Use user-enabled hosted providers (**DeepSeek** standalone tool APIs and
+**Anthropic** Messages `web_search` / `web_fetch`) to search the web or fetch a
+page. Both tools require [explicit per-provider opt-in](packages/web-access/README.md#enable-tools)
+in `~/.pi/agent/web-access.json` and matching authentication configured in Pi
+(`/login deepseek` or `DEEPSEEK_API_KEY`; `/login anthropic`, `ANTHROPIC_API_KEY`,
+or `ANTHROPIC_AUTH_TOKEN`). Enabling a provider authorizes possible provider
+charges and query or URL disclosure; tool selection alone never grants permission.
 
 After setup and `/reload`, ask Pi to use either tool:
 
@@ -46,26 +48,29 @@ web_fetch({ url: "https://example.com" })
 web_search({ query: "Node.js release notes site:nodejs.org" })
 ```
 
-Fetch returns the provider's title and Markdown, with a 60-second total deadline.
-Search defaults to 10 results with long summaries and a 120-second total deadline;
-`need_content: true` requests available page content in the same Search call.
-Search does not invoke fetch. Each API response is limited to 2 MiB; long output
-is saved in a private local file for continuing with Pi's `read` tool.
-Content is untrusted and may be incomplete or lose original formatting.
-Pi displays compact **Web fetch** / **Web search** cards; expanding adds Markdown
-content beneath the same summary without changing the model-facing output.
+Calls route to the active Pi model's provider when enabled in `providers`,
+otherwise to `defaultProvider` when configured; there is no cross-provider
+fallback on failure. Fetch has a 60-second total deadline; Search defaults to
+10 results with a 120-second total deadline (`need_content: true` requests
+available page content on DeepSeek Search without invoking `web_fetch`). Each
+API response is limited to 2 MiB; long output is saved in a private local file
+for continuing with Pi's `read` tool. Content is untrusted and may be incomplete
+or lose original formatting. Pi displays compact **Web fetch** / **Web search**
+cards; expanding adds Markdown synthesis, excerpts, and content beneath the same
+summary without changing the model-facing output.
 
-Fetching is performed by DeepSeek, not your local network. Use `curl` through
-`bash` for localhost or intranet URLs. Direct fetch is not provided; remove the
-obsolete `allowRanges` field from existing configuration. There is no fallback,
-automatic research workflow, or native model web integration.
+Fetching is performed by the selected hosted provider, not your local network.
+Use `curl` through `bash` for localhost or intranet URLs. Direct local fetch is
+not provided; replace legacy `{ "provider": "deepseek" }` and `allowRanges`
+settings with the `providers` authorization map.
 
 Missing configuration enables neither tool. Invalid `web-access.json` prevents
 the entire extension from loading until fixed and reloaded. Authentication is
-resolved by Pi for the official DeepSeek origin, not silently sent around an
-effective gateway route. Errors retain HTTP status or recognized network codes
-without exposing raw provider bodies or transport messages. HTTP 408, 429 and
-5xx errors suggest retrying later; the extension does not retry automatically.
+resolved by Pi for each provider's official origin, not silently sent around an
+effective gateway route. Errors retain HTTP status, recognized provider tool
+error codes, or recognized network codes without exposing raw provider bodies or
+transport messages. HTTP 408, 429, and 5xx errors suggest retrying later; the
+extension does not retry automatically.
 
 ### background
 

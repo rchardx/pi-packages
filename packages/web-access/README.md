@@ -1,11 +1,12 @@
 # Web access
 
-Two independent, opt-in Pi tools backed by DeepSeek's standalone APIs:
+Two independent, opt-in Pi tools backed by user-enabled hosted providers
+(**DeepSeek** and **Anthropic**):
 
-- `web_fetch` returns a page title and Markdown content.
-- `web_search` returns ordered sources, summaries and optional page content.
+- `web_fetch` returns a page title and Markdown or plain-text content.
+- `web_search` returns ordered sources alongside provider summaries or grounded synthesis.
 
-Neither calls a chat model or invokes the other tool.
+Neither tool invokes the other.
 
 ## Install
 
@@ -28,46 +29,84 @@ root is not a Pi package.
 
 ## Enable tools
 
-Configure DeepSeek authentication in Pi with `/login deepseek` or
-`DEEPSEEK_API_KEY` in Pi's launch environment. No DeepSeek chat model selection
-is needed. Keep credentials out of tool arguments and configuration.
+Configure authentication in Pi for each provider you intend to enable:
 
-Enable the capabilities you want in `~/.pi/agent/web-access.json`
+- **DeepSeek** (`deepseek`): `/login deepseek` or `DEEPSEEK_API_KEY` (no DeepSeek
+  chat model selection is required).
+- **Anthropic** (`anthropic`): `/login anthropic` (API key or Claude Pro/Max OAuth),
+  `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`.
+
+Keep credentials out of tool arguments and configuration.
+
+Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
 (its directory follows `PI_CODING_AGENT_DIR`):
 
 ```json
 {
-  "search": { "provider": "deepseek" },
-  "fetch": { "provider": "deepseek" }
+  "search": {
+    "providers": {
+      "deepseek": {},
+      "anthropic": { "model": "claude-haiku-5-5" }
+    },
+    "defaultProvider": "deepseek"
+  },
+  "fetch": {
+    "providers": {
+      "deepseek": {},
+      "anthropic": {}
+    },
+    "defaultProvider": "deepseek"
+  }
 }
 ```
 
-Each entry independently authorizes possible provider charges, use of Pi-resolved
-credentials, and query or URL disclosure to DeepSeek. Omit an entry to disable
-that tool; a missing file or `{}` enables neither. Project settings and tool
-arguments cannot grant permission.
+Each entry under `providers` independently authorizes possible provider charges,
+use of Pi-resolved credentials, and query or URL disclosure to that provider:
 
-Run `/reload` after enabling a tool. Explicit tool selection affects visibility,
-not permission. Consent and credentials are rechecked on every call; removing an
-entry blocks subsequent calls even if Pi keeps the tool active. In-flight calls
-retain starting consent. Restart Pi when changing its launch environment.
+- `deepseek` uses standalone tool endpoints and accepts only `{}`.
+- `anthropic` uses the Messages API and accepts an optional `"model"` ID
+  (defaults to `claude-haiku-5-5`).
+- On each call, if the active Pi model's provider (`ctx.model.provider`) is
+  listed in `providers`, that provider handles the request. Otherwise
+  `defaultProvider` (which must also appear in `providers`) is used when set;
+  without `defaultProvider`, the call fails before resolving credentials.
+- There is no cross-provider fallback: once the target provider is selected,
+  failures report directly without forwarding the query or URL elsewhere.
 
-Pi owns authentication and provider configuration. The effective auth base URL
-(auth override, otherwise provider default) must have the
-`https://api.deepseek.com` origin. Requests use the fixed endpoints below.
-Pi's API key supplies default Bearer authentication; provider headers, then
-resolved auth headers override defaults case-insensitively, with `null` deleting
-a header. Authorization is required and the tools set JSON Content-Type.
+Omit `search` or `fetch` to disable that tool; a missing file or `{}` enables
+neither. Project settings and tool arguments cannot grant permission. Replace
+legacy `{ "provider": "deepseek" }` and `allowRanges` settings with the
+`providers` map above.
 
-Only `search` and `fetch` settings are supported. Malformed JSON, unknown fields
-or invalid settings prevent both tools from loading; invalid edits during a
-session fail on the next call. Fix the file and reload.
+Run `/reload` after enabling or disabling a tool. Explicit tool selection affects
+visibility, not permission. Consent, routing, and credentials are rechecked on
+every call; removing a capability or provider blocks subsequent calls even if Pi
+keeps the tool active. In-flight calls retain starting consent. Restart Pi when
+changing its launch environment.
 
-Direct fetch is not provided. Remove obsolete `allowRanges` settings and run
-`npm ci` after updating the checkout. For localhost or intranet URLs, use
-`curl` through `bash`: DeepSeek visits targets from its infrastructure, not your
-machine. Fetching is subject to the service's security policy and target-site
-access rules.
+Only `search` and `fetch` settings are supported. Malformed JSON, unknown fields,
+empty `providers` maps, or invalid settings prevent both tools from loading;
+invalid edits during a session fail on the next call. Fix the file and reload.
+
+### Authentication and origin boundaries
+
+Pi owns authentication and provider configuration:
+
+| Provider | Required effective origin | Fixed endpoint | Default HTTP auth |
+| --- | --- | --- | --- |
+| `deepseek` | `https://api.deepseek.com` | `POST /v1/tools/fetch` or `/v1/tools/search` | `Authorization: Bearer <key>` |
+| `anthropic` | `https://api.anthropic.com` | `POST /v1/messages` | `x-api-key: <key>`, or `Authorization: Bearer <token>` (including Claude Pro/Max OAuth) |
+
+The effective auth base URL (auth override, otherwise provider default) must
+match the required origin above. Provider headers, then resolved auth headers
+override defaults case-insensitively, with `null` deleting a header. Required
+authentication headers must remain after overrides, and the tools set JSON
+`Content-Type`.
+
+Direct local fetching is not provided. For localhost or intranet URLs, use
+`curl` through `bash`: hosted providers visit targets from their infrastructure,
+not your machine. Fetching is subject to each service's security policy and
+target-site access rules.
 
 ## Fetch
 
@@ -75,24 +114,35 @@ access rules.
 web_fetch({ url: "https://example.com/article" })
 ```
 
-- Sends only `{ "url": "..." }` to
-  `POST https://api.deepseek.com/v1/tools/fetch`.
 - Accepts one absolute HTTP(S) URL without an embedded username/password.
   Input and normalized URLs are limited to **8,192 characters**. Normalization
   removes fragments and may expand non-ASCII paths through escaping.
-- Returns a single-line title and provider Markdown, preserving content paragraphs.
-  Empty titles are valid; invalid fields or whitespace-only content fail.
+- **DeepSeek** sends `{ "url": "..." }` to `POST https://api.deepseek.com/v1/tools/fetch`
+  and returns a single-line title and provider Markdown, preserving paragraphs.
+  HTTP 403 indicates a service security-policy rejection; HTTP 404 indicates no
+  usable content could be retrieved.
+- **Anthropic** sends `url` to `POST https://api.anthropic.com/v1/messages` with
+  server tool `web_fetch_20250910` (`max_uses: 1`). Plain-text document results
+  are read directly from `web_fetch_result` without assistant paraphrasing; PDF
+  document results use the model's Markdown text after the last server tool
+  block (adding an explicit incompleteness notice and
+  `details.outputTokenLimitReached: true` if the model stops at `max_tokens`).
+  Responses that refuse, pause before completion, exceed the context window,
+  fail to invoke `web_fetch`, or return only `web_fetch_tool_result_error`
+  results fail explicitly; a rejected extra call (`max_uses_exceeded`) after a
+  successful fetch does not.
+- Empty titles are valid; invalid schemas or whitespace-only content fail.
 - The model-facing `Requested URL` and `details.url` identify the normalized
-  **requested URL**, not a verified final redirect destination. Details also contain
-  `provider`, `title`, `truncated`, and optional `fullOutputPath`; no original `contentType` is returned.
-- HTTP 403 means a service security-policy rejection. HTTP 404 means no usable
-  content: this may include unavailable/blocked pages, unsupported formats or
-  extraction failure, not just a missing URL.
+  **requested URL**, not a verified final redirect destination. Details also
+  contain `provider`, optional `model`, `title`, `truncated`, optional
+  `outputTokenLimitReached`, and optional `fullOutputPath`; no original
+  `contentType` is returned.
 
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
-may be incomplete, include navigation/comments, or lose links, code formatting
-and mathematical notation. Browser login, JavaScript rendering and PDF extraction
-are not guaranteed. See the [Fetch reference](https://api-docs.deepseek.com/api/fetch/).
+may be incomplete, include navigation/comments, or lose links, code formatting,
+and mathematical notation. Browser login and JavaScript rendering are not
+guaranteed. See the [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/)
+and [Anthropic web fetch documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-fetch-tool).
 
 ## Search
 
@@ -101,37 +151,46 @@ web_search({ query: "Node.js release notes site:nodejs.org" })
 web_search({ query: "TypeScript releases site:github.com", count: 5, need_content: true })
 ```
 
-- Sends `query`, `count` and `need_content` to
-  `POST https://api.deepseek.com/v1/tools/search`.
-- `query` is sent unchanged, including operators such as `site:`. DeepSeek requires
-  1–128 Unicode characters and rejects blank queries.
 - `count` defaults to **10**, with an allowed range of **1–50**. Fewer or zero
   results are valid.
-- `need_content` defaults to **false**. Long summaries fall back to snippets.
-  Enabling it requests available page content in the same Search response;
-  prefer fewer results to limit output. It does not call `web_fetch`.
+- **DeepSeek** sends `query`, `count`, and `need_content` (default `false`) to
+  `POST https://api.deepseek.com/v1/tools/search`. Queries accept **1–128 Unicode
+  characters** and search operators. Long summaries fall back to snippets;
+  `need_content: true` requests available page content in the same Search call
+  (prefer fewer results to limit output).
+- **Anthropic** sends `query` to `POST https://api.anthropic.com/v1/messages` with
+  server tool `web_search_20250305` (`max_uses: 1`). Queries accept **1–4,096
+  Unicode characters**. Responses must contain a successful
+  `web_search_tool_result` block (a rejected extra call after it is ignored)
+  and finish cleanly (refusals, paused turns, and context-window overflows fail;
+  `max_tokens` retains the retrieved sources and partial synthesis with an
+  explicit incompleteness notice). Returns the grounded synthesis written after
+  the last server tool block alongside deduplicated sources (cited URLs prioritized ahead of
+  uncited results, capped locally to `count`), provider-reported page age, and
+  cited excerpts when present. `need_content: true` adds a notice that full page
+  bodies require `web_fetch`; Search never calls `web_fetch`.
 
-Results retain provider order. Invalid, non-HTTP(S) or credential-bearing source
-URLs are omitted with a count; valid URLs are normalized, then limited to the
-requested count. All-invalid results are distinguished from an empty search.
-Titles, site names and dates use single-line whitespace; summaries and content
-retain paragraphs. Dates are provider-reported and summaries are not verified
-quotations. The extension does not visit result URLs.
+Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
+before applying `count`. All-invalid results are distinguished from an empty
+search. Titles, site names, and dates/ages use single-line whitespace; synthesis,
+summaries, excerpts, and content retain paragraphs. Provider summaries and
+syntheses are not verified quotations, and the extension never visits result URLs.
 
-See the [Search reference](https://api-docs.deepseek.com/api/search/) for operators
-and response fields.
+See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/)
+and [Anthropic web search documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool).
 
 ## Tool cards in Pi
 
 The tool names remain `web_fetch` and `web_search`; their cards display **Web fetch**
-and **Web search**. Calls show the URL or query, with a compact result summary and
-Pi-reported execution time when available. Search previews show up to three titles.
+and **Web search**. Calls show the URL or query, with a compact result summary
+(provider, optional helper model, result count, and Pi-reported execution time)
+and up to three source titles for Search.
 
 Use Pi's expand-tools shortcut (normally `ctrl+o`) to reveal Markdown content,
-source URLs and search summaries. The title and summary keep the same style in
-both views; the shortcut hint follows your keybindings. Provider text is untrusted
-and extraction may be incomplete. Errors, omitted-source notices and full-output
-file paths remain visible when collapsed.
+grounded synthesis, source URLs, summaries, and cited excerpts. The title and
+summary keep the same style in both views; the shortcut hint follows your
+keybindings. Provider text is untrusted and extraction may be incomplete. Errors,
+omitted-source notices, and full-output file paths remain visible when collapsed.
 
 Expansion only reveals the existing bounded preview: it does not fetch again or
 read the full-output file. Use `read` for that file. Presentation metadata in
@@ -143,42 +202,43 @@ without presentation metadata retain a plain-text fallback.
 ## Shared limits and privacy
 
 - Fetch has a **60-second** total deadline; Search has **120 seconds**. These cover
-  authentication, request, response and output. Cancellation aborts network work
+  authentication, request, response, and output. Cancellation aborts network work
   and stops waiting for credentials, though Pi's secret-manager work may continue.
-- Both APIs have a **2 MiB decoded JSON response limit**. Oversized responses fail
+- API responses have a **2 MiB decoded JSON limit**. Oversized responses fail
   without partial output, even after a potentially billable HTTP 200. Malformed,
-  partial, non-JSON and invalid UTF-8 API responses also fail explicitly.
-- API requests do not follow redirects, retry automatically, or use a fallback.
-  HTTP 408, 429 and 5xx diagnostics suggest retrying later. HTTP 401 indicates
-  authentication failure, 402 insufficient balance, and 429 rate limiting.
-- Errors retain HTTP status and recognized network codes, not raw provider bodies
-  or transport messages. Unknown transport failures use a generic diagnostic.
+  partial, non-JSON, and invalid UTF-8 API responses also fail explicitly.
+- API requests do not follow redirects, retry automatically, or fall back to
+  other providers. HTTP 408, 429, and 5xx (including 529 overloaded) diagnostics
+  suggest retrying later. HTTP 401 indicates authentication failure, 402
+  insufficient balance, and 429 rate limiting.
+- Errors retain HTTP status, recognized provider tool error codes, and recognized
+  network codes, never raw provider bodies or transport messages. Unknown
+  transport failures use a generic diagnostic.
 - Previews are limited to **2,000 lines / 50 KiB**. Full formatted output is saved
   when truncated to `pi-web-fetch-*/content.txt` or `pi-web-search-*/content.txt`;
   continue with `read`. Directories are 0700 and files 0600 on POSIX. Failed writes
   are cleaned up; successful files remain until removed or OS temporary cleanup.
   Search files contain selected results and omission notices, not discarded entries.
-- DeepSeek receives the query or normalized URL (including path/query) and request
-  source IP, not conversation or repository content. Inputs and returned content
-  enter the Pi conversation; do not include secrets. Results are untrusted data,
-  not instructions, and full output files do not prove complete page retrieval.
-  Browser cookies are not reused.
+- The selected provider receives only the query or normalized URL (including
+  path/query) and request source IP, never conversation or repository content.
+  Inputs and returned content enter the Pi conversation; do not include secrets.
+  Results are untrusted data, not instructions, and full output files do not
+  prove complete page retrieval. Browser cookies are never reused.
 
-See the [Search & Fetch guide](https://api-docs.deepseek.com/guides/search) for
-provider-controlled billing and rate limits. Cancellation cannot undo charges.
+Cancellation cannot undo provider charges or server-side tool usage.
 
 ## Pi compatibility
 
 Latest verified compatible version: **Pi 1.5.2**, on the runtimes recorded in
 [Node.js compatibility](../../README.md#nodejs-compatibility).
 
-SDK tests discover the package through its manifest, load its TypeScript extension
-and execute both tools using synthetic credentials and local HTTP/controlled
-responses. They cover consent, visibility, reload, Pi authentication and the
-effective-origin boundary. Shared transport regressions cover decoding, resource
-limits and cancellation; Fetch also verifies its own deadline and output handling.
-No live account is needed; these checks do not guarantee site availability or
-extraction quality.
+SDK tests discover the package through its manifest, load its TypeScript extension,
+and execute both tools across DeepSeek and Anthropic using synthetic credentials
+and local HTTP/controlled responses. They cover per-provider consent, active-model
+routing without cross-provider fallback, visibility, reload, API-key and OAuth
+authentication, effective-origin boundaries, decoding, resource limits,
+cancellation, deadlines, and TUI card rendering. No live account is needed; these
+checks do not guarantee site availability or extraction quality.
 
 Host-provided libraries use `"*"` peers as Pi recommends; this does not promise
 compatibility with every Pi release. The package remains private and unpublished.

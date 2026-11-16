@@ -20,8 +20,8 @@ import {
   TUI_KEYBINDINGS,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { fetchDeepSeek } from "../src/fetch.ts";
-import { searchDeepSeek } from "../src/search.ts";
+import { fetchAnthropic, fetchDeepSeek } from "../src/fetch.ts";
+import { searchAnthropic, searchDeepSeek } from "../src/search.ts";
 
 const tools = new Map<string, ToolRenderers>();
 const terminal: Terminal = {
@@ -51,8 +51,8 @@ before(async () => {
   await writeFile(
     join(directory, "web-access.json"),
     JSON.stringify({
-      fetch: { provider: "deepseek" },
-      search: { provider: "deepseek" },
+      fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
+      search: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
     }),
   );
   const loader = new DefaultResourceLoader({
@@ -340,4 +340,192 @@ test("old session results without presentation metadata have a bounded plain-tex
   assert.match(text(component), /alt\+o to expand/u);
   assert.doesNotMatch(text(component), /Last line/u);
   assert.match(text(component, true), /Last line/u);
+});
+
+test("Anthropic fetch and grounded search cards display model metadata, synthesis, and cited excerpts", async () => {
+  const anthropicAuth = async () => ({
+    headers: new Headers({ "anthropic-version": "2023-06-01", "x-api-key": "render-key" }),
+    isOAuth: false,
+  });
+
+  const fetchResult = await fetchAnthropic(
+    url,
+    anthropicAuth,
+    { model: "claude-haiku-5-5" },
+    undefined,
+    async () =>
+      Response.json({
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "web_fetch_tool_result",
+            tool_use_id: "srv_1",
+            content: {
+              type: "web_fetch_result",
+              url,
+              content: {
+                type: "document",
+                title: "Anthropic page",
+                source: {
+                  type: "text",
+                  media_type: "text/plain",
+                  data: "## Extracted\n\nBody text.",
+                },
+              },
+            },
+          },
+        ],
+      }),
+  );
+  const fetchCard = card("fetch");
+  fetchCard.updateArgs({ url });
+  fetchCard.setArgsComplete();
+  fetchCard.markExecutionStarted();
+  fetchCard.updateResult({ ...fetchResult, isError: false, durationMs: 1800 });
+  assert.deepEqual(lines(fetchCard), [
+    `Web fetch  ${url}`,
+    "Anthropic page",
+    "Anthropic · claude-haiku-5-5 · 1.8s · alt+o to expand",
+  ]);
+  assert.match(text(fetchCard, true), /Extracted\nBody text\./u);
+
+  const pdfTruncatedResult = await fetchAnthropic(
+    "https://example.test/paper.pdf",
+    anthropicAuth,
+    { model: "claude-haiku-5-5" },
+    undefined,
+    async () =>
+      Response.json({
+        stop_reason: "max_tokens",
+        content: [
+          {
+            type: "web_fetch_tool_result",
+            tool_use_id: "srv_pdf",
+            content: {
+              type: "web_fetch_result",
+              url: "https://example.test/paper.pdf",
+              content: {
+                type: "document",
+                title: "Long PDF",
+                source: {
+                  type: "base64",
+                  media_type: "application/pdf",
+                  data: "JVBERi0xLjQK",
+                },
+              },
+            },
+          },
+          { type: "text", text: "Partial extracted section." },
+        ],
+      }),
+  );
+  const pdfCard = card("fetch");
+  pdfCard.updateResult({ ...pdfTruncatedResult, isError: false, durationMs: 900 });
+  assert.match(text(pdfCard), /Provider output reached token limit; content is incomplete\./u);
+  assert.doesNotMatch(text(pdfCard), /use read to continue/u);
+  assert.doesNotMatch(text(pdfCard, true), /\[Provider output reached the model token limit/u);
+
+  const searchResult = await searchAnthropic(
+    { query: "release notes" },
+    anthropicAuth,
+    { model: "claude-haiku-5-5" },
+    undefined,
+    async () =>
+      Response.json({
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "web_search_tool_result",
+            tool_use_id: "srv_2",
+            content: [
+              {
+                type: "web_search_result",
+                title: "Release notes",
+                url: "https://example.test/release",
+                page_age: "2 days ago",
+              },
+            ],
+          },
+          {
+            type: "text",
+            text: "Key **release** highlights.",
+            citations: [
+              {
+                type: "web_search_result_location",
+                url: "https://example.test/release",
+                title: "Release notes",
+                cited_text: "Shipped major TLS fixes.",
+              },
+            ],
+          },
+        ],
+      }),
+  );
+  const searchCard = card("search");
+  searchCard.updateResult({ ...searchResult, isError: false, durationMs: 1200 });
+  assert.deepEqual(lines(searchCard), [
+    "Web search  release notes",
+    "Anthropic · claude-haiku-5-5 · 1 results · 1.2s · alt+o to expand",
+    "1. Release notes",
+  ]);
+  const expandedSearch = text(searchCard, true);
+  assert.match(expandedSearch, /Synthesis\nKey release highlights\./u);
+  assert.match(
+    expandedSearch,
+    /1\. Release notes\nhttps:\/\/example\.test\/release\n2 days ago\nCited excerpt\nShipped major TLS fixes\./u,
+  );
+
+  // Even when post-search synthesis text is empty, cited excerpts keep the Cited excerpt label.
+  const citationOnlySearch = await searchAnthropic(
+    { query: "release notes" },
+    anthropicAuth,
+    { model: "claude-haiku-5-5" },
+    undefined,
+    async () =>
+      Response.json({
+        stop_reason: "max_tokens",
+        content: [
+          {
+            type: "web_search_tool_result",
+            tool_use_id: "srv_3",
+            content: [
+              {
+                type: "web_search_result",
+                title: "Release notes",
+                url: "https://example.test/release",
+                page_age: null,
+              },
+            ],
+          },
+          {
+            type: "text",
+            text: "   ",
+            citations: [
+              {
+                type: "web_search_result_location",
+                url: "https://example.test/release",
+                title: "Release notes",
+                cited_text: "Excerpt without synthesis.",
+              },
+            ],
+          },
+        ],
+      }),
+  );
+  const citationOnlyCard = card("search");
+  citationOnlyCard.updateResult({ ...citationOnlySearch, isError: false });
+  assert.match(
+    text(citationOnlyCard),
+    /Provider synthesis reached token limit; synthesis is incomplete\./u,
+  );
+  assert.match(text(citationOnlyCard, true), /Cited excerpt\nExcerpt without synthesis\./u);
+  assert.doesNotMatch(text(citationOnlyCard, true), /Summary/u);
+  const persisted = card("search");
+  persisted.updateResult({
+    content: searchResult.content,
+    details: JSON.parse(JSON.stringify(searchResult.details)),
+    isError: false,
+    durationMs: 1200,
+  });
+  assert.equal(text(persisted, true), expandedSearch);
 });

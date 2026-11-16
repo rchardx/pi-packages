@@ -4,12 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { resolveDeepSeekHeaders } from "../src/deepseek.ts";
+import { type AuthRegistry, resolveAnthropicAuth, resolveDeepSeekHeaders } from "../src/auth.ts";
 
-type Registry = Parameters<typeof resolveDeepSeekHeaders>[0];
-
-async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "pi-search-auth-"));
+async function deepSeekFixture(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "pi-deepseek-auth-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const runtime = await ModelRuntime.create({
     authPath: join(directory, "auth.json"),
@@ -19,7 +17,7 @@ async function fixture(t: TestContext) {
   });
   const provider = runtime.getProvider("deepseek");
   assert.ok(provider);
-  const registry: Registry = {
+  const registry: AuthRegistry = {
     getProvider: (id) => {
       assert.equal(id, "deepseek");
       return provider;
@@ -27,6 +25,30 @@ async function fixture(t: TestContext) {
     getProviderAuth: async (id) => {
       assert.equal(id, "deepseek");
       return { auth: { apiKey: "test-only-key" } };
+    },
+  };
+  return { provider, registry };
+}
+
+async function anthropicFixture(t: TestContext) {
+  const directory = await mkdtemp(join(tmpdir(), "pi-anthropic-auth-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const runtime = await ModelRuntime.create({
+    authPath: join(directory, "auth.json"),
+    modelsPath: null,
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  });
+  const provider = runtime.getProvider("anthropic");
+  assert.ok(provider);
+  const registry: AuthRegistry = {
+    getProvider: (id) => {
+      assert.equal(id, "anthropic");
+      return provider;
+    },
+    getProviderAuth: async (id) => {
+      assert.equal(id, "anthropic");
+      return { auth: { apiKey: "sk-ant-api03-test-only" } };
     },
   };
   return { provider, registry };
@@ -42,8 +64,8 @@ for (const baseUrl of [
   "https://api.deepseek.com/other?version=2#fragment",
   "https://test-user:test-password@api.deepseek.com/v1",
 ]) {
-  test(`accepts the official effective origin regardless of base path: ${baseUrl}`, async (t) => {
-    const { registry, provider } = await fixture(t);
+  test(`DeepSeek accepts the official effective origin regardless of base path: ${baseUrl}`, async (t) => {
+    const { registry, provider } = await deepSeekFixture(t);
     registry.getProvider = () => ({ ...provider, baseUrl });
     assert.equal(
       (await resolveDeepSeekHeaders(registry)).get("authorization"),
@@ -66,8 +88,8 @@ for (const baseUrl of [
   "https://api.deepseek.com:8443",
 ]) {
   for (const source of ["provider", "auth"]) {
-    test(`rejects a mismatched ${source} origin without exposing the route`, async (t) => {
-      const { registry, provider } = await fixture(t);
+    test(`DeepSeek rejects a mismatched ${source} origin without exposing the route`, async (t) => {
+      const { registry, provider } = await deepSeekFixture(t);
       if (source === "provider") registry.getProvider = () => ({ ...provider, baseUrl });
       else registry.getProviderAuth = async () => ({ auth: { apiKey: "test-only-key", baseUrl } });
       await assert.rejects(resolveDeepSeekHeaders(registry), {
@@ -78,8 +100,8 @@ for (const baseUrl of [
   }
 }
 
-test("an explicit auth origin is sufficient without provider defaults, but an unknown origin is not", async (t) => {
-  const { registry } = await fixture(t);
+test("an explicit DeepSeek auth origin is sufficient without provider defaults, but an unknown origin is not", async (t) => {
+  const { registry } = await deepSeekFixture(t);
   registry.getProvider = () => undefined;
   await assert.rejects(resolveDeepSeekHeaders(registry), /effective auth origin/u);
   registry.getProviderAuth = async () => ({
@@ -92,7 +114,7 @@ test("an explicit auth origin is sufficient without provider defaults, but an un
 });
 
 test("OAuth capability does not prevent use of auth already resolved by Pi", async (t) => {
-  const { registry, provider } = await fixture(t);
+  const { registry, provider } = await deepSeekFixture(t);
   registry.getProvider = () => ({
     ...provider,
     auth: {
@@ -117,7 +139,7 @@ test("OAuth capability does not prevent use of auth already resolved by Pi", asy
 });
 
 test("forwards provider and resolved auth headers with case-insensitive overrides and null suppression", async (t) => {
-  const { registry, provider } = await fixture(t);
+  const { registry, provider } = await deepSeekFixture(t);
   const providerHeaders = { "X-Provider": "provider", "X-Replace": "old", "X-Remove": "old" };
   const authHeaders = { "x-replace": "new", "x-remove": null, "X-Auth": "resolved" };
   registry.getProvider = () => ({ ...provider, headers: providerHeaders });
@@ -135,8 +157,23 @@ test("forwards provider and resolved auth headers with case-insensitive override
   assert.equal(authHeaders["x-remove"], null);
 });
 
+test("only final merged header values are validated, so overridden provider values never fail", async (t) => {
+  const { registry, provider } = await deepSeekFixture(t);
+  registry.getProvider = () => ({
+    ...provider,
+    headers: { "X-Replaced": "invalid\nvalue", "X-Removed": "invalid\nvalue" },
+  });
+  registry.getProviderAuth = async () => ({
+    auth: { apiKey: "test-only-key", headers: { "x-replaced": "valid", "x-removed": null } },
+  });
+  assert.deepEqual(Object.fromEntries(await resolveDeepSeekHeaders(registry)), {
+    authorization: "Bearer test-only-key",
+    "x-replaced": "valid",
+  });
+});
+
 test("Pi's Authorization header overrides the default bearer key and works without an apiKey field", async (t) => {
-  const { registry, provider } = await fixture(t);
+  const { registry, provider } = await deepSeekFixture(t);
   registry.getProvider = () => ({
     ...provider,
     headers: { Authorization: "Bearer provider-only-key" },
@@ -158,7 +195,7 @@ test("Pi's Authorization header overrides the default bearer key and works witho
 });
 
 test("null Authorization suppresses the bearer default instead of restoring a different credential", async (t) => {
-  const { registry } = await fixture(t);
+  const { registry } = await deepSeekFixture(t);
   registry.getProviderAuth = async () => ({
     auth: { apiKey: "default-key", headers: { authorization: null } },
   });
@@ -171,7 +208,7 @@ for (const auth of [
   { headers: { "Invalid\nName": "private-value" } },
 ]) {
   test("HTTP header construction failures are sanitized without validating credential formats", async (t) => {
-    const { registry } = await fixture(t);
+    const { registry } = await deepSeekFixture(t);
     registry.getProviderAuth = async () => ({ auth });
     await assert.rejects(resolveDeepSeekHeaders(registry), {
       message: "Cannot prepare DeepSeek authentication headers returned by Pi.",
@@ -180,7 +217,7 @@ for (const auth of [
 }
 
 test("missing credentials are not replaced and SDK failures do not disclose their cause", async (t) => {
-  const { registry, provider } = await fixture(t);
+  const { registry, provider } = await deepSeekFixture(t);
   registry.getProvider = () => ({
     ...provider,
     headers: { Authorization: "must-not-be-a-fallback" },
@@ -196,7 +233,7 @@ test("missing credentials are not replaced and SDK failures do not disclose thei
 });
 
 test("provider lookup failures are also sanitized", async (t) => {
-  const { registry } = await fixture(t);
+  const { registry } = await deepSeekFixture(t);
   registry.getProvider = () => {
     throw new Error("private-provider-configuration");
   };
@@ -206,7 +243,90 @@ test("provider lookup failures are also sanitized", async (t) => {
 });
 
 test("a resolved auth result without HTTP authorization gives a configuration error", async (t) => {
-  const { registry } = await fixture(t);
+  const { registry } = await deepSeekFixture(t);
   registry.getProviderAuth = async () => ({ auth: {} });
   await assert.rejects(resolveDeepSeekHeaders(registry), /Configure DeepSeek authentication/u);
+});
+
+test("Anthropic prepares x-api-key for standard API keys and enforces the official origin", async (t) => {
+  const { registry, provider } = await anthropicFixture(t);
+  const resolved = await resolveAnthropicAuth(registry);
+  assert.equal(resolved.isOAuth, false);
+  assert.deepEqual(Object.fromEntries(resolved.headers), {
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "sk-ant-api03-test-only",
+  });
+
+  registry.getProvider = () => ({ ...provider, baseUrl: "https://gateway.example.test" });
+  await assert.rejects(resolveAnthropicAuth(registry), {
+    message:
+      "Anthropic web tools require Pi's effective auth origin to be https://api.anthropic.com.",
+  });
+});
+
+test("Anthropic prepares Bearer and Claude Code headers for OAuth tokens and honors header overrides", async (t) => {
+  const { registry, provider } = await anthropicFixture(t);
+  registry.getProviderAuth = async () => ({
+    auth: { apiKey: "sk-ant-oat01-oauth-token" },
+  });
+  const oauth = await resolveAnthropicAuth(registry);
+  assert.equal(oauth.isOAuth, true);
+  assert.deepEqual(Object.fromEntries(oauth.headers), {
+    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-dangerous-direct-browser-access": "true",
+    "anthropic-version": "2023-06-01",
+    authorization: "Bearer sk-ant-oat01-oauth-token",
+    "user-agent": "claude-cli/2.1.322",
+    "x-app": "cli",
+  });
+
+  // AUTH_TOKEN style header-only auth works without an apiKey field.
+  registry.getProviderAuth = async () => ({
+    auth: { headers: { Authorization: "Bearer auth-token-only" } },
+  });
+  const bearerOnly = await resolveAnthropicAuth(registry);
+  assert.equal(bearerOnly.isOAuth, false);
+  assert.equal(bearerOnly.headers.get("authorization"), "Bearer auth-token-only");
+  assert.equal(bearerOnly.headers.get("x-api-key"), null);
+
+  // Pi's authHeader: true supplies both apiKey and headers.Authorization; only Authorization is sent.
+  registry.getProviderAuth = async () => ({
+    auth: {
+      apiKey: "sk-ant-api03-test",
+      headers: { Authorization: "Bearer sk-ant-api03-test" },
+    },
+  });
+  const bearerFromAuthHeader = await resolveAnthropicAuth(registry);
+  assert.equal(bearerFromAuthHeader.isOAuth, false);
+  assert.deepEqual(Object.fromEntries(bearerFromAuthHeader.headers), {
+    "anthropic-version": "2023-06-01",
+    authorization: "Bearer sk-ant-api03-test",
+  });
+
+  // Overriding an OAuth credential with an explicit x-api-key replaces Authorization and disables OAuth mode.
+  registry.getProviderAuth = async () => ({
+    auth: {
+      apiKey: "sk-ant-oat01-oauth-token",
+      headers: { "x-api-key": "sk-ant-api03-override" },
+    },
+  });
+  const apiKeyOverride = await resolveAnthropicAuth(registry);
+  assert.equal(apiKeyOverride.isOAuth, false);
+  assert.deepEqual(Object.fromEntries(apiKeyOverride.headers), {
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "sk-ant-api03-override",
+  });
+
+  // Null suppression of the only auth header fails closed; empty federation auth also fails closed.
+  registry.getProvider = () => ({ ...provider, headers: { "X-Custom": "kept" } });
+  registry.getProviderAuth = async () => ({
+    auth: { apiKey: "sk-ant-api03-test", headers: { "x-api-key": null } },
+  });
+  await assert.rejects(resolveAnthropicAuth(registry), /Configure Anthropic authentication/u);
+
+  registry.getProviderAuth = async () => ({
+    auth: {},
+    env: { ANTHROPIC_FEDERATION_RULE_ID: "rule-1" },
+  });
+  await assert.rejects(resolveAnthropicAuth(registry), /Configure Anthropic authentication/u);
 });

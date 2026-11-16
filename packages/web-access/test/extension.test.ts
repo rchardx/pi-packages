@@ -15,7 +15,12 @@ import { Check } from "typebox/value";
 import { fixture } from "./_server.ts";
 
 const nativeFetch = globalThis.fetch;
-const enabledFetch = JSON.stringify({ fetch: { provider: "deepseek" } });
+const enabledFetch = JSON.stringify({
+  fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
+});
+const enabledSearch = JSON.stringify({
+  search: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
+});
 
 async function loadSession(
   t: TestContext,
@@ -23,11 +28,23 @@ async function loadSession(
   config?: string,
   modelsConfig?: object,
 ) {
-  const previousKey = process.env.DEEPSEEK_API_KEY;
+  const previousDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
+  const previousAnthropicToken = process.env.ANTHROPIC_AUTH_TOKEN;
+  const previousAnthropicOAuth = process.env.ANTHROPIC_OAUTH_TOKEN;
   delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_AUTH_TOKEN;
+  delete process.env.ANTHROPIC_OAUTH_TOKEN;
   t.after(() => {
-    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
-    else process.env.DEEPSEEK_API_KEY = previousKey;
+    if (previousDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousDeepSeekKey;
+    if (previousAnthropicKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousAnthropicKey;
+    if (previousAnthropicToken === undefined) delete process.env.ANTHROPIC_AUTH_TOKEN;
+    else process.env.ANTHROPIC_AUTH_TOKEN = previousAnthropicToken;
+    if (previousAnthropicOAuth === undefined) delete process.env.ANTHROPIC_OAUTH_TOKEN;
+    else process.env.ANTHROPIC_OAUTH_TOKEN = previousAnthropicOAuth;
   });
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("Unexpected network call");
@@ -79,11 +96,7 @@ async function loadSession(
 }
 
 test("Pi loads hosted fetch, requires independent consent, and resolves credentials per invocation", async (t) => {
-  const { session, directory, modelRuntime } = await loadSession(
-    t,
-    ["web_fetch"],
-    JSON.stringify({ search: { provider: "deepseek" } }),
-  );
+  const { session, directory, modelRuntime } = await loadSession(t, ["web_fetch"], enabledSearch);
   const tool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
   assert.ok(tool);
   for (const args of [
@@ -153,10 +166,7 @@ test("Pi loads hosted fetch, requires independent consent, and resolves credenti
   await tool.execute("second", { url: "https://example.test/guide" });
   assert.equal(calls, 2);
   assert.equal(resolveAuth.mock.callCount(), 3);
-  await writeFile(
-    join(directory, "web-access.json"),
-    JSON.stringify({ search: { provider: "deepseek" } }),
-  );
+  await writeFile(join(directory, "web-access.json"), enabledSearch);
   await assert.rejects(
     tool.execute("revoked", { url: "https://example.test/guide" }),
     /Fetch is disabled/u,
@@ -189,12 +199,12 @@ test("fetch defaults active only after its own opt-in and reload", async (t) => 
   const { session, directory } = await loadSession(t);
   assert.ok(!session.getActiveToolNames().includes("web_fetch"));
   assert.ok(!session.getActiveToolNames().includes("web_search"));
-  assert.doesNotMatch(session.systemPrompt, /web_fetch|DeepSeek/u);
+  assert.doesNotMatch(session.systemPrompt, /web_fetch|configured provider/u);
   await writeFile(join(directory, "web-access.json"), enabledFetch);
   await session.reload();
   assert.ok(session.getActiveToolNames().includes("web_fetch"));
   assert.ok(!session.getActiveToolNames().includes("web_search"));
-  assert.match(session.systemPrompt, /web_fetch discloses the URL to DeepSeek/u);
+  assert.match(session.systemPrompt, /web_fetch discloses the URL to the configured provider/u);
 });
 
 test("Pi search requires opt-in before resolving credentials and supports the environment key", async (t) => {
@@ -226,10 +236,7 @@ test("Pi search requires opt-in before resolving credentials and supports the en
   // Explicit tool selection and a key do not authorize reading credentials or sending queries.
   await assert.rejects(tool.execute("disabled", { query: "SDK search" }), /Search is disabled/u);
   assert.equal(resolveAuth.mock.callCount(), 0);
-  await writeFile(
-    join(directory, "web-access.json"),
-    JSON.stringify({ search: { provider: "deepseek" } }),
-  );
+  await writeFile(join(directory, "web-access.json"), enabledSearch);
   delete process.env.DEEPSEEK_API_KEY;
   await assert.rejects(tool.execute("missing-key", { query: "SDK search" }), /DEEPSEEK_API_KEY/u);
   assert.equal(calls, 0);
@@ -247,8 +254,6 @@ test("Pi search requires opt-in before resolving credentials and supports the en
   assert.equal(resolveAuth.mock.callCount(), 2);
   assert.equal(calls, 1);
 });
-
-const enabledSearch = JSON.stringify({ search: { provider: "deepseek" } });
 
 test("the registered search schema declares the argument constraints enforced by Pi", async (t) => {
   const { session } = await loadSession(t, ["web_search"], enabledSearch);
@@ -499,4 +504,203 @@ test("hosted fetch uses Pi headers at the fixed endpoint and rejects an effectiv
     /effective auth origin/u,
   );
   assert.equal(calls, 1);
+});
+
+test("routes dynamically by active model across DeepSeek and Anthropic without cross-provider fallback", async (t) => {
+  const dualConfig = JSON.stringify({
+    search: {
+      providers: {
+        deepseek: {},
+        anthropic: { model: "claude-haiku-4-5" },
+      },
+      defaultProvider: "deepseek",
+    },
+    fetch: {
+      providers: {
+        anthropic: {},
+      },
+    },
+  });
+  const { session, modelRuntime } = await loadSession(t, ["web_search", "web_fetch"], dualConfig);
+  await modelRuntime.setRuntimeApiKey("deepseek", "deepseek-runtime-key");
+  await modelRuntime.setRuntimeApiKey("anthropic", "sk-ant-oat01-runtime-oauth");
+  await modelRuntime.setRuntimeApiKey("openai", "sk-openai-key");
+
+  const search = session.agent.state.tools.find((tool) => tool.name === "web_search");
+  const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
+  assert.ok(search && fetchTool);
+
+  const anthropicModel = modelRuntime.getProvider("anthropic")?.getModels()[0];
+  const deepseekModel = modelRuntime.getProvider("deepseek")?.getModels()[0];
+  const openaiModel = modelRuntime.getProvider("openai")?.getModels()[0];
+  assert.ok(anthropicModel && deepseekModel && openaiModel);
+
+  const seenUrls: string[] = [];
+  let failAnthropic = false;
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    seenUrls.push(String(url));
+    if (url === "https://api.anthropic.com/v1/messages") {
+      if (failAnthropic) return new Response("rate limited", { status: 429 });
+      const headers = new Headers(init?.headers);
+      assert.equal(headers.get("authorization"), "Bearer sk-ant-oat01-runtime-oauth");
+      assert.equal(headers.get("anthropic-beta"), "claude-code-20250219,oauth-2025-04-20");
+      const body = JSON.parse(String(init?.body)) as {
+        model: string;
+        tools: Array<{ name: string }>;
+      };
+      if (body.tools[0]?.name === "web_search") {
+        assert.equal(body.model, "claude-haiku-4-5");
+        return Response.json({
+          stop_reason: "end_turn",
+          content: [
+            {
+              type: "web_search_tool_result",
+              tool_use_id: "srv_1",
+              content: [
+                {
+                  type: "web_search_result",
+                  title: "Anthropic result",
+                  url: "https://example.test/anthropic",
+                  page_age: null,
+                },
+              ],
+            },
+            { type: "text", text: "Grounded by Anthropic." },
+          ],
+        });
+      }
+      assert.equal(body.model, "claude-haiku-5-5");
+      return Response.json({
+        stop_reason: "end_turn",
+        content: [
+          {
+            type: "web_fetch_tool_result",
+            tool_use_id: "srv_2",
+            content: {
+              type: "web_fetch_result",
+              url: "https://example.test/page",
+              content: {
+                type: "document",
+                title: "Fetched via Anthropic",
+                source: {
+                  type: "text",
+                  media_type: "text/plain",
+                  data: "Anthropic page body.",
+                },
+              },
+            },
+          },
+        ],
+      });
+    }
+    assert.equal(url, "https://api.deepseek.com/v1/tools/search");
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer deepseek-runtime-key");
+    return Response.json({
+      results: [
+        {
+          title: "DeepSeek result",
+          url: "https://example.test/deepseek",
+          summary: "DeepSeek summary.",
+          snippet: "",
+          content: "",
+          site_name: null,
+          date: null,
+        },
+      ],
+    });
+  });
+
+  // Active Anthropic model routes both search and fetch to Anthropic.
+  await session.setModel(anthropicModel);
+  const anthropicSearch = await search.execute("s-anthropic", { query: "test query" });
+  assert.equal(anthropicSearch.details.provider, "anthropic");
+  const anthropicFetch = await fetchTool.execute("f-anthropic", {
+    url: "https://example.test/page",
+  });
+  assert.equal(anthropicFetch.details.provider, "anthropic");
+
+  // Anthropic failure never falls back to DeepSeek even though defaultProvider is deepseek.
+  failAnthropic = true;
+  await assert.rejects(
+    search.execute("s-anthropic-429", { query: "test query" }),
+    /Anthropic Search HTTP 429/u,
+  );
+  assert.deepEqual(seenUrls, [
+    "https://api.anthropic.com/v1/messages",
+    "https://api.anthropic.com/v1/messages",
+    "https://api.anthropic.com/v1/messages",
+  ]);
+  failAnthropic = false;
+
+  // Switching active model to OpenAI (not in search.providers) uses defaultProvider ("deepseek")
+  // for search, and fails closed without resolving credentials for fetch (no defaultProvider).
+  await session.setModel(openaiModel);
+  const fallbackDefault = await search.execute("s-default", { query: "test query" });
+  assert.equal(fallbackDefault.details.provider, "deepseek");
+
+  const resolveAuth = t.mock.method(modelRuntime, "getAuth");
+  await assert.rejects(
+    fetchTool.execute("f-unenabled", { url: "https://example.test/page" }),
+    /Active model provider "openai" is not enabled in fetch\.providers/u,
+  );
+  assert.equal(resolveAuth.mock.callCount(), 0);
+
+  // Switching active model to DeepSeek routes search directly to DeepSeek.
+  await session.setModel(deepseekModel);
+  const directDeepSeek = await search.execute("s-deepseek", { query: "test query" });
+  assert.equal(directDeepSeek.details.provider, "deepseek");
+});
+
+test("SDK authHeader: true on Anthropic sends only Bearer Authorization without duplicate x-api-key", async (t) => {
+  const { session, modelRuntime } = await loadSession(
+    t,
+    undefined,
+    JSON.stringify({ fetch: { providers: { anthropic: {} }, defaultProvider: "anthropic" } }),
+    {
+      providers: {
+        anthropic: {
+          authHeader: true,
+        },
+      },
+    },
+  );
+  await modelRuntime.setRuntimeApiKey("anthropic", "sk-ant-api03-bearer-test");
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    calls++;
+    assert.equal(url, "https://api.anthropic.com/v1/messages");
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("authorization"), "Bearer sk-ant-api03-bearer-test");
+    assert.equal(headers.get("x-api-key"), null);
+    assert.equal(headers.get("anthropic-beta"), null);
+    return Response.json({
+      stop_reason: "end_turn",
+      content: [
+        {
+          type: "web_fetch_tool_result",
+          tool_use_id: "srv_auth_header",
+          content: {
+            type: "web_fetch_result",
+            url: "https://example.test/auth",
+            content: {
+              type: "document",
+              title: "Auth Header Page",
+              source: {
+                type: "text",
+                media_type: "text/plain",
+                data: "Authenticated with Bearer only.",
+              },
+            },
+          },
+        },
+      ],
+    });
+  });
+  const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
+  assert.ok(fetchTool);
+  const result = await fetchTool.execute("f-auth-header", { url: "https://example.test/auth" });
+  assert.equal(calls, 1);
+  const first = result.content[0];
+  assert.equal(first?.type, "text");
+  assert.match(first.text, /Authenticated with Bearer only\./u);
 });

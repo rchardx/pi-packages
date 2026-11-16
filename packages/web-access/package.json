@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Opt-in DeepSeek web search and page fetching for Pi coding agent",
+  "description": "Opt-in hosted web search and page fetching for Pi coding agent",
   "license": "MIT",
   "engines": {
     "node": ">=22.19.0"
