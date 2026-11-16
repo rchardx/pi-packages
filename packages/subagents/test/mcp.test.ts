@@ -241,6 +241,15 @@ test("a delegated child starts before its MCP servers connect and still reaches 
       ) {
         report = event.message.content;
       }
+      // A root that is still busy receives the report as an appended entry instead.
+      if (
+        event.type === "entry_appended" &&
+        event.entry.type === "custom_message" &&
+        event.entry.customType === "subagent:result" &&
+        typeof event.entry.content === "string"
+      ) {
+        report = event.entry.content;
+      }
       if (event.type === "agent_settled" && report) resolve();
     });
   });

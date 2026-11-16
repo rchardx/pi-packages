@@ -493,6 +493,48 @@ async function parentSession(
   return { session, tool, cancelTool, api, notices, statuses, statusUpdates };
 }
 
+type Session = Awaited<ReturnType<typeof createAgentSession>>["session"];
+interface Delivered {
+  customType: string;
+  content: unknown;
+  details: unknown;
+  via: "entry_appended" | "message_end";
+}
+
+/** Updates as hosts observe them: appended entries, or the message starting a run. */
+function deliveredUpdates(session: Session) {
+  const seen: Delivered[] = [];
+  const waiting = new Set<() => void>();
+  const add = (update: Delivered) => {
+    seen.push(update);
+    for (const check of [...waiting]) check();
+  };
+  session.subscribe((event) => {
+    if (event.type === "entry_appended" && event.entry.type === "custom_message") {
+      const { customType, content, details } = event.entry;
+      add({ customType, content, details, via: "entry_appended" });
+    } else if (event.type === "message_end" && event.message.role === "custom") {
+      const { customType, content, details } = event.message;
+      add({ customType, content, details, via: "message_end" });
+    }
+  });
+  return {
+    seen,
+    next(customType: string, from = 0): Promise<Delivered> {
+      return new Promise((resolve) => {
+        const check = () => {
+          const found = seen.slice(from).find((update) => update.customType === customType);
+          if (!found) return;
+          waiting.delete(check);
+          resolve(found);
+        };
+        waiting.add(check);
+        check();
+      });
+    },
+  };
+}
+
 test("children rebuild their prompt without inherited delegation rules or double-applied hooks", {
   timeout: 30_000,
 }, async (t) => {
@@ -772,19 +814,12 @@ for (const exposure of ["deferred", "codemode"]) {
 }
 
 for (const busy of [false, true]) {
-  test(`completion uses steer with an ${busy ? "active" : "idle"} parent`, {
+  test(`completion reaches an ${busy ? "active" : "idle"} parent without the steering queue`, {
     timeout: 30_000,
   }, async (t) => {
     const { dir, requests, delay } = await fixture(t);
     const { session, tool } = await parentSession(t, dir);
-    const seen: { delivery: string | undefined; trigger: boolean | undefined }[] = [];
-    let activeAtDelivery = false;
-    const send = session.sendCustomMessage.bind(session);
-    session.sendCustomMessage = async (message, options) => {
-      activeAtDelivery = !session.isIdle;
-      seen.push({ delivery: options?.deliverAs, trigger: options?.triggerTurn });
-      return send(message, options);
-    };
+    const updates = deliveredUpdates(session);
     const turn = new AbortController();
     const started = await tool.execute(
       "delegate",
@@ -798,15 +833,16 @@ for (const busy of [false, true]) {
       delay(500);
       parentWork = session.prompt("Subagent coordination: perform independent work.");
     }
-    const deadline = Date.now() + 15_000;
-    while (seen.length === 0 && Date.now() < deadline)
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.deepEqual(seen, [{ delivery: "steer", trigger: true }]);
-    assert.equal(activeAtDelivery, busy);
+    const report = await updates.next("subagent:result");
+    // A busy parent receives the report at a run boundary; an idle one is started by it.
+    assert.equal(report.via, busy ? "entry_appended" : "message_end");
+    assert.match(String(report.content), /: completed\n[\s\S]*Implemented and checked\./u);
     await parentWork;
     await session.waitForIdle();
+    assert.equal(updates.seen.length, 1);
+    assert.equal(session.pendingMessageCount, 0);
     assert.equal(await readFile(join(dir, "result.txt"), "utf8"), "child wrote this");
-    assert.ok(requests.length >= 3, "completion wakes or steers the parent");
+    assert.match(JSON.stringify(requests.at(-1)), /Subagent [0-9a-f-]{36}: completed/u);
   });
 }
 
@@ -913,6 +949,7 @@ test("installed package outside workspace node_modules launches and completes a 
       if (event.type === "tool_execution_end" && event.isError) {
         reject(new Error(`Tool failed: ${JSON.stringify(event.result)}`));
       }
+      // An idle root is started by the report; a busy one receives it as an appended entry.
       if (
         event.type === "message_end" &&
         event.message.role === "custom" &&
@@ -920,6 +957,14 @@ test("installed package outside workspace node_modules launches and completes a 
         typeof event.message.content === "string"
       ) {
         report = event.message.content;
+      }
+      if (
+        event.type === "entry_appended" &&
+        event.entry.type === "custom_message" &&
+        event.entry.customType === "subagent:result" &&
+        typeof event.entry.content === "string"
+      ) {
+        report = event.entry.content;
       }
       if (event.type === "agent_settled" && report) {
         resolve();
@@ -1019,6 +1064,23 @@ async function communicationFixture(t: TestContext) {
     releaseMain = resolve;
   });
   t.after(() => releaseMain());
+  let childHeld: Promise<void> | undefined;
+  let releaseChild: () => void = () => {};
+  const holdChild = () => {
+    childHeld = new Promise<void>((resolve) => {
+      releaseChild = resolve;
+    });
+  };
+  t.after(() => releaseChild());
+  let mainRequests = 0;
+  let lastMain = "";
+  let failMain = false;
+  let nextMainHeld: Promise<void> | undefined;
+  let notes = 0;
+  let noteAccepted: () => void = () => {};
+  const noteSent = new Promise<void>((resolve) => {
+    noteAccepted = resolve;
+  });
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -1028,8 +1090,8 @@ async function communicationFixture(t: TestContext) {
     const transcript = JSON.stringify(messages);
     const toolMessages = messages.filter((entry) => entry.role === "tool");
 
-    res.writeHead(200, { "content-type": "text/event-stream" });
     const respondText = (text: string) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
       const chunk = {
         id: "mock",
         object: "chat.completion.chunk",
@@ -1050,6 +1112,7 @@ async function communicationFixture(t: TestContext) {
     const respondToolCalls = (
       calls: Array<{ id: string; name: string; args: Record<string, unknown> }>,
     ) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
       calls.forEach((call, index) => {
         const toolCall = {
           index,
@@ -1147,6 +1210,10 @@ async function communicationFixture(t: TestContext) {
     }
 
     if (transcript.includes("Delegated task:\\n\\nNOTIFY_MAIN_THEN_STAY")) {
+      // The child asks again only after its send was accepted by the root session.
+      if (toolMessages.length === 1) notes++;
+      if (toolMessages.length > 0) noteAccepted();
+      else await childHeld;
       respondToolCalls(
         toolMessages.length === 0
           ? [{ id: "notify", name: "subagent_send", args: { to: "main", message: "NOTE_1" } }]
@@ -1155,7 +1222,32 @@ async function communicationFixture(t: TestContext) {
       return;
     }
 
+    mainRequests++;
+    lastMain = transcript;
+    if (transcript.includes("MAIN_WAITS")) {
+      if (toolMessages.length === 0) {
+        respondToolCalls([
+          { id: "delegate", name: "subagent", args: { task: "NOTIFY_MAIN_THEN_STAY" } },
+        ]);
+      } else if (transcript.includes("NOTE_1")) {
+        respondText("Root saw NOTE_1.");
+      } else {
+        respondToolCalls([{ id: "wait", name: "subagent_wait", args: { timeoutSeconds: 20 } }]);
+      }
+      return;
+    }
     if (transcript.includes("HOLD_MAIN")) await mainHeld;
+    if (nextMainHeld) {
+      const held = nextMainHeld;
+      nextMainHeld = undefined;
+      await held;
+    }
+    if (failMain) {
+      failMain = false;
+      res.writeHead(500, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: { message: "Internal server error" } }));
+      return;
+    }
     respondText("Ack.");
   });
 
@@ -1191,13 +1283,33 @@ async function communicationFixture(t: TestContext) {
       },
     }),
   );
-  return { dir, releaseMain };
+  return {
+    dir,
+    releaseMain,
+    noteSent,
+    mainRequests: () => mainRequests,
+    notes: () => notes,
+    lastMain: () => lastMain,
+    holdNextMain: () => {
+      let release: () => void = () => {};
+      nextMainHeld = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      t.after(() => release());
+      return release;
+    },
+    failNextMain: () => {
+      failMain = true;
+    },
+    holdChild,
+    releaseChild: () => releaseChild(),
+  };
 }
 
-test("updates the host drops from its queue stop counting as queued", {
+test("updates for a busy root survive the host clearing its steering queue", {
   timeout: 30_000,
 }, async (t) => {
-  const { dir, releaseMain } = await communicationFixture(t);
+  const { dir, releaseMain, noteSent } = await communicationFixture(t);
   const { session, tool, cancelTool } = await parentSession(
     t,
     dir,
@@ -1207,33 +1319,301 @@ test("updates the host drops from its queue stop counting as queued", {
   );
   const waitTool = session.agent.state.tools.find((entry) => entry.name === "subagent_wait");
   assert.ok(waitTool);
-  const original = session.sendCustomMessage.bind(session);
-  const queued = new Promise<void>((resolve) => {
-    session.sendCustomMessage = async (message, options) => {
-      const sent = original(message, options);
-      if (message.customType === "subagent:message") resolve();
-      return sent;
-    };
-  });
+  const updates = deliveredUpdates(session);
 
   const busy = session.prompt("HOLD_MAIN");
   const started = await tool.execute("start", { task: "NOTIFY_MAIN_THEN_STAY" });
   const childId = (started.details as { id?: string }).id;
   assert.ok(childId);
-  await queued;
+  await noteSent;
   assert.equal(session.isStreaming, true);
+  assert.equal(updates.seen.length, 0, "nothing is handed to Pi before a run boundary");
 
-  // RPC clear_queue: the queued peer message is dropped without a message_end.
+  // RPC clear_queue and the TUI's queue restore drop queued steering messages.
   session.clearQueue();
+  const pending = await waitTool.execute("pending", { timeoutSeconds: 5 });
+  assert.deepEqual(pending.details, { outcome: "woke", waitedMs: 0 });
   releaseMain();
   await busy;
-  assert.doesNotMatch(JSON.stringify(session.messages), /NOTE_1/u);
+  await session.waitForIdle();
+
+  assert.equal(updates.seen.length, 1);
+  const [note] = updates.seen;
+  assert.equal(note?.via, "entry_appended");
+  assert.ok(record(note?.details));
+  assert.equal(note.details.from, childId);
+  assert.match(JSON.stringify(session.messages), /NOTE_1/u);
 
   await cancelTool.execute("cancel", { id: childId });
   for (const call of ["first", "second"]) {
     const waited = await waitTool.execute(call, { timeoutSeconds: 5 });
     assert.deepEqual(waited.details, { outcome: "idle", waitedMs: 0 });
   }
+});
+
+test("an aborted root run records pending updates without starting another run", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, noteSent, mainRequests } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const updates = deliveredUpdates(session);
+
+  const busy = session.prompt("HOLD_MAIN");
+  await tool.execute("start", { task: "NOTIFY_MAIN_THEN_STAY" });
+  await noteSent;
+  await session.abort();
+  await busy;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+
+  assert.equal(session.isIdle, true);
+  assert.equal(updates.seen.length, 1);
+  assert.match(JSON.stringify(session.messages), /NOTE_1/u);
+  assert.equal(mainRequests(), 1, "the user's stop is not overridden by a new model request");
+});
+
+for (const aborted of [false, true]) {
+  test(`an update arriving after the last boundary ${aborted ? "is recorded when the run was aborted" : "starts a run once the root settles"}`, {
+    timeout: 30_000,
+  }, async (t) => {
+    const { dir, noteSent, mainRequests, holdChild, releaseChild } = await communicationFixture(t);
+    // Loaded after subagents, so the package's own handler for this boundary has run.
+    const slowBoundary = join(dir, "slow-boundary.mjs");
+    const reached = join(dir, "boundary.flag");
+    await writeFile(
+      slowBoundary,
+      `import { writeFileSync } from "node:fs";
+export default function (pi) {
+  let done = false;
+  pi.on("agent_before_settle", async () => {
+    if (done) return;
+    done = true;
+    writeFileSync(${JSON.stringify(reached)}, "");
+    await new Promise((resolve) => setTimeout(resolve, 600));
+  });
+}
+`,
+    );
+    const { session, tool } = await parentSession(
+      t,
+      dir,
+      false,
+      [slowBoundary],
+      ["subagent_list", "subagent_send", "subagent_wait"],
+    );
+    const updates = deliveredUpdates(session);
+
+    holdChild();
+    await tool.execute("start", { task: "NOTIFY_MAIN_THEN_STAY" });
+    const run = session.prompt("Plain question.");
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      try {
+        await readFile(reached);
+        break;
+      } catch {
+        assert.ok(Date.now() < deadline, "Timed out waiting for the settlement boundary");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    const stopped = aborted ? session.abort() : undefined;
+    releaseChild();
+    await noteSent;
+    assert.equal(session.isStreaming, true);
+    assert.equal(updates.seen.length, 0);
+
+    await run;
+    await stopped;
+    const note = await updates.next("subagent:message");
+    assert.equal(note.via, "message_end");
+    await session.waitForIdle();
+    assert.equal(updates.seen.length, 1);
+    assert.match(JSON.stringify(session.messages), /NOTE_1/u);
+    // A normal settlement is followed by a run for the update; a user's stop is not.
+    assert.equal(mainRequests(), aborted ? 1 : 2);
+  });
+}
+
+test("updates arriving while the root settles share one requested run", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, mainRequests, notes, holdChild, releaseChild } = await communicationFixture(t);
+  const slowSettled = join(dir, "slow-settled.mjs");
+  const settling = join(dir, "settling.flag");
+  await writeFile(
+    slowSettled,
+    `import { writeFileSync } from "node:fs";
+export default function (pi) {
+  let done = false;
+  pi.on("agent_settled", async () => {
+    if (done) return;
+    done = true;
+    writeFileSync(${JSON.stringify(settling)}, "");
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  });
+}
+`,
+  );
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [slowSettled],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const updates = deliveredUpdates(session);
+
+  holdChild();
+  await tool.execute("first", { task: "NOTIFY_MAIN_THEN_STAY" });
+  await tool.execute("second", { task: "NOTIFY_MAIN_THEN_STAY" });
+  const run = session.prompt("Plain question.");
+  const deadline = Date.now() + 10_000;
+  const until = async (ready: () => boolean | Promise<boolean>, what: string) => {
+    while (!(await ready())) {
+      assert.ok(Date.now() < deadline, `Timed out waiting for ${what}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  await until(
+    () =>
+      readFile(settling).then(
+        () => true,
+        () => false,
+      ),
+    "settled handlers",
+  );
+  // Pi reports idle here, yet a run requested now starts only after these handlers.
+  assert.equal(session.isIdle, true);
+  releaseChild();
+  await until(() => notes() === 2, "both peer messages");
+  assert.equal(updates.seen.length, 0, "both updates arrived before the requested run began");
+
+  await run;
+  await updates.next("subagent:message", 1);
+  await session.waitForIdle();
+  // Both start the single requested run, so its first model request sees both.
+  assert.deepEqual(
+    updates.seen.map((update) => update.via),
+    ["message_end", "message_end"],
+  );
+  assert.equal(mainRequests(), 2, "one model request handles both updates");
+});
+
+test("a root model waiting on subagent_wait receives the update at its turn boundary", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, mainRequests, lastMain } = await communicationFixture(t);
+  const { session } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const updates = deliveredUpdates(session);
+
+  // The mock root delegates, then calls subagent_wait until it has seen the note.
+  await session.prompt("MAIN_WAITS");
+  await session.waitForIdle();
+
+  assert.deepEqual(
+    updates.seen.map((update) => [update.customType, update.via]),
+    [["subagent:message", "entry_appended"]],
+  );
+  assert.match(lastMain(), /Incoming update queued/u, "the wait returned for the pending note");
+  assert.match(JSON.stringify(session.messages.at(-1)), /Root saw NOTE_1\./u);
+  assert.equal(mainRequests(), 3, "delegate, wait, and one request that sees the note");
+});
+
+test("an update handed over on a failed model request survives the automatic retry", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, mainRequests, lastMain, noteSent, releaseMain, failNextMain } =
+    await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const updates = deliveredUpdates(session);
+  let retries = 0;
+  session.subscribe((event) => {
+    if (event.type === "auto_retry_start") retries++;
+  });
+
+  failNextMain();
+  const busy = session.prompt("HOLD_MAIN");
+  await tool.execute("start", { task: "NOTIFY_MAIN_THEN_STAY" });
+  await noteSent;
+  releaseMain();
+  await busy;
+  await session.waitForIdle();
+
+  assert.equal(retries, 1);
+  assert.equal(updates.seen.length, 1, "the update is recorded once, not per attempt");
+  assert.equal(mainRequests(), 2);
+  assert.match(lastMain(), /NOTE_1/u, "the retried request includes the update");
+  assert.equal(session.messages.at(-1)?.role, "assistant");
+});
+
+test("an update arriving while an idle root compacts joins the next run's first request", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, mainRequests, lastMain, holdChild, releaseChild, noteSent, holdNextMain } =
+    await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const updates = deliveredUpdates(session);
+  // Enough history for Pi to accept a manual compaction.
+  for (let turn = 0; turn < 3; turn++) {
+    await session.prompt(`Plain question ${turn}. ${"lorem ipsum ".repeat(6000)}`);
+  }
+  await session.waitForIdle();
+  holdChild();
+  await tool.execute("start", { task: "NOTIFY_MAIN_THEN_STAY" });
+
+  const releaseSummary = holdNextMain();
+  const compaction = session.compact();
+  const deadline = Date.now() + 10_000;
+  while (!session.isCompacting) {
+    assert.ok(Date.now() < deadline, "Timed out waiting for compaction to start");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(session.isStreaming, false);
+  releaseChild();
+  await noteSent;
+  releaseSummary();
+  await compaction;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // Pi reports the end of this compaction to no extension event, so nothing wakes the root.
+  assert.equal(session.isIdle, true);
+  assert.equal(updates.seen.length, 0);
+
+  const before = mainRequests();
+  await session.prompt("Next question.");
+  await session.waitForIdle();
+  assert.deepEqual(
+    updates.seen.map((update) => update.via),
+    ["message_end"],
+  );
+  assert.equal(
+    mainRequests() - before,
+    1,
+    "the update starts with the prompt, without an extra request",
+  );
+  assert.match(lastMain(), /Next question\.[\s\S]*NOTE_1/u);
 });
 
 test("live child and main exchange messages and completed children reject later messages", {

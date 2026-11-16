@@ -6,6 +6,7 @@ import {
   formatDeliveryReceipt,
   formatWaitOutcome,
 } from "../src/inbox.ts";
+import { Mailbox } from "../src/mailbox.ts";
 import { MAX_WAIT_SECONDS } from "../src/protocol.ts";
 
 // Wait timers are unreferenced so they never keep a host process alive; hold the
@@ -15,39 +16,41 @@ function keepAlive(t: TestContext): void {
   t.after(() => clearInterval(timer));
 }
 
-test("AgentInbox enforces peer queue bounds while keeping completion events unblocked", () => {
+test("AgentInbox bounds accepted messages until they are committed", () => {
   const inbox = new AgentInbox(2);
   assert.equal(inbox.hasQueued(), false);
   assert.equal(inbox.acceptMessage("m1"), true);
   assert.equal(inbox.acceptMessage("m2"), true);
   assert.equal(inbox.acceptMessage("m3"), false, "exceeding maxMessages must fail closed");
-  assert.equal(inbox.queuedMessageCount(), 2);
-
-  inbox.acceptEvent("e1");
   inbox.markMessageCommitted("m1");
+  assert.equal(inbox.acceptMessage("m3"), true);
   inbox.markMessageCommitted("m2");
-  assert.equal(inbox.hasQueued(), true, "uncommitted completion event keeps inbox active");
-  inbox.markEventCommitted("e1");
+  inbox.markMessageCommitted("m3");
   assert.equal(inbox.hasQueued(), false);
 });
 
-test("AgentInbox.discardQueued releases uncommitted records without waking waiters", async (t) => {
+test("Mailbox owns updates in arrival order and bounds only peer messages", async (t) => {
   keepAlive(t);
-  const inbox = new AgentInbox(1);
-  const waiting = inbox.wait(0.08);
-  assert.equal(inbox.acceptMessage("m1"), true);
-  inbox.acceptEvent("e1");
-  assert.equal(inbox.acceptMessage("m2"), false);
+  const update = (content: string) => ({ customType: "test", content, details: { content } });
+  const mailbox = new Mailbox(2);
+  const waiting = mailbox.wait(5);
+  assert.equal(mailbox.offerMessage(update("m1")), true);
   assert.equal((await waiting).outcome, "woke");
+  mailbox.addResult(update("r1"));
+  assert.equal(mailbox.offerMessage(update("m2")), true);
+  assert.equal(mailbox.offerMessage(update("m3")), false, "a full mailbox rejects peer messages");
+  mailbox.addResult(update("r2"));
+  assert.deepEqual(await mailbox.wait(5), { outcome: "woke", waitedMs: 0 });
 
-  const idleWaiter = new AgentInbox(1);
-  const pending = idleWaiter.wait(0.08);
-  idleWaiter.discardQueued();
-  assert.equal((await pending).outcome, "timeout");
-
-  inbox.discardQueued();
-  assert.equal(inbox.hasQueued(), false);
-  assert.equal(inbox.acceptMessage("m2"), true, "discarded records free queue capacity");
+  assert.equal(mailbox.take()?.content, "m1");
+  assert.equal(mailbox.offerMessage(update("m3")), true, "handing an update over frees capacity");
+  assert.deepEqual(
+    mailbox.drain().map((entry) => entry.content),
+    ["r1", "m2", "r2", "m3"],
+  );
+  assert.equal(mailbox.hasQueued(), false);
+  assert.equal(mailbox.take(), undefined);
+  assert.deepEqual(await mailbox.wait(5, undefined, () => false), { outcome: "idle", waitedMs: 0 });
 });
 
 test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, timeouts, and aborts", async (t) => {
