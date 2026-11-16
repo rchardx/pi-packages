@@ -113,6 +113,23 @@ function failedResponseError(label: string, event: { type: string }): Error {
   return new Error(`${label} failed${reason ? `: ${reason}` : " to complete the request."}`);
 }
 
+// OpenAI appends utm_source=openai to the links it returns, so the same page would otherwise
+// appear once per variant. Only that exact parameter is removed; the rest of the query is
+// kept byte-for-byte.
+function withoutOpenAIAttribution(rawUrl: string): string {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  const parameters = url.search.slice(1).split("&");
+  const kept = parameters.filter((parameter) => parameter !== "utm_source=openai");
+  if (kept.length === parameters.length) return rawUrl;
+  url.search = kept.length ? `?${kept.join("&")}` : "";
+  return url.href;
+}
+
 export interface OpenAIOptions {
   model?: string;
 }
@@ -185,7 +202,8 @@ export async function searchOpenAI(
         // Only the answer after the last search is the synthesis; earlier text is narration.
         synthesis = "";
         sources.resetCitations();
-        for (const source of item.action?.sources ?? []) sources.addResult(source.url, "");
+        for (const source of item.action?.sources ?? [])
+          sources.addResult(withoutOpenAIAttribution(source.url), "");
       } else if (item.type === "message") {
         if (!Check(Message, item)) {
           throw new Error(`${label} returned an invalid results schema.`);
@@ -200,7 +218,7 @@ export async function searchOpenAI(
           synthesis += part.text;
           for (const annotation of part.annotations) {
             if (Check(UrlCitation, annotation)) {
-              sources.addCitation(annotation.url, annotation.title);
+              sources.addCitation(withoutOpenAIAttribution(annotation.url), annotation.title);
             }
           }
         }
