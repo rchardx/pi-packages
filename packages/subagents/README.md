@@ -26,6 +26,10 @@ subagent({
   task: "Implement maxJobs validation in src/config.ts, preserve unrelated changes, add tests, and report observed test results."
 })
 
+subagent_list({})
+subagent_send({ to: "<UUID | 'main' | '*'>", message: "Share an intermediate finding or answer a question." })
+subagent_wait({ timeoutSeconds: 120 })
+
 subagent_cancel({ id: "<full UUID returned by subagent>" })
 ```
 
@@ -56,10 +60,43 @@ Subagents · 2 running
 ```
 
 With no running children it displays `No subagents running.` Collapsed
-`subagent:result` cards show the short agent prefix, status, and duration before
-the task summary so long tasks truncate first; expanding reveals the full UUID,
-request and token counts, and sanitized report text without changing the
-model-facing message.
+`subagent:result` and `subagent:message` cards show a single summary line in the
+TUI; expanding reveals full IDs, metadata, and sanitized body text without
+changing the model-facing message.
+
+### Live session communication
+
+Live agents in the same root session (`"main"` and running children) can exchange
+messages without polling or monitoring a dashboard:
+
+- `subagent_list` lists live agents in the current root session, marking the
+  caller as `(self)` and omitting finished or cancelled children.
+- `subagent_send` delivers a message (at most 16 KiB UTF-8) to `"main"`, a live
+  child UUID, or `"*"` (broadcast to a snapshot of live peers excluding the
+  sender). Sender identity is stamped by the root session runtime and cannot be
+  forged or cross root-session boundaries. Delivery means the recipient accepted
+  the `subagent:message` entry into its steering queue (`deliverAs: "steer"`,
+  `triggerTurn: true`), not that the recipient has already processed it.
+- `subagent_wait` suspends the current turn until an incoming message (or, in
+  `"main"`, a child completion notification) arrives, no running children remain,
+  `timeoutSeconds` elapses (default `120`, maximum `300`), or the turn is aborted.
+- **Terminal finality:** ending a child turn without calling `subagent_wait` and
+  with no queued messages permanently completes the child and exits its process.
+  Autonomously completed (or failed, timed-out, limit-reached, or cancelled)
+  children never receive further messages: direct sends to finished IDs fail with
+  their terminal status, broadcast snapshots skip them, and late messages racing
+  final settlement are either processed before settlement or explicitly rejected
+  as undelivered rather than silently dropped. A child whose run is still active,
+  including a continuation requested by another extension at Pi's pre-settlement
+  boundary, remains reachable. Messages accepted by a child that is then
+  cancelled, times out, or hits its request limit are not processed.
+- **Host queue clearing:** queued updates wait in Pi's steering queue. Clearing
+  that queue (RPC `clear_queue`, or restoring queued input in the TUI) drops
+  queued peer messages and completion notifications without delivering them;
+  senders keep their earlier queued receipt. Pi reports the removal to no
+  extension event, so dropped updates stop counting toward the queue limit and
+  `subagent_wait` only at the next turn or settlement boundary where Pi's queue is
+  empty. One `subagent_wait` call before that boundary can return early.
 
 ## Task and execution boundaries
 
@@ -72,12 +109,14 @@ model-facing message.
 - **Shared filesystem:** edits are immediately visible. Avoid overlapping edits.
   Failure and cancellation do not roll back changes. Worktree use, file ownership,
   and merging are task/model decisions, not extension-managed operations.
-- **No recursive delegation:** ordinary children do not register this package's
-  management tools. Children are instructed not to launch agent processes.
+- **No recursive delegation:** ordinary children do not register `subagent` or
+  `subagent_cancel`. Children are instructed not to launch agent processes.
   Arbitrary shell access is not a sandbox that prevents every possible bypass.
-- **One-shot tasks:** no mid-task messages, peer communication, broadcast, polling,
-  or resuming completed children. A missing decision or authorization should be
-  reported as a blocker, not waited on indefinitely.
+- **Session-bound live messaging, no resume:** live agents in the same root
+  session can communicate via `subagent_list`, `subagent_send`, and
+  `subagent_wait`, with peer messages framed as coordination input rather than
+  higher-priority instructions. Completed children exit immediately and cannot
+  receive messages or be resumed for further conversation.
 
 ## Child environment
 
@@ -162,6 +201,9 @@ background-shell extensions do not accidentally return before their commands fin
 | --- | --- |
 | Concurrent children per root session | 8, including startups; excess launches fail |
 | Task input | 32 KiB UTF-8, nonempty |
+| Peer message input | 16 KiB UTF-8, nonempty |
+| Queued unprocessed messages per recipient | 32; excess sends fail without dropping accepted mail |
+| Wait timeout (`subagent_wait`) | 120 seconds default, 300 seconds maximum |
 | Startup deadline | 90 seconds |
 | Total execution deadline, including startup | 30 minutes (`1800` seconds) |
 | Model turns | At most 64 admitted turns; recovery/compaction requests are governed by Pi |
@@ -209,5 +251,4 @@ They exercise actual child CLI startup, package discovery, tool execution,
 file changes, extension hooks, and parent completion delivery. Real-provider
 compatibility is not implied by those tests.
 
-See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible roles, explicit spawning
-policy, and peer-to-peer/broadcast communication. These are not current features.
+See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible user-defined roles and nested spawning lifecycle. These are not current features.

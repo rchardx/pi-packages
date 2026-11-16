@@ -188,6 +188,89 @@ for (const behavior of ["empty", "loop", "sleep"]) {
   });
 }
 
+test("a continuing child stays reachable until its run actually settles", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, requests, delay } = await fixture(t);
+  const extension = join(dir, "continue.mjs");
+  await writeFile(
+    extension,
+    `import { writeFileSync } from "node:fs";
+export default function (pi) {
+  let continued = false;
+  pi.on("agent_before_settle", (event) => {
+    if (continued) return;
+    continued = true;
+    writeFileSync(${JSON.stringify(join(dir, "continued.flag"))}, "");
+    return {
+      entries: [...event.entries, { type: "custom_message", customType: "review-reminder", content: "Review before replying.", display: false }],
+      continue: true,
+    };
+  });
+  pi.on("agent_settled", async () => {
+    writeFileSync(${JSON.stringify(join(dir, "settling.flag"))}, "");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+}
+`,
+  );
+  const flag = async (name: string) => {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      try {
+        await readFile(join(dir, name));
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+    assert.fail(`Timed out waiting for ${name}`);
+  };
+  const envelope = (id: string, message: string) => ({
+    id,
+    from: "main",
+    to: "child",
+    broadcast: false,
+    message,
+    sentAt: Date.now(),
+  });
+  delay(300);
+  const execution = startChild({
+    cwd: dir,
+    provider: "mock",
+    model: "test-model",
+    thinking: "off",
+    trusted: false,
+    extensions: [extension],
+    activeTools: ["read", "write", "bash"],
+    requiredTools: ["read", "write", "bash"],
+    task: "Perform the task.",
+  });
+  t.after(() => execution.cancel());
+  await execution.ready;
+  execution.run();
+
+  // Another extension requested a continuation, so the child has not finished.
+  await flag("continued.flag");
+  assert.deepEqual(await execution.deliver(envelope("m1", "PEER_DURING_CONTINUATION")), {
+    accepted: true,
+  });
+
+  // The run is idle while settled handlers execute; accepting now would start a new run.
+  await flag("settling.flag");
+  assert.deepEqual(await execution.deliver(envelope("m2", "PEER_TOO_LATE")), {
+    accepted: false,
+    reason: "finished",
+  });
+
+  const result = await execution.done;
+  assert.equal(result.status, "completed", result.report);
+  const transcript = JSON.stringify(requests.at(-1));
+  assert.match(transcript, /Review before replying\./u);
+  assert.match(transcript, /PEER_DURING_CONTINUATION/u);
+  assert.doesNotMatch(JSON.stringify(requests), /PEER_TOO_LATE/u);
+});
+
 test("a real child stops its shell when the owning process disappears", {
   timeout: 30_000,
 }, async (t) => {
@@ -767,14 +850,27 @@ test("package discovery and tool execution reject nonpersistent host modes", {
     resourceLoader: loader,
     settingsManager,
     sessionManager: SessionManager.inMemory(dir),
-    tools: ["subagent", "subagent_cancel"],
+    tools: ["subagent", "subagent_cancel", "subagent_list", "subagent_send", "subagent_wait"],
   });
   t.after(() => session.dispose());
   await session.bindExtensions({ mode: "print" });
-  assert.deepEqual(session.getActiveToolNames(), ["subagent", "subagent_cancel"]);
-  const tool = session.agent.state.tools.find((entry) => entry.name === "subagent");
-  assert.ok(tool);
-  await assert.rejects(tool.execute("start", { task: "do work" }), /require tui or rpc/u);
+  assert.deepEqual(session.getActiveToolNames(), [
+    "subagent",
+    "subagent_cancel",
+    "subagent_list",
+    "subagent_send",
+    "subagent_wait",
+  ]);
+  for (const [name, args] of [
+    ["subagent", { task: "do work" }],
+    ["subagent_list", {}],
+    ["subagent_send", { to: "*", message: "ping" }],
+    ["subagent_wait", { timeoutSeconds: 1 }],
+  ] as const) {
+    const registered = session.agent.state.tools.find((entry) => entry.name === name);
+    assert.ok(registered);
+    await assert.rejects(registered.execute(`check-${name}`, args), /require tui or rpc/u);
+  }
 });
 
 test("installed package outside workspace node_modules launches and completes a real child", {
@@ -893,4 +989,356 @@ test("/subagents snapshot, status updates, and subagents.json limits work end-to
   assert.ok(record(delivered.details));
   assert.equal(delivered.details.status, "limit_reached");
   assert.equal(delivered.details.requests, 2);
+});
+
+async function communicationFixture(t: TestContext) {
+  const dir = await mkdtemp(join(tmpdir(), "pi-subagents-comm-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldOffline = process.env.PI_OFFLINE;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  process.env.PI_OFFLINE = "1";
+  t.after(() => {
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldOffline === undefined) delete process.env.PI_OFFLINE;
+    else process.env.PI_OFFLINE = oldOffline;
+  });
+
+  let releaseMain: () => void = () => {};
+  const mainHeld = new Promise<void>((resolve) => {
+    releaseMain = resolve;
+  });
+  t.after(() => releaseMain());
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const parsed: unknown = JSON.parse(body);
+    assert.ok(record(parsed));
+    const messages = Array.isArray(parsed.messages) ? parsed.messages.filter(record) : [];
+    const transcript = JSON.stringify(messages);
+    const toolMessages = messages.filter((entry) => entry.role === "tool");
+
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const respondText = (text: string) => {
+      const chunk = {
+        id: "mock",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "test-model",
+        choices: [{ index: 0, delta: { role: "assistant", content: text }, finish_reason: null }],
+      };
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      res.write(
+        `data: ${JSON.stringify({
+          ...chunk,
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        })}\n\n`,
+      );
+      res.end("data: [DONE]\n\n");
+    };
+    const respondToolCalls = (
+      calls: Array<{ id: string; name: string; args: Record<string, unknown> }>,
+    ) => {
+      calls.forEach((call, index) => {
+        const toolCall = {
+          index,
+          id: call.id,
+          type: "function",
+          function: { name: call.name, arguments: JSON.stringify(call.args) },
+        };
+        const chunk = {
+          id: "mock",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [
+            {
+              index: 0,
+              delta:
+                index === 0
+                  ? { role: "assistant", tool_calls: [toolCall] }
+                  : { tool_calls: [toolCall] },
+              finish_reason: null,
+            },
+          ],
+        };
+        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+      });
+      res.write(
+        `data: ${JSON.stringify({
+          id: "mock",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        })}\n\n`,
+      );
+      res.end("data: [DONE]\n\n");
+    };
+
+    if (transcript.includes("Delegated task:\\n\\nASK_MAIN_FOR_PORT")) {
+      if (transcript.includes("PORT_IS_9090")) {
+        if (toolMessages.some((entry) => JSON.stringify(entry).includes("port.txt"))) {
+          respondText("Configured port 9090.");
+        } else {
+          respondToolCalls([
+            { id: "write-port", name: "write", args: { path: "port.txt", content: "9090" } },
+          ]);
+        }
+      } else {
+        respondToolCalls([
+          {
+            id: "ask-main",
+            name: "subagent_send",
+            args: { to: "main", message: "NEED_PORT_DECISION" },
+          },
+          { id: "wait-main", name: "subagent_wait", args: { timeoutSeconds: 10 } },
+        ]);
+      }
+      return;
+    }
+
+    if (transcript.includes("Delegated task:\\n\\nROLE_RECEIVER")) {
+      if (transcript.includes("DIRECT_SECRET_77")) {
+        respondText("Receiver confirmed DIRECT_SECRET_77.");
+      } else {
+        respondToolCalls([
+          { id: "wait-peer", name: "subagent_wait", args: { timeoutSeconds: 10 } },
+        ]);
+      }
+      return;
+    }
+
+    if (transcript.includes("Delegated task:\\n\\nROLE_SENDER")) {
+      if (toolMessages.length === 0) {
+        respondToolCalls([{ id: "discover", name: "subagent_list", args: {} }]);
+      } else if (toolMessages.length === 1) {
+        const listing = JSON.stringify(toolMessages[0]?.content ?? "");
+        const peerMatch = /- ([0-9a-f-]{36}) ·/u.exec(listing);
+        assert.ok(peerMatch?.[1], `Expected live sibling UUID in listing: ${listing}`);
+        respondToolCalls([
+          {
+            id: "send-direct",
+            name: "subagent_send",
+            args: { to: peerMatch[1], message: "DIRECT_SECRET_77" },
+          },
+          {
+            id: "send-broadcast",
+            name: "subagent_send",
+            args: { to: "*", message: "BROADCAST_PING" },
+          },
+        ]);
+      } else {
+        respondText("Sender notified peers.");
+      }
+      return;
+    }
+
+    if (transcript.includes("Delegated task:\\n\\nNOTIFY_MAIN_THEN_STAY")) {
+      respondToolCalls(
+        toolMessages.length === 0
+          ? [{ id: "notify", name: "subagent_send", args: { to: "main", message: "NOTE_1" } }]
+          : [{ id: "stay", name: "subagent_wait", args: { timeoutSeconds: 30 } }],
+      );
+      return;
+    }
+
+    if (transcript.includes("HOLD_MAIN")) await mainHeld;
+    respondText("Ack.");
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeFile(
+    join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        mock: {
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          api: "openai-completions",
+          apiKey: "test-only",
+          models: [
+            {
+              id: "test-model",
+              name: "Test",
+              reasoning: false,
+              input: ["text"],
+              contextWindow: 32000,
+              maxTokens: 1000,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
+      },
+    }),
+  );
+  return { dir, releaseMain };
+}
+
+test("updates the host drops from its queue stop counting as queued", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, releaseMain } = await communicationFixture(t);
+  const { session, tool, cancelTool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const waitTool = session.agent.state.tools.find((entry) => entry.name === "subagent_wait");
+  assert.ok(waitTool);
+  const original = session.sendCustomMessage.bind(session);
+  const queued = new Promise<void>((resolve) => {
+    session.sendCustomMessage = async (message, options) => {
+      const sent = original(message, options);
+      if (message.customType === "subagent:message") resolve();
+      return sent;
+    };
+  });
+
+  const busy = session.prompt("HOLD_MAIN");
+  const started = await tool.execute("start", { task: "NOTIFY_MAIN_THEN_STAY" });
+  const childId = (started.details as { id?: string }).id;
+  assert.ok(childId);
+  await queued;
+  assert.equal(session.isStreaming, true);
+
+  // RPC clear_queue: the queued peer message is dropped without a message_end.
+  session.clearQueue();
+  releaseMain();
+  await busy;
+  assert.doesNotMatch(JSON.stringify(session.messages), /NOTE_1/u);
+
+  await cancelTool.execute("cancel", { id: childId });
+  for (const call of ["first", "second"]) {
+    const waited = await waitTool.execute(call, { timeoutSeconds: 5 });
+    assert.deepEqual(waited.details, { outcome: "idle", waitedMs: 0 });
+  }
+});
+
+test("live child and main exchange messages and completed children reject later messages", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const sendTool = session.agent.state.tools.find((entry) => entry.name === "subagent_send");
+  const listTool = session.agent.state.tools.find((entry) => entry.name === "subagent_list");
+  assert.ok(sendTool && listTool);
+  assert.ok(session.extensionRunner.getMessageRenderer("subagent:message"));
+
+  const childQuestion = new Promise<{ content?: unknown; details?: unknown }>((resolve) => {
+    const original = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = async (message, options) => {
+      if (message.customType === "subagent:message") resolve(message);
+      return original(message, options);
+    };
+  });
+
+  let finalReport: { content?: unknown; details?: unknown } | undefined;
+  const childCompleted = new Promise<void>((resolve) => {
+    const current = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = async (message, options) => {
+      if (message.customType === "subagent:result") {
+        finalReport = message;
+        resolve();
+      }
+      return current(message, options);
+    };
+  });
+
+  const started = await tool.execute("start-worker", { task: "ASK_MAIN_FOR_PORT" });
+  const childId = (started.details as { id?: string }).id;
+  assert.ok(childId);
+
+  const listed = await listTool.execute("list-live", {});
+  assert.match(JSON.stringify(listed), new RegExp(childId, "u"));
+
+  const question = await childQuestion;
+  assert.match(String(question.content), /NEED_PORT_DECISION/u);
+  assert.ok(record(question.details));
+  assert.equal(question.details.from, childId);
+
+  await sendTool.execute("reply-port", { to: childId, message: "PORT_IS_9090" });
+  await childCompleted;
+  await session.waitForIdle();
+
+  assert.equal(await readFile(join(dir, "port.txt"), "utf8"), "9090");
+  assert.ok(finalReport && record(finalReport.details));
+  assert.equal(finalReport.details.status, "completed");
+  assert.match(String(finalReport.content), /Configured port 9090\./u);
+
+  // Autonomously completed subagents never receive further messages.
+  await assert.rejects(
+    sendTool.execute("late-send", { to: childId, message: "PORT_CHANGED" }),
+    /already finished \(completed\) and cannot receive messages/u,
+  );
+});
+
+test("sibling subagents discover peers and exchange direct and broadcast messages", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+
+  const broadcasts: Record<string, unknown>[] = [];
+  const results = new Map<string, Record<string, unknown>>();
+  const bothDone = new Promise<void>((resolve) => {
+    const original = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = async (message, options) => {
+      if (message.customType === "subagent:message" && record(message.details)) {
+        broadcasts.push(message.details);
+      }
+      if (
+        message.customType === "subagent:result" &&
+        record(message.details) &&
+        typeof message.details.id === "string"
+      ) {
+        results.set(message.details.id, message.details);
+        if (results.size === 2) resolve();
+      }
+      return original(message, options);
+    };
+  });
+
+  const receiver = await tool.execute("start-receiver", { task: "ROLE_RECEIVER" });
+  const receiverId = (receiver.details as { id?: string }).id;
+  assert.ok(receiverId);
+
+  const sender = await tool.execute("start-sender", { task: "ROLE_SENDER" });
+  const senderId = (sender.details as { id?: string }).id;
+  assert.ok(senderId);
+
+  await bothDone;
+  await session.waitForIdle();
+
+  assert.equal(results.get(receiverId)?.status, "completed");
+  assert.match(String(results.get(receiverId)?.report), /Receiver confirmed DIRECT_SECRET_77\./u);
+  assert.equal(results.get(senderId)?.status, "completed");
+  assert.equal(broadcasts.length, 1);
+  assert.equal(broadcasts[0]?.from, senderId);
+  assert.equal(broadcasts[0]?.broadcast, true);
+  assert.equal(broadcasts[0]?.message, "BROADCAST_PING");
 });
