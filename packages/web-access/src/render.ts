@@ -19,14 +19,22 @@ import { Check } from "typebox/value";
 import { Display, singleLine } from "./output.ts";
 
 const Details = Type.Object({
+  provider: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
   display: Display,
   truncated: Type.Boolean(),
+  outputTokenLimitReached: Type.Optional(Type.Boolean()),
   fullOutputPath: Type.Optional(Type.String()),
   resultCount: Type.Optional(Type.Integer()),
   omittedInvalidUrls: Type.Optional(Type.Integer()),
 });
 type Kind = "fetch" | "search";
 type Context = KeybindingHints & { isError: boolean; durationMs: number | undefined };
+
+const PROVIDER_LABELS: Readonly<Record<string, string>> = {
+  anthropic: "Anthropic",
+  deepseek: "DeepSeek",
+};
 
 // Provider text must not introduce terminal control sequences. Model-facing content is untouched.
 function displayText(value: string): string {
@@ -77,11 +85,17 @@ export function renderWebResult(
   const sections = display.sections.filter(
     (section) => section.heading.start < display.previewLength,
   );
+  const synthesis =
+    display.synthesis && display.synthesis.start < display.previewLength
+      ? read(display.synthesis).trim()
+      : "";
   const view = new Container();
   const heading = (section: Static<typeof Display>["sections"][number]) =>
     new TruncatedText(theme.fg("toolTitle", theme.bold(singleLine(read(section.heading)))), 0, 0);
   if (kind === "fetch" && sections[0]) view.addChild(heading(sections[0]));
-  const metadata = ["DeepSeek"];
+  const providerId = details.provider ?? "deepseek";
+  const metadata = [PROVIDER_LABELS[providerId] ?? providerId];
+  if (details.model) metadata.push(details.model);
   if (kind === "search" && details.resultCount !== undefined) {
     metadata.push(`${details.resultCount} results`);
   }
@@ -92,6 +106,20 @@ export function renderWebResult(
     view.addChild(
       new Text(
         theme.fg("warning", `Omitted ${details.omittedInvalidUrls} unusable source URL(s).`),
+        0,
+        0,
+      ),
+    );
+  }
+  if (details.outputTokenLimitReached) {
+    view.addChild(
+      new Text(
+        theme.fg(
+          "warning",
+          kind === "fetch"
+            ? "Provider output reached token limit; content is incomplete."
+            : "Provider synthesis reached token limit; synthesis is incomplete.",
+        ),
         0,
         0,
       ),
@@ -110,7 +138,11 @@ export function renderWebResult(
       new Text(
         theme.fg(
           "muted",
-          details.omittedInvalidUrls ? "No usable results remain." : "No results found.",
+          details.omittedInvalidUrls
+            ? "No usable results remain."
+            : synthesis
+              ? "No source URLs returned."
+              : "No results found.",
         ),
         0,
         0,
@@ -121,6 +153,11 @@ export function renderWebResult(
     view.addChild(
       new Text(theme.fg("dim", "Untrusted provider content · completeness not guaranteed"), 0, 0),
     );
+    if (kind === "search" && synthesis) {
+      view.addChild(new Spacer(1));
+      view.addChild(new Text(theme.fg("dim", "Synthesis"), 0, 0));
+      view.addChild(new Markdown(synthesis, 0, 0, getMarkdownTheme()));
+    }
   }
   const visible = expanded ? sections : kind === "search" ? sections.slice(0, 3) : [];
   for (const section of visible) {
@@ -128,14 +165,20 @@ export function renderWebResult(
     if (kind === "search") view.addChild(heading(section));
     if (!expanded) continue;
     if (section.url) view.addChild(new Text(theme.fg("muted", read(section.url)), 0, 0));
-    const metadata = section.metadata.map(read).filter(Boolean).join(" · ");
-    if (metadata) view.addChild(new Text(theme.fg("dim", metadata), 0, 0));
+    const sectionMetadata = section.metadata.map(read).filter(Boolean).join(" · ");
+    if (sectionMetadata) view.addChild(new Text(theme.fg("dim", sectionMetadata), 0, 0));
     for (const [index, range] of section.body.entries()) {
       const body = read(range);
       if (body) {
         if (kind === "search") {
           view.addChild(new Spacer(1));
-          view.addChild(new Text(theme.fg("dim", index === 0 ? "Summary" : "Page content"), 0, 0));
+          const bodyLabel =
+            index === 0
+              ? providerId === "anthropic"
+                ? "Cited excerpt"
+                : "Summary"
+              : "Page content";
+          view.addChild(new Text(theme.fg("dim", bodyLabel), 0, 0));
         }
         view.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
       }
