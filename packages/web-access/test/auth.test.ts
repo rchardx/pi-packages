@@ -8,6 +8,7 @@ import {
   type AuthRegistry,
   resolveAnthropicAuth,
   resolveDeepSeekHeaders,
+  resolveGoogleHeaders,
   resolveOpenAICodexHeaders,
   resolveOpenAIHeaders,
 } from "../src/auth.ts";
@@ -408,4 +409,27 @@ test("OpenAI Codex binds the ChatGPT token and account claim over configured hea
   }
   const missing = await providerFixture(t, "openai-codex");
   await assert.rejects(resolveOpenAICodexHeaders(missing.registry), /\/login openai-codex/u);
+});
+
+test("Google sends Gemini API keys as x-goog-api-key and lets an explicit credential header replace it", async (t) => {
+  const { registry, provider } = await providerFixture(t, "google", "gemini-key");
+  assert.deepEqual(Object.fromEntries(await resolveGoogleHeaders(registry)), {
+    "x-goog-api-key": "gemini-key",
+  });
+  registry.getProvider = () => ({ ...provider, headers: { Authorization: "Bearer oauth-token" } });
+  assert.deepEqual(Object.fromEntries(await resolveGoogleHeaders(registry)), {
+    authorization: "Bearer oauth-token",
+  });
+  registry.getProvider = () => ({ ...provider, headers: { "x-goog-api-key": null } });
+  await assert.rejects(resolveGoogleHeaders(registry), /\/login google or GEMINI_API_KEY/u);
+  registry.getProvider = () => ({
+    ...provider,
+    baseUrl: "https://aiplatform.googleapis.com/v1",
+  });
+  await assert.rejects(resolveGoogleHeaders(registry), {
+    message:
+      "Google web tools require Pi's effective auth origin to be https://generativelanguage.googleapis.com.",
+  });
+  const missing = await providerFixture(t, "google");
+  await assert.rejects(resolveGoogleHeaders(missing.registry), /\/login google or GEMINI_API_KEY/u);
 });

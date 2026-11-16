@@ -1,7 +1,8 @@
 # Web access
 
 Two independent, opt-in Pi tools backed by user-enabled hosted providers
-(**DeepSeek**, **Anthropic**, and search-only **OpenAI** / **OpenAI Codex**):
+(**DeepSeek**, **Anthropic**, search-only **OpenAI** / **OpenAI Codex**, and
+fetch-only **Google Gemini**):
 
 - `web_fetch` returns a page title and Markdown or plain-text content.
 - `web_search` returns ordered sources alongside provider summaries or grounded synthesis.
@@ -35,6 +36,8 @@ Configure authentication in Pi for each provider you intend to enable:
   chat model selection is required).
 - **Anthropic** (`anthropic`): `/login anthropic` (API key or Claude Pro/Max OAuth),
   `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`.
+- **Google** (`google`, fetch only): `/login google` or `GEMINI_API_KEY` (Gemini
+  Developer API key; Vertex AI is not supported).
 - **OpenAI** (`openai`, search only): `/login openai` (API key or Sign in with
   ChatGPT) or `OPENAI_API_KEY`.
 - **OpenAI Codex** (`openai-codex`, search only): `/login openai-codex`
@@ -59,7 +62,8 @@ Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
   "fetch": {
     "providers": {
       "deepseek": {},
-      "anthropic": {}
+      "anthropic": {},
+      "google": { "model": "gemini-3.6-flash" }
     },
     "defaultProvider": "deepseek"
   }
@@ -72,6 +76,12 @@ use of Pi-resolved credentials, and query or URL disclosure to that provider:
 - `deepseek` uses standalone tool endpoints and accepts only `{}`.
 - `anthropic` uses the Messages API and accepts an optional `"model"` ID
   (defaults to `claude-haiku-5-5`).
+- `google` uses the Gemini API `generateContent` method with the built-in
+  `url_context` tool and accepts an optional `"model"` ID (defaults to
+  `gemini-3.6-flash`). It is fetch-only: the Gemini API terms for Grounding with
+  Google Search require showing Google's rendered Search Suggestions with the
+  results, unmodified, to the end user, which a terminal tool result consumed by
+  the agent model cannot do, so `search` rejects it.
 - `openai` and `openai-codex` use the Responses API `web_search` tool and accept
   an optional `"model"` ID (defaults to `gpt-5.4-mini` and `gpt-6-luna`). They
   are search-only: OpenAI offers no deterministic page-fetch tool, so `fetch`
@@ -106,6 +116,7 @@ Pi owns authentication and provider configuration:
 | --- | --- | --- | --- |
 | `deepseek` | `https://api.deepseek.com` | `POST /v1/tools/fetch` or `/v1/tools/search` | `Authorization: Bearer <key>` |
 | `anthropic` | `https://api.anthropic.com` | `POST /v1/messages` | `x-api-key: <key>`, or `Authorization: Bearer <token>` (including Claude Pro/Max OAuth) |
+| `google` | `https://generativelanguage.googleapis.com` | `POST /v1beta/models/<model>:generateContent` | `x-goog-api-key: <key>` (an explicit `Authorization` or `x-goog-api-key` header replaces it) |
 | `openai` | `https://api.openai.com` | `POST /v1/responses` | `Authorization: Bearer <key or ChatGPT token>` |
 | `openai-codex` | `https://chatgpt.com` | `POST /backend-api/codex/responses` | `Authorization: Bearer <ChatGPT token>` plus `chatgpt-account-id` from the token's claims |
 
@@ -145,6 +156,14 @@ web_fetch({ url: "https://example.com/article" })
   fail to invoke `web_fetch`, or return only `web_fetch_tool_result_error`
   results fail explicitly; a rejected extra call (`max_uses_exceeded`) after a
   successful fetch does not.
+- **Google** sends the URL as the user message to `generateContent` with the
+  `url_context` tool. Content is the model's Markdown rendering of the retrieved
+  page, titled from the matching grounding chunk when Google provides one; it may
+  be condensed despite instructions not to summarize. Thought summaries are
+  excluded. The response must report `URL_RETRIEVAL_STATUS_SUCCESS` in
+  `urlContextMetadata`; missing metadata, unsafe, paywalled, or failed
+  retrievals, blocked prompts, safety finishes, and other abnormal finish reasons
+  fail explicitly (`MAX_TOKENS` keeps the content with an incompleteness notice).
 - Empty titles are valid; invalid schemas or whitespace-only content fail.
 - The model-facing `Requested URL` and `details.url` identify the normalized
   **requested URL**, not a verified final redirect destination. Details also
@@ -155,8 +174,9 @@ web_fetch({ url: "https://example.com/article" })
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
 may be incomplete, include navigation/comments, or lose links, code formatting,
 and mathematical notation. Browser login and JavaScript rendering are not
-guaranteed. See the [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/)
-and [Anthropic web fetch documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-fetch-tool).
+guaranteed. See the [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/),
+[Anthropic web fetch documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-fetch-tool),
+and [Gemini URL context documentation](https://ai.google.dev/gemini-api/docs/url-context).
 
 ## Search
 
@@ -193,14 +213,13 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
   incompleteness keeps the partial synthesis with a notice). Returns the synthesis written after
   the last search, `url_citation` sources first, then searched sources (capped
   locally to `count`). `need_content: true` adds the same `web_fetch` notice.
-
 Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
 before applying `count`. All-invalid results are distinguished from an empty
 search. Titles, site names, and dates/ages use single-line whitespace; synthesis,
 summaries, excerpts, and content retain paragraphs. Provider summaries and
 syntheses are not verified quotations, and the extension never visits result URLs.
 
-See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/)
+See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/),
 and [Anthropic web search documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool).
 
 ## Tool cards in Pi
@@ -259,8 +278,8 @@ Latest verified compatible version: **Pi 1.5.2**, on the runtimes recorded in
 [Node.js compatibility](../../README.md#nodejs-compatibility).
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
-and execute both tools across DeepSeek and Anthropic, and search across OpenAI
-and OpenAI Codex, using synthetic credentials
+and execute both tools across DeepSeek and Anthropic, search across OpenAI and
+OpenAI Codex, and fetch through Google, using synthetic credentials
 and local HTTP/controlled responses. They cover per-provider consent, active-model
 routing without cross-provider fallback, visibility, reload, API-key and OAuth
 authentication, effective-origin boundaries, decoding, resource limits,

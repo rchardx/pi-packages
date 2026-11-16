@@ -4,6 +4,7 @@ export const DEEPSEEK_API_ORIGIN = "https://api.deepseek.com";
 export const ANTHROPIC_API_ORIGIN = "https://api.anthropic.com";
 export const OPENAI_API_ORIGIN = "https://api.openai.com";
 export const OPENAI_CODEX_ORIGIN = "https://chatgpt.com";
+export const GOOGLE_API_ORIGIN = "https://generativelanguage.googleapis.com";
 
 const MISSING_DEEPSEEK_AUTH =
   "Configure DeepSeek authentication in Pi (/login deepseek or DEEPSEEK_API_KEY).";
@@ -13,6 +14,8 @@ const MISSING_OPENAI_AUTH =
   "Configure OpenAI authentication in Pi (/login openai or OPENAI_API_KEY).";
 const MISSING_OPENAI_CODEX_AUTH =
   "Configure OpenAI Codex authentication in Pi (/login openai-codex).";
+const MISSING_GOOGLE_AUTH =
+  "Configure Google authentication in Pi (/login google or GEMINI_API_KEY).";
 const CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
 const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_OAUTH_DEFAULTS: ReadonlyArray<readonly [string, string]> = [
@@ -126,6 +129,28 @@ export async function resolveOpenAIHeaders(registry: AuthRegistry): Promise<Head
     origin: OPENAI_API_ORIGIN,
     missingAuthMessage: MISSING_OPENAI_AUTH,
     build: bearerHeaders,
+  });
+}
+
+// Gemini API keys use x-goog-api-key; an explicit credential header replaces that default
+// rather than sending two credentials.
+export async function resolveGoogleHeaders(registry: AuthRegistry): Promise<Headers> {
+  return resolveProviderAuth(registry, {
+    id: "google",
+    label: "Google",
+    origin: GOOGLE_API_ORIGIN,
+    missingAuthMessage: MISSING_GOOGLE_AUTH,
+    build: (apiKey, overrides) => {
+      const explicit =
+        Boolean(overrides.get("authorization")?.value?.trim()) ||
+        Boolean(overrides.get("x-goog-api-key")?.value?.trim());
+      const headers = new Headers();
+      if (apiKey && !explicit) headers.set("x-goog-api-key", apiKey);
+      applyHeaderOverrides(headers, overrides);
+      return headers.get("x-goog-api-key")?.trim() || headers.get("authorization")?.trim()
+        ? headers
+        : undefined;
+    },
   });
 }
 

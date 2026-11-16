@@ -4,8 +4,8 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type Capability = "search" | "fetch";
 export type SearchProviderId = "deepseek" | "anthropic" | "openai" | "openai-codex";
-export type FetchProviderId = "deepseek" | "anthropic";
-export type WebProviderId = SearchProviderId;
+export type FetchProviderId = "deepseek" | "anthropic" | "google";
+export type WebProviderId = SearchProviderId | FetchProviderId;
 
 export interface ProviderConfig {
   readonly model?: string;
@@ -27,14 +27,16 @@ export interface ResolvedCapabilityTarget<P extends WebProviderId = WebProviderI
 }
 
 // The authority for which providers implement each capability. OpenAI has no
-// deterministic page-fetch tool, so its providers are search-only.
+// deterministic page-fetch tool, so its providers are search-only. Google is
+// fetch-only: Grounding with Google Search terms require displaying Google's
+// Search Suggestions with the results, which a terminal tool result cannot do.
 const SEARCH_PROVIDERS: readonly SearchProviderId[] = [
   "deepseek",
   "anthropic",
   "openai",
   "openai-codex",
 ];
-const FETCH_PROVIDERS: readonly FetchProviderId[] = ["deepseek", "anthropic"];
+const FETCH_PROVIDERS: readonly FetchProviderId[] = ["deepseek", "anthropic", "google"];
 const CAPABILITY_FIELDS = new Set<string>(["providers", "defaultProvider"]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
