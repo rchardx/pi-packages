@@ -7,7 +7,7 @@ import {
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { loadConfig } from "./config.ts";
+import { loadConfig } from "./src/config.ts";
 import {
   createSessionJobs,
   type JobRecord,
@@ -15,7 +15,7 @@ import {
   SEED_BYTES,
   type SessionJobs,
   TailBuffer,
-} from "./jobs.ts";
+} from "./src/jobs.ts";
 import {
   buildNotification,
   formatDuration,
@@ -24,8 +24,8 @@ import {
   type NotificationDetails,
   renderNotification,
   tailText,
-} from "./notify.ts";
-import { createTeeOperations } from "./operations.ts";
+} from "./src/notify.ts";
+import { createTeeOperations } from "./src/operations.ts";
 
 const parameters = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),

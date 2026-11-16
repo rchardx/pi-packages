@@ -1,14 +1,14 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { loadConfig } from "./config.ts";
-import { resolveDeepSeekHeaders } from "./deepseek.ts";
-import { FetchParameters, fetchDeepSeek } from "./fetch.ts";
-import { renderWebCall, renderWebResult } from "./render.ts";
+import { loadConfig } from "./src/config.ts";
+import { resolveDeepSeekHeaders } from "./src/deepseek.ts";
+import { FetchParameters, fetchDeepSeek } from "./src/fetch.ts";
+import { renderWebCall, renderWebResult } from "./src/render.ts";
 import {
   DEEPSEEK_MAX_QUERY_CHARACTERS,
   DEFAULT_SEARCH_COUNT,
   SearchParameters,
   searchDeepSeek,
-} from "./search.ts";
+} from "./src/search.ts";
 
 export default async function webAccess(pi: ExtensionAPI) {
   // Default visibility is refreshed on load/reload; execution always rechecks consent.
