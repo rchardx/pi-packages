@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   accumulateSessionStats,
   formatCwd,
   formatTokens,
+  isUsingSubscription,
   orderExtensionStatuses,
   renderStatuslineRows,
   type StatuslineState,
@@ -206,4 +207,56 @@ test("accumulateSessionStats sums usage across entry kinds and tracks latest ass
     cost: 0.06,
   });
   assert.equal(stats.latestCacheHitRate, 80);
+});
+
+test("isUsingSubscription distinguishes non-subscription OAuth from subscription billing", () => {
+  const makeModel = (provider: string): NonNullable<ExtensionContext["model"]> => ({
+    id: "test-model",
+    name: "Test",
+    api: "openai-completions",
+    provider,
+    baseUrl: "https://api.example.test/v1",
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4096,
+  });
+  const providerWith = (isSubscription?: boolean) => ({
+    auth: {
+      oauth: isSubscription === undefined ? {} : { isSubscription },
+    },
+  });
+
+  // Non-subscription OAuth (such as Radius) must not be labeled as subscription billing.
+  assert.equal(
+    isUsingSubscription(makeModel("radius"), {
+      isUsingOAuth: () => true,
+      getProvider: () => providerWith(undefined),
+    }),
+    false,
+  );
+  assert.equal(
+    isUsingSubscription(makeModel("radius"), {
+      isUsingOAuth: () => true,
+      getProvider: () => providerWith(false),
+    }),
+    false,
+  );
+  // Official subscriptions (OpenAI / Anthropic OAuth) require active OAuth and isSubscription === true.
+  assert.equal(
+    isUsingSubscription(makeModel("anthropic"), {
+      isUsingOAuth: () => true,
+      getProvider: () => providerWith(true),
+    }),
+    true,
+  );
+  // Official API keys on subscription-capable providers are not subscriptions.
+  assert.equal(
+    isUsingSubscription(makeModel("openai"), {
+      isUsingOAuth: () => false,
+      getProvider: () => providerWith(true),
+    }),
+    false,
+  );
 });

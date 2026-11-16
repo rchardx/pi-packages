@@ -159,6 +159,132 @@ test("statusline renders subagents before background on the path line in TUI mod
   );
 });
 
+test("statusline labels official OAuth subscriptions as (sub) but not Radius OAuth or API keys", async (t: TestContext) => {
+  for (const [providerId, authEntry, expectSub] of [
+    [
+      "radius",
+      {
+        type: "oauth",
+        refresh: "refresh-token",
+        access: "access-token",
+        expires: Date.now() + 600_000,
+      },
+      false,
+    ],
+    [
+      "anthropic",
+      {
+        type: "api_key",
+        key: "sk-ant-test",
+      },
+      false,
+    ],
+    [
+      "anthropic",
+      {
+        type: "oauth",
+        refresh: "refresh-token",
+        access: "access-token",
+        expires: Date.now() + 600_000,
+      },
+      true,
+    ],
+    [
+      "openai",
+      {
+        type: "oauth",
+        refresh: "refresh-token",
+        access: "access-token",
+        expires: Date.now() + 600_000,
+      },
+      true,
+    ],
+  ] as const) {
+    const agentDir = await mkdtemp(join(tmpdir(), "pi-statusline-oauth-"));
+    const cwd = await mkdtemp(join(tmpdir(), "pi-statusline-oauth-cwd-"));
+    t.after(() => rm(agentDir, { recursive: true, force: true }));
+    t.after(() => rm(cwd, { recursive: true, force: true }));
+
+    const oldOffline = process.env.PI_OFFLINE;
+    const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_OFFLINE = "1";
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    t.after(() => {
+      if (oldOffline === undefined) delete process.env.PI_OFFLINE;
+      else process.env.PI_OFFLINE = oldOffline;
+      if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+    });
+
+    await writeFile(
+      join(agentDir, "settings.json"),
+      JSON.stringify({
+        packages: [statuslineRoot],
+        enableInstallTelemetry: false,
+      }),
+    );
+    await writeFile(
+      join(agentDir, "auth.json"),
+      JSON.stringify({
+        [providerId]: authEntry,
+      }),
+    );
+
+    const runtime = await createAgentSessionRuntime(
+      async ({ cwd: targetCwd, agentDir: targetAgentDir, sessionManager }) => {
+        const settingsManager = SettingsManager.create(targetCwd, targetAgentDir);
+        const modelRuntime = await ModelRuntime.create({
+          authPath: join(targetAgentDir, "auth.json"),
+          modelsPath: join(targetAgentDir, "models.json"),
+          modelsStorePath: join(targetAgentDir, "catalog.json"),
+          refreshOnCreate: false,
+          allowModelNetwork: false,
+        });
+        const services = await createAgentSessionServices({
+          cwd: targetCwd,
+          agentDir: targetAgentDir,
+          settingsManager,
+          modelRuntime,
+          resourceLoaderOptions: {
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            noContextFiles: true,
+          },
+        });
+        const created = await createAgentSessionFromServices({ services, sessionManager });
+        const selected = modelRuntime.getModels(providerId)[0];
+        assert.ok(selected, `Expected built-in model for ${providerId}`);
+        await created.session.setModel(selected);
+        return { ...created, services, diagnostics: services.diagnostics };
+      },
+      {
+        cwd,
+        agentDir,
+        sessionManager: SessionManager.inMemory(cwd),
+      },
+    );
+    t.after(() => runtime.dispose());
+
+    initTheme();
+    const { terminal, output } = createCaptureTerminal();
+    const mode = new InteractiveMode(runtime, {
+      terminal,
+      tuiMode: "regular",
+      verbose: false,
+    });
+    await mode.init();
+    mode.stop();
+
+    const rendered = output();
+    assert.equal(
+      rendered.includes("$0.000 (sub)"),
+      expectSub,
+      `Unexpected (sub) state for ${providerId} (${authEntry.type}):\n${rendered}`,
+    );
+  }
+});
+
 for (const hostMode of ["rpc", "print", "json"] as const) {
   test(`statusline is a no-op in ${hostMode} mode`, async (t: TestContext) => {
     const dir = await mkdtemp(join(tmpdir(), "pi-statusline-mode-"));

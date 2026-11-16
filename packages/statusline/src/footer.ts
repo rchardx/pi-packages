@@ -246,6 +246,19 @@ export function renderStatuslineRows(
   return [pwdLine, statsLine];
 }
 
+export function isUsingSubscription(
+  model: NonNullable<ExtensionContext["model"]>,
+  modelRegistry: {
+    isUsingOAuth(target: NonNullable<ExtensionContext["model"]>): boolean;
+    getProvider(id: string): { auth: { oauth?: { isSubscription?: boolean } } } | undefined;
+  },
+): boolean {
+  return (
+    modelRegistry.isUsingOAuth(model) &&
+    modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true
+  );
+}
+
 interface CachedStats {
   sessionId: string;
   leafId: string | null;
@@ -316,8 +329,7 @@ export function createStatuslineFooter(
             provider: model.provider,
             reasoning: model.reasoning,
             contextWindow: model.contextWindow,
-            usingSubscription:
-              model.provider === "kimi-coding" || ctx.modelRegistry.isUsingOAuth(model),
+            usingSubscription: isUsingSubscription(model, ctx.modelRegistry),
           }
         : undefined;
       return renderStatuslineRows(
