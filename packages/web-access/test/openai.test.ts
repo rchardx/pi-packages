@@ -115,6 +115,46 @@ test("OpenAI Search streams Responses web_search and orders cited sources ahead 
   });
 });
 
+test("OpenAI attribution parameters do not split one page into duplicate sources", async () => {
+  const docs = "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-6-0.html";
+  const beta = "https://devblogs.microsoft.com/typescript/announcing-typescript-6-0-beta/";
+  const result = await searchOpenAI(
+    "openai",
+    { query: "TypeScript 6 release notes" },
+    auth,
+    {},
+    undefined,
+    async () =>
+      sse([
+        searchCall([
+          docs,
+          `${beta}?cmid=a%20b&utm_source=openai`,
+          "https://example.test/?utm_source=openaix",
+        ]),
+        message(`See [docs](${docs}?utm_source=openai).`, [
+          { url: `${docs}?utm_source=openai`, title: "TypeScript 6.0" },
+          { url: `${beta}?utm_source=openai`, title: "Beta" },
+        ]),
+        completed,
+      ]),
+  );
+  const text = result.content[0]?.text ?? "";
+  // The synthesis is provider output and stays unchanged.
+  assert.match(
+    text,
+    /See \[docs\]\(https:\/\/www\.typescriptlang\.org\/[^)]+\?utm_source=openai\)\./u,
+  );
+  const urls = [...text.matchAll(/^URL: (.+)$/gmu)].map((match) => match[1]);
+  assert.deepEqual(urls, [
+    docs,
+    beta,
+    `${beta}?cmid=a%20b`,
+    "https://example.test/?utm_source=openaix",
+  ]);
+  assert.match(text, /1\. TypeScript 6\.0\nURL: /u);
+  assert.equal(result.details.resultCount, 4);
+});
+
 test("OpenAI Codex Search uses the Codex endpoint without unsupported include fields", async () => {
   const result = await searchOpenAI(
     "openai-codex",

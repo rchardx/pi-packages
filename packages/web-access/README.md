@@ -212,7 +212,10 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
   `error` events, and streams ending early fail explicitly (`max_output_tokens`
   incompleteness keeps the partial synthesis with a notice). Returns the synthesis written after
   the last search, `url_citation` sources first, then searched sources (capped
-  locally to `count`). `need_content: true` adds the same `web_fetch` notice.
+  locally to `count`). The `utm_source=openai` parameter OpenAI appends to
+  source links is removed so one page is listed once; the synthesis text is
+  returned unchanged. `need_content: true` adds the same `web_fetch` notice.
+
 Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
 before applying `count`. All-invalid results are distinguished from an empty
 search. Titles, site names, and dates/ages use single-line whitespace; synthesis,
