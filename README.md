@@ -25,8 +25,10 @@ a temporary session or a persistent install, not both for the same package.
 
 For iterative development against independent installation copies, use the
 [installed-package development workflow](CONTRIBUTING.md#develop-against-an-installed-package).
-It packs local npm tarballs into an isolated runtime without publishing; source
-loading alone does not validate packaged dependency resolution.
+It packs local npm tarballs into independent installation copies and registers
+these in your normal Pi environment, so plain `pi` uses them without publishing
+or separate credentials. Isolated Pi configuration is optional; source loading
+alone does not validate packaged dependency resolution.
 
 ## Packages: installation and usage
 
