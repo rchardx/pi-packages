@@ -33,7 +33,9 @@ async function loadSession(
   const previousAnthropicToken = process.env.ANTHROPIC_AUTH_TOKEN;
   const previousAnthropicOAuth = process.env.ANTHROPIC_OAUTH_TOKEN;
   const previousOpenAIKey = process.env.OPENAI_API_KEY;
+  const previousGeminiKey = process.env.GEMINI_API_KEY;
   delete process.env.OPENAI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_AUTH_TOKEN;
@@ -49,6 +51,8 @@ async function loadSession(
     else process.env.ANTHROPIC_OAUTH_TOKEN = previousAnthropicOAuth;
     if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = previousOpenAIKey;
+    if (previousGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousGeminiKey;
   });
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("Unexpected network call");
@@ -779,5 +783,36 @@ test("Pi routes search to OpenAI and OpenAI Codex by active model with their own
   assert.deepEqual(seen, [
     "https://api.openai.com/v1/responses",
     "https://chatgpt.com/backend-api/codex/responses",
+  ]);
+});
+
+test("Pi routes fetch to Google with the Gemini key from Pi", async (t) => {
+  const config = JSON.stringify({
+    fetch: { providers: { google: { model: "gemini-3.5-flash" } }, defaultProvider: "google" },
+  });
+  const { session } = await loadSession(t, ["web_fetch"], config);
+  process.env.GEMINI_API_KEY = "gemini-environment-key";
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    seen.push(String(url));
+    assert.equal(new Headers(init?.headers).get("x-goog-api-key"), "gemini-environment-key");
+    return Response.json({
+      candidates: [
+        {
+          content: { parts: [{ text: "Page content." }] },
+          finishReason: "STOP",
+          urlContextMetadata: {
+            urlMetadata: [{ urlRetrievalStatus: "URL_RETRIEVAL_STATUS_SUCCESS" }],
+          },
+        },
+      ],
+    });
+  });
+  const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
+  assert.ok(fetchTool);
+  const result = await fetchTool.execute("f", { url: "https://example.test/page" });
+  assert.equal(result.details.provider, "google");
+  assert.deepEqual(seen, [
+    "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
   ]);
 });

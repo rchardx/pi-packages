@@ -35,13 +35,14 @@ a temporary session or a persistent install, not both for the same package.
 ### web-access
 
 Use user-enabled hosted providers (**DeepSeek** standalone tool APIs,
-**Anthropic** Messages `web_search` / `web_fetch`, and search-only **OpenAI** /
-**OpenAI Codex** Responses `web_search`) to search the web or fetch a page.
+**Anthropic** Messages `web_search` / `web_fetch`, search-only **OpenAI** /
+**OpenAI Codex** Responses `web_search`, and fetch-only **Google Gemini**
+`url_context`) to search the web or fetch a page.
 Both tools require [explicit per-provider opt-in](packages/web-access/README.md#enable-tools)
 in `~/.pi/agent/web-access.json` and matching authentication configured in Pi
 (`/login deepseek` or `DEEPSEEK_API_KEY`; `/login anthropic`, `ANTHROPIC_API_KEY`,
 or `ANTHROPIC_AUTH_TOKEN`; `/login openai` or `OPENAI_API_KEY`;
-`/login openai-codex`). Enabling a provider authorizes possible provider
+`/login openai-codex`; `/login google` or `GEMINI_API_KEY`). Enabling a provider authorizes possible provider
 charges and query or URL disclosure; tool selection alone never grants permission.
 
 After setup and `/reload`, ask Pi to use either tool:

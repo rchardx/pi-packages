@@ -34,6 +34,7 @@ type Context = KeybindingHints & { isError: boolean; durationMs: number | undefi
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   anthropic: "Anthropic",
   deepseek: "DeepSeek",
+  google: "Google",
   openai: "OpenAI",
   "openai-codex": "OpenAI Codex",
 };
