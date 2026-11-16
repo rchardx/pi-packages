@@ -23,6 +23,11 @@ All package commands below run from this repository root. Local Pi installs refe
 to this checkout rather than copying it; keep the checkout in place. Choose either
 a temporary session or a persistent install, not both for the same package.
 
+For iterative development against independent installation copies, use the
+[installed-package development workflow](CONTRIBUTING.md#develop-against-an-installed-package).
+It packs local npm tarballs into an isolated runtime without publishing; source
+loading alone does not validate packaged dependency resolution.
+
 ## Packages: installation and usage
 
 | Package | Surface | Try for one session | Install for your Pi user | Usage guide |

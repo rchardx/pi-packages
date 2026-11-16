@@ -37,6 +37,107 @@ Install Pi to try packages interactively. Follow the
 [root README](README.md#packages-installation-and-usage) for package-specific
 installation and usage. Automated tests do not require model credentials.
 
+## Develop against an installed package
+
+Use an installed tarball for the normal development loop when working on package
+loading, dependency resolution, or child processes. Loading source with `pi -e`
+is useful for quick edits, but a checkout's `node_modules` can hide missing
+runtime dependencies or incorrect resolution of Pi's host-provided peers.
+
+### Prepare an isolated development environment
+
+Run these Bash commands from the repository root. Keep the development runtime
+outside the checkout, and use a separate Pi agent directory and scratch working
+directory so personal and project package declarations do not load another copy:
+
+```bash
+repo="$PWD"
+dev_root="$HOME/.local/share/pi-packages-dev"
+mkdir -p "$dev_root/agent" "$dev_root/work" "$dev_root/installs"
+```
+
+`PI_CODING_AGENT_DIR` isolates Pi settings, authentication, sessions, and these
+packages' configuration files. It is not a security sandbox: environment API keys
+and normal filesystem permissions still apply. Configure development credentials
+explicitly if model calls are needed; do not copy personal credentials by default.
+Keep the scratch directory free of project `.pi` configuration. For tasks that
+need a real project, inspect its package declarations before granting trust.
+
+### Pack and install each iteration
+
+After editing and running relevant checks, run this block from the same shell:
+
+```bash
+(
+  set -e
+  cd "$repo"
+  install_dir=$(mktemp -d "$dev_root/installs/iteration.XXXXXX")
+  mkdir "$install_dir/archives"
+  npm pack --workspaces --pack-destination "$install_dir/archives"
+  npm install --prefix "$install_dir" --legacy-peer-deps \
+    --ignore-scripts --no-audit --no-fund "$install_dir"/archives/*.tgz
+  printf '\nInstalled iteration: %s\n' "$install_dir"
+)
+```
+
+Inspect the pack output: each package must contain its entrypoint, supporting
+modules, README, and license, without tests, credentials, or local configuration.
+Packages stay `private: true`; `npm pack` does not publish them. npm installs the
+tarballs as real files, not workspace links. `--legacy-peer-deps` leaves Pi's
+host-provided peers to Pi rather than installing duplicate host libraries.
+`--ignore-scripts` is appropriate for the current packages, which need no install
+scripts; reassess it if runtime dependencies later require build steps.
+
+Each iteration uses a fresh prefix, even when package versions have not changed.
+This avoids stale files and same-version reinstall ambiguity without deleting a
+working installation. If packing or installation fails, do not launch that
+iteration; the previous one remains available. Do not use `npm link` or install
+workspace directories as a substitute for tarballs.
+
+### Launch and verify
+
+Set `install_dir` to the successful iteration path printed above, then launch:
+
+```bash
+install_dir="$dev_root/installs/iteration.REPLACE_ME"
+(
+  cd "$dev_root/work" || exit
+  PI_CODING_AGENT_DIR="$dev_root/agent" pi \
+    -e "$install_dir/node_modules/@rchardx/pi-background" \
+    -e "$install_dir/node_modules/@rchardx/pi-subagents" \
+    -e "$install_dir/node_modules/@rchardx/pi-statusline" \
+    -e "$install_dir/node_modules/@rchardx/pi-web-access"
+)
+```
+
+These `-e` paths load the installed copies for that invocation, not the checkout,
+and do not add persistent package declarations. Do not also register source paths
+or other copies of the same packages in the development environment.
+
+Check startup diagnostics and exercise the behavior you changed through the real
+Pi CLI. For subagents, include actual child delegation, not just extension loading.
+For web-access, configure explicit provider opt-in in the development agent
+directory before expecting its tools to appear; live provider calls can incur
+charges. Automated tests must continue to use boundary substitutes, not credentials.
+
+Stop the development session and its tasks before switching iterations, then
+restart with the new paths. `/reload` alone does not select the newly installed
+iteration or prove that existing child processes use updated code. Roll back by
+launching a previous successful iteration. Keep it until the new one is verified;
+remove unused iteration directories only after their sessions and tasks have ended.
+Changes in the checkout do not affect an installed copy until it is packed again.
+
+### Know what this validates
+
+This loop validates packaged files and dependency isolation without publishing to
+npm. Pi still sees the installed directories as **local sources**, not managed
+`npm:` sources. It does not prove managed npm discovery, startup labels, registry
+authentication, or update behavior. For changes to those contracts, also test a
+real `pi install npm:<package>@<version>` in an isolated Pi environment against an
+authorized registry, or use the relevant managed-layout regression tests for the
+specific behavior. Layout tests alone do not validate registry installation.
+Do not claim npm installation coverage from source loading or this tarball loop.
+
 ## Make and validate a change
 
 Keep each change focused and include its tests and relevant documentation.
