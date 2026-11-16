@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   DefaultResourceLoader,
+  getPackageDir,
   ModelRuntime,
+  RpcClient,
   SessionManager,
   SettingsManager,
   type ExtensionAPI,
@@ -77,6 +79,11 @@ async function fixture(t: TestContext, commands = false, behavior = "normal") {
         }),
       };
     if (behavior === "indirect") tool.function = { name: "invoke_extra", arguments: "{}" };
+    if (behavior === "delegate" && !JSON.stringify(messages).includes("Delegated task:"))
+      tool.function = {
+        name: "subagent",
+        arguments: JSON.stringify({ task: "Write the file and report." }),
+      };
     res.writeHead(200, { "content-type": "text/event-stream" });
     const chunk = {
       id: "mock",
@@ -750,4 +757,55 @@ test("package discovery and tool execution reject nonpersistent host modes", {
   const tool = session.agent.state.tools.find((entry) => entry.name === "subagent");
   assert.ok(tool);
   await assert.rejects(tool.execute("start", { task: "do work" }), /require tui or rpc/u);
+});
+
+test("installed package outside workspace node_modules launches and completes a real child", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await fixture(t, false, "delegate");
+  const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
+  const installedRoot = join(dir, "packages", "subagents");
+  await mkdir(installedRoot, { recursive: true });
+  const manifest: unknown = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
+  assert.ok(record(manifest) && Array.isArray(manifest.files));
+  const entries = [
+    "package.json",
+    "LICENSE",
+    ...manifest.files.filter((entry): entry is string => typeof entry === "string"),
+  ];
+  for (const entry of entries) {
+    await cp(join(sourceRoot, entry), join(installedRoot, entry), { recursive: true });
+  }
+  const client = new RpcClient({
+    cliPath: join(getPackageDir(), "dist", "bundle", "cli.js"),
+    cwd: dir,
+    provider: "mock",
+    model: "test-model",
+    args: ["--no-session", "-ne", "-ns", "-np", "--no-themes", "-e", installedRoot],
+  });
+  t.after(() => client.stop());
+  let report = "";
+  const completed = new Promise<void>((resolve, reject) => {
+    client.onEvent((event) => {
+      if (event.type === "tool_execution_end" && event.isError) {
+        reject(new Error(`Tool failed: ${JSON.stringify(event.result)}`));
+      }
+      if (
+        event.type === "message_end" &&
+        event.message.role === "custom" &&
+        event.message.customType === "subagent:result" &&
+        typeof event.message.content === "string"
+      ) {
+        report = event.message.content;
+      }
+      if (event.type === "agent_settled" && report) {
+        resolve();
+      }
+    });
+  });
+  await client.start();
+  await client.prompt("Delegate the work.");
+  await completed;
+  assert.match(report, /: completed\n[\s\S]*Implemented and checked\./u);
+  assert.equal(await readFile(join(dir, "result.txt"), "utf8"), "child wrote this");
 });
