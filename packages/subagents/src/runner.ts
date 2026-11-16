@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import {
   bounded,
   CHILD_ENV,
@@ -28,12 +30,8 @@ export interface RunnerOptions {
 }
 
 export function startChild(launch: Launch, options: RunnerOptions = {}): Execution {
-  const cli = fileURLToPath(
-    new URL("./cli.js", import.meta.resolve("@earendil-works/pi-coding-agent")),
-  );
-  const guard = fileURLToPath(new URL("./child.ts", import.meta.url));
   const args = options.args ?? [
-    cli,
+    join(getPackageDir(), "dist", "bundle", "cli.js"),
     "--mode",
     "json",
     "--no-session",
@@ -50,7 +48,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     ...(launch.cliFlags ?? []),
     ...launch.extensions.flatMap((path) => ["-e", path]),
     "-e",
-    guard,
+    fileURLToPath(new URL("./child.ts", import.meta.url)),
   ];
   const child = spawn(options.command ?? process.execPath, args, {
     cwd: launch.cwd,
