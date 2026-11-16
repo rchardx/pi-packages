@@ -161,6 +161,7 @@ for (const behavior of ["empty", "loop", "sleep"]) {
       extensions: [],
       activeTools: ["read", "write", "bash"],
       requiredTools: ["read", "write", "bash"],
+      mcpTools: [],
       task: "Perform the task.",
     });
     t.after(() => execution.cancel());
@@ -244,6 +245,7 @@ export default function (pi) {
     extensions: [extension],
     activeTools: ["read", "write", "bash"],
     requiredTools: ["read", "write", "bash"],
+    mcpTools: [],
     task: "Perform the task.",
   });
   t.after(() => execution.cancel());
@@ -284,6 +286,7 @@ test("a real child stops its shell when the owning process disappears", {
     extensions: [],
     activeTools: ["bash"],
     requiredTools: ["bash"],
+    mcpTools: [],
     task: "Run a command",
   };
   const runner = new URL("../src/runner.ts", import.meta.url).href;
@@ -342,6 +345,7 @@ test("real Pi CLI starts fresh, writes files, excludes recursion, and reports co
     extensions: [fileURLToPath(new URL("../", import.meta.url))],
     activeTools: ["read", "write", "bash"],
     requiredTools: ["read", "write", "bash"],
+    mcpTools: [],
     cliFlags: ["--append-system-prompt", "Project rule: preserve unrelated files."],
     task: "Write the requested file and report.",
   });
@@ -383,6 +387,7 @@ test("explicit extensions reload tools and execute their permission hooks in the
     extensions: [extension],
     activeTools: ["read", "write", "sentinel"],
     requiredTools: ["read", "write", "sentinel"],
+    mcpTools: [],
     task: "Write a file",
   });
   t.after(() => execution.cancel());
@@ -406,6 +411,7 @@ test("missing child tools fail before the first model request", { timeout: 30_00
     extensions: [],
     activeTools: ["read"],
     requiredTools: ["read", "not_installed"],
+    mcpTools: [],
     task: "Do work",
   });
   t.after(() => execution.cancel());
@@ -558,6 +564,7 @@ test("explicit CLI prompt files and repeated append inputs reach child hooks exa
     cliFlags: options.flags,
     activeTools: ["write"],
     requiredTools: ["write"],
+    mcpTools: [],
     task: "Write the file.",
   });
   t.after(() => execution.cancel());
@@ -611,6 +618,7 @@ for (const offline of ["environment", "flag"]) {
       cliFlags: options.flags,
       activeTools: ["write", "explicit_tool"],
       requiredTools: ["write", "explicit_tool"],
+      mcpTools: [],
       task: "Write the file.",
     });
     t.after(() => execution.cancel());
@@ -652,6 +660,7 @@ for (const noMcp of [false, true]) {
       cliFlags: options.flags,
       activeTools: ["write"],
       requiredTools: ["write"],
+      mcpTools: [],
       task: "Write the file.",
     });
     t.after(() => execution.cancel());

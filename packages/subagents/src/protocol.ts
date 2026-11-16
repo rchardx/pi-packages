@@ -37,8 +37,10 @@ export interface Launch {
   extensions: string[];
   /** Direct model exposure, restored after the CLI registers the allowed tools. */
   activeTools: string[];
-  /** Complete required capability set, including active and indirectly callable tools. */
+  /** Active and indirectly callable tools that must be registered before the first prompt. */
   requiredTools: string[];
+  /** Built-in MCP tools: allowed, but registered whenever the child's own servers connect. */
+  mcpTools: string[];
   cliFlags?: string[];
   maxRequests?: number;
   deadlineMs?: number;

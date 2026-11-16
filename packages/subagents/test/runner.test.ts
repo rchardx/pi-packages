@@ -12,6 +12,7 @@ const launch: Launch = {
   extensions: [],
   activeTools: [],
   requiredTools: [],
+  mcpTools: [],
   task: "Task",
 };
 const success = { status: "completed", report: "done", requests: 1, tokens: 10 };

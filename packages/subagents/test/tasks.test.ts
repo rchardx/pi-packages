@@ -22,6 +22,7 @@ export const launch: Launch = {
   extensions: [],
   activeTools: ["read", "write", "bash"],
   requiredTools: ["read", "write", "bash"],
+  mcpTools: [],
   task: "Task",
 };
 const completed: Result = { status: "completed", report: "done", requests: 1, tokens: 10 };
