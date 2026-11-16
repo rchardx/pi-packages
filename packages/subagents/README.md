@@ -30,11 +30,36 @@ subagent_cancel({ id: "<full UUID returned by subagent>" })
 ```
 
 Each launch returns a full UUID after the child has loaded and is ready to work.
-Completion arrives automatically as a `subagent:result` message using
-`deliverAs: "steer"` and `triggerTurn: true`. An idle parent is awakened; a busy
-parent receives the report at a supported steering boundary, without preempting
-running tools. Do not poll or use sleep loops. If nothing independent remains,
-end the turn and wait for the notification.
+Completion arrives automatically as a `subagent:result` message (with a compact,
+collapsible card in the TUI) using `deliverAs: "steer"` and `triggerTurn: true`.
+An idle parent is awakened; a busy parent receives the report at a supported
+steering boundary, without preempting running tools. Do not poll or use sleep
+loops. If nothing independent remains, end the turn and wait for the notification.
+
+### Inspect running subagents
+
+While children are running, Pi's status area shows `subagents: N running`. The
+count updates when a child finishes startup, completes, fails, is cancelled, or
+shuts down with the session. RPC clients receive the corresponding status update.
+
+Enter `/subagents` in Pi to show a read-only snapshot of running children in
+this session without starting a model turn or adding context messages:
+
+```text
+Subagents · 2 running
+
+550e8400-e29b-41d4-a716-446655440000  running  1m12s
+  Implement config validation and run tests.
+
+6ba7b810-9dad-41d1-80b4-00c04fd430c8  running  18s
+  Review documentation changes.
+```
+
+With no running children it displays `No subagents running.` Collapsed
+`subagent:result` cards show the short agent prefix, status, and duration before
+the task summary so long tasks truncate first; expanding reveals the full UUID,
+request and token counts, and sanitized report text without changing the
+model-facing message.
 
 ## Task and execution boundaries
 
@@ -133,16 +158,36 @@ background-shell extensions do not accidentally return before their commands fin
 - Explicit cancellation reports through the cancel tool without an additional
   completion wake-up. Shutdown cancellation never wakes a replacement session.
 
-| Limit | Value |
+| Limit | Default |
 | --- | --- |
-| Concurrent children per root session | 4, including startups; excess launches fail |
+| Concurrent children per root session | 8, including startups; excess launches fail |
 | Task input | 32 KiB UTF-8, nonempty |
-| Startup deadline | 60 seconds |
-| Total execution deadline, including startup | 30 minutes |
+| Startup deadline | 90 seconds |
+| Total execution deadline, including startup | 30 minutes (`1800` seconds) |
 | Model turns | At most 64 admitted turns; recovery/compaction requests are governed by Pi |
 | Final child report | 32 KiB UTF-8, explicitly marked when truncated |
 | Diagnostic stderr retained per child | 4 KiB |
-| Retained terminal records per session | 128; older IDs expire |
+| Retained terminal records per session | 256; older IDs expire |
+
+### Settings
+
+Optional user configuration at `~/.pi/agent/subagents.json`, re-read on each
+`subagent` launch. A missing file uses defaults; invalid or unreadable
+configuration fails the call before starting a child.
+
+```json
+{
+  "maxConcurrent": 8,
+  "maxRequests": 64,
+  "deadlineSeconds": 1800
+}
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `maxConcurrent` | `8` | Maximum concurrent children in a root session, including startups. |
+| `maxRequests` | `64` | Maximum admitted model turns per child execution. |
+| `deadlineSeconds` | `1800` | Total child execution deadline in seconds, including startup. |
 
 There is no hidden task queue or whole-task automatic retry. Pi may retry provider
 requests according to its settings. States distinguish `completed`, `failed`,

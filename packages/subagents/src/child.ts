@@ -28,6 +28,7 @@ export default async function child(pi: ExtensionAPI) {
     provider: string;
     model: string;
     modelConfig: { api: string; baseUrl: string } | undefined;
+    maxRequests: number;
   }>((resolve) => {
     process.on("message", (message: unknown) => {
       if (!record(message)) return;
@@ -41,6 +42,12 @@ export default async function child(pi: ExtensionAPI) {
         Array.isArray(message.activeTools) &&
         message.activeTools.every((tool): tool is string => typeof tool === "string")
       ) {
+        const maxRequests =
+          typeof message.maxRequests === "number" &&
+          Number.isInteger(message.maxRequests) &&
+          message.maxRequests >= 1
+            ? message.maxRequests
+            : MAX_REQUESTS;
         resolve({
           requiredTools: message.requiredTools,
           activeTools: message.activeTools,
@@ -52,6 +59,7 @@ export default async function child(pi: ExtensionAPI) {
             typeof message.modelConfig.baseUrl === "string"
               ? { api: message.modelConfig.api, baseUrl: message.modelConfig.baseUrl }
               : undefined,
+          maxRequests,
         });
       }
     });
@@ -113,7 +121,7 @@ export default async function child(pi: ExtensionAPI) {
     return { systemPrompt: `${event.systemPrompt}\n\n${CHILD_INSTRUCTIONS}` };
   });
   pi.on("turn_start", (_event, ctx) => {
-    if (requests >= MAX_REQUESTS) {
+    if (requests >= config.maxRequests) {
       limited = true;
       ctx.abort();
     } else {

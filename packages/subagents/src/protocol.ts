@@ -1,12 +1,12 @@
 export const CHILD_ENV = "PI_SUBAGENTS_CHILD";
 export const MAX_TASK_BYTES = 32 * 1024;
 export const MAX_REPORT_BYTES = 32 * 1024;
-export const MAX_CONCURRENT = 4;
+export const MAX_CONCURRENT = 8;
 export const MAX_REQUESTS = 64;
-export const STARTUP_MS = 60_000;
+export const STARTUP_MS = 90_000;
 export const DEADLINE_MS = 30 * 60_000;
 export const STOP_GRACE_MS = 2_000;
-export const MAX_TERMINAL_RECORDS = 128;
+export const MAX_TERMINAL_RECORDS = 256;
 
 export type Status = "completed" | "failed" | "cancelled" | "timed_out" | "limit_reached";
 export interface Result {
@@ -28,6 +28,8 @@ export interface Launch {
   /** Complete required capability set, including active and indirectly callable tools. */
   requiredTools: string[];
   cliFlags?: string[];
+  maxRequests?: number;
+  deadlineMs?: number;
   task: string;
 }
 

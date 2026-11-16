@@ -6,6 +6,7 @@ export interface Task {
   id: string;
   task: string;
   startedAt: number;
+  handedOff: boolean;
   cancelRequested: boolean;
   execution?: Execution;
   result?: Result;
@@ -17,27 +18,44 @@ export class Tasks {
 
   private readonly notify: (task: Task, result: Result) => void;
   private readonly start: (launch: Launch) => Execution;
+  private readonly onChange: () => void;
 
   constructor(
     notify: (task: Task, result: Result) => void,
     start: (launch: Launch) => Execution = startChild,
+    onChange: () => void = () => {},
   ) {
     this.notify = notify;
     this.start = start;
+    this.onChange = onChange;
   }
 
-  async launch(launch: Launch, signal?: AbortSignal): Promise<string> {
+  runningTasks(): Task[] {
+    if (this.closed) return [];
+    return [...this.records.values()].filter((task) => task.handedOff && !task.result);
+  }
+
+  runningCount(): number {
+    return this.runningTasks().length;
+  }
+
+  async launch(
+    launch: Launch,
+    signal?: AbortSignal,
+    maxConcurrent = MAX_CONCURRENT,
+  ): Promise<string> {
     if (this.closed) throw new Error("The owning session has ended.");
     if (signal?.aborted) throw new Error("Subagent startup cancelled.");
-    const running = [...this.records.values()].filter((task) => !task.result).length;
-    if (running >= MAX_CONCURRENT)
+    const active = [...this.records.values()].filter((task) => !task.result).length;
+    if (active >= maxConcurrent)
       throw new Error(
-        `At most ${MAX_CONCURRENT} subagents may run in this session. Wait for a completion notification.`,
+        `At most ${maxConcurrent} subagents may run in this session. Wait for a completion notification.`,
       );
     const task: Task = {
       id: randomUUID(),
       task: launch.task,
       startedAt: Date.now(),
+      handedOff: false,
       cancelRequested: false,
     };
     // Reserve before startup so concurrent calls cannot overbook the session.
@@ -50,16 +68,17 @@ export class Tasks {
       throw error;
     }
     task.execution = execution;
-    let handedOff = false;
     const abort = () => {
       task.cancelRequested = true;
       void execution.cancel();
     };
     signal?.addEventListener("abort", abort, { once: true });
     void execution.done.then((result) => {
+      const wasRunning = task.handedOff && !task.result;
       task.result = result;
       delete task.execution;
-      if (handedOff && !this.closed && !task.cancelRequested) this.notify(task, result);
+      if (wasRunning && !this.closed) this.onChange();
+      if (task.handedOff && !this.closed && !task.cancelRequested) this.notify(task, result);
       this.prune();
     });
     try {
@@ -67,7 +86,8 @@ export class Tasks {
       if (this.closed || signal?.aborted || task.result)
         throw new Error("Subagent ended during startup.");
       signal?.removeEventListener("abort", abort);
-      handedOff = true;
+      task.handedOff = true;
+      this.onChange();
       // Resume the child after the launch tool has returned its acknowledgement.
       setImmediate(() => execution.run());
       return task.id;
@@ -93,7 +113,9 @@ export class Tasks {
   }
 
   async shutdown(): Promise<void> {
+    const hadRunning = this.runningCount() > 0;
     this.closed = true;
+    if (hadRunning) this.onChange();
     await Promise.allSettled([...this.records.values()].map((task) => task.execution?.cancel()));
     this.records.clear();
   }

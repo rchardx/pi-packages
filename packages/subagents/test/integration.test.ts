@@ -379,11 +379,29 @@ async function parentSession(
     await session.abort();
     session.dispose();
   });
-  await session.bindExtensions({ mode: "rpc" });
+  const notices: string[] = [];
+  const statuses = new Map<string, string>();
+  const statusUpdates: { key: string; text: string | undefined }[] = [];
+  await session.bindExtensions({
+    mode: "rpc",
+    uiContext: {
+      ...session.extensionRunner.createContext().ui,
+      notify: (message) => {
+        notices.push(message);
+      },
+      setStatus: (key, text) => {
+        statusUpdates.push({ key, text });
+        if (text === undefined) statuses.delete(key);
+        else statuses.set(key, text);
+      },
+    },
+  });
   const tool = session.agent.state.tools.find((entry) => entry.name === "subagent");
+  const cancelTool = session.agent.state.tools.find((entry) => entry.name === "subagent_cancel");
   assert.ok(tool);
+  assert.ok(cancelTool);
   assert.ok(api);
-  return { session, tool, api };
+  return { session, tool, cancelTool, api, notices, statuses, statusUpdates };
 }
 
 test("children rebuild their prompt without inherited delegation rules or double-applied hooks", {
@@ -808,4 +826,71 @@ test("installed package outside workspace node_modules launches and completes a 
   await completed;
   assert.match(report, /: completed\n[\s\S]*Implemented and checked\./u);
   assert.equal(await readFile(join(dir, "result.txt"), "utf8"), "child wrote this");
+});
+
+test("/subagents snapshot, status updates, and subagents.json limits work end-to-end", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, requests, delay } = await fixture(t, false, "loop");
+  const { session, tool, cancelTool, notices, statuses, statusUpdates } = await parentSession(
+    t,
+    dir,
+  );
+  statuses.set("other-extension", "unchanged");
+  assert.deepEqual(statusUpdates, [{ key: "subagents", text: undefined }]);
+  assert.ok(session.extensionRunner.getMessageRenderer("subagent:result"));
+
+  const initialMessages = [...session.messages];
+  await session.prompt("/subagents");
+  assert.deepEqual(notices, ["No subagents running."]);
+  assert.deepEqual(session.messages, initialMessages);
+
+  await writeFile(join(dir, "subagents.json"), "{broken");
+  await assert.rejects(
+    tool.execute("bad-config", { task: "Must not start." }),
+    /Invalid subagents configuration/u,
+  );
+  assert.equal(requests.length, 0);
+  assert.equal(statuses.has("subagents"), false);
+
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({ maxConcurrent: 1, maxRequests: 2 }),
+  );
+  delay(800);
+  const started = await tool.execute("first", { task: "First task\nwith details" });
+  const firstId = (started.details as { id?: string }).id;
+  assert.ok(firstId);
+  assert.equal(statuses.get("subagents"), "subagents: 1 running");
+
+  await assert.rejects(tool.execute("over-limit", { task: "Second task" }), /At most 1 subagents/u);
+
+  await session.prompt("/subagents");
+  assert.equal(notices.length, 2);
+  assert.match(
+    notices[1] ?? "",
+    new RegExp(
+      `^Subagents · 1 running\\n\\n${firstId} {2}running {2}\\d+s\\n {2}First task\\n {2}with details$`,
+      "u",
+    ),
+  );
+  assert.deepEqual(session.messages, initialMessages);
+
+  const cancelled = await cancelTool.execute("cancel-first", { id: firstId });
+  assert.match(JSON.stringify(cancelled), /cancelled/u);
+  assert.equal(statuses.has("subagents"), false);
+  assert.equal(statuses.get("other-extension"), "unchanged");
+
+  delay(0);
+  const finished = new Promise<{ details?: unknown }>((resolve) => {
+    session.sendCustomMessage = async (message) => {
+      resolve(message);
+    };
+  });
+  await tool.execute("bounded-turns", { task: "Loop until maxRequests." });
+  const delivered = await finished;
+  assert.equal(statuses.has("subagents"), false);
+  assert.ok(record(delivered.details));
+  assert.equal(delivered.details.status, "limit_reached");
+  assert.equal(delivered.details.requests, 2);
 });
