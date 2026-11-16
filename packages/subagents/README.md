@@ -151,8 +151,16 @@ active-only prompt guidelines. Existing tool exclusions still apply.
 Providers must be available from the child's configuration or loaded extensions.
 Runtime-only provider registrations, API-key overrides, custom extension flags,
 and in-memory settings mutations are not copied. Configure these through normal
-Pi configuration or a reloadable extension before delegation. Required MCP tools
-must be available at startup; unavailable connections cause a clear launch failure.
+Pi configuration or a reloadable extension before delegation.
+
+Tools from Pi's built-in MCP support are not required at startup: each child
+connects its own MCP servers, and Pi registers their tools as the servers connect.
+Once the parent has MCP tools registered, the child is limited to the ones the
+parent could call. A server that cannot connect in the child surfaces as a failed
+tool call, not as a launch failure. See
+[Pi's MCP documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md)
+for when Pi waits for a server. Tools that other extensions register
+asynchronously are still required at startup.
 
 The child builds its own system prompt from its resources, applicable project
 instructions, selected tools, and extension hooks, then receives child-specific

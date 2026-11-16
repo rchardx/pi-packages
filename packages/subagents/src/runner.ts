@@ -44,6 +44,7 @@ export interface RunnerOptions {
 }
 
 export function startChild(launch: Launch, options: RunnerOptions = {}): Execution {
+  const allowedTools = [...launch.requiredTools, ...launch.mcpTools];
   const args = options.args ?? [
     join(getPackageDir(), "dist", "bundle", "cli.js"),
     "--mode",
@@ -58,7 +59,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     launch.model,
     "--thinking",
     launch.thinking,
-    ...(launch.requiredTools.length ? ["--tools", launch.requiredTools.join(",")] : ["--no-tools"]),
+    ...(allowedTools.length ? ["--tools", allowedTools.join(",")] : ["--no-tools"]),
     ...(launch.cliFlags ?? []),
     ...launch.extensions.flatMap((path) => ["-e", path]),
     "-e",

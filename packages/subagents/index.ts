@@ -47,9 +47,13 @@ export function environment(pi: ExtensionAPI, ctx: ExtensionToolContext, task: s
     ...requiredTools,
     ...pi.getActiveTools().filter((name) => !MANAGEMENT.has(name)),
   ]);
+  // Pi registers these as each process connects its MCP servers, and waits for a server when
+  // a prompt or call needs it. A child allows them without demanding them at startup.
+  const mcpTools = new Set<string>();
   for (const tool of pi.getAllTools()) {
     if (!selected.has(tool.name) || COMMUNICATION.has(tool.name)) continue;
     const path = tool.sourceInfo.path;
+    if (path === "builtin:mcp") mcpTools.add(tool.name);
     if (path.startsWith("builtin:")) {
       if (
         !options.noExtensions &&
@@ -75,7 +79,8 @@ export function environment(pi: ExtensionAPI, ctx: ExtensionToolContext, task: s
     trusted: ctx.isProjectTrusted(),
     extensions: [...extensions],
     activeTools: pi.getActiveTools().filter((name) => !MANAGEMENT.has(name)),
-    requiredTools: [...selected],
+    requiredTools: [...selected].filter((name) => !mcpTools.has(name)),
+    mcpTools: [...mcpTools],
     cliFlags: options.flags,
     task,
   };
