@@ -16,7 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { record } from "../src/protocol.ts";
 import { parentOptions } from "../src/cli.ts";
-import { environment } from "../src/index.ts";
+import { environment } from "../index.ts";
 import { startChild } from "../src/runner.ts";
 
 async function fixture(t: TestContext, commands = false, behavior = "normal") {

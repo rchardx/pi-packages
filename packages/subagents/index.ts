@@ -1,9 +1,9 @@
 import { isAbsolute } from "node:path";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { bounded, CHILD_ENV, MAX_TASK_BYTES, type Launch } from "./protocol.ts";
-import { Tasks } from "./tasks.ts";
-import { parentOptions } from "./cli.ts";
+import { bounded, CHILD_ENV, MAX_TASK_BYTES, type Launch } from "./src/protocol.ts";
+import { Tasks } from "./src/tasks.ts";
+import { parentOptions } from "./src/cli.ts";
 
 const MANAGEMENT = new Set(["subagent", "subagent_cancel"]);
 
