@@ -70,25 +70,36 @@ export function transportError(error: unknown, message: string): Error {
   return new Error(`${message}.`);
 }
 
-async function readJsonResponse(
+function openBody(
   response: Response,
+  contentType: "application/json" | "text/event-stream",
   maxBytes: number,
   errorOptions: HttpErrorOptions,
-): Promise<unknown> {
+) {
   const { label } = errorOptions;
   if (response.status !== 200) throw httpError(response.status, errorOptions);
   if (
-    response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !==
-    "application/json"
+    response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== contentType
   ) {
-    throw new Error(`${label} returned a non-JSON response.`);
+    throw new Error(
+      `${label} returned a ${contentType === "application/json" ? "non-JSON" : "non-event-stream"} response.`,
+    );
   }
   const limitError = () =>
     new Error(`${label} response exceeds the ${maxBytes / (1024 * 1024)} MiB limit.`);
   const length = response.headers.get("content-length");
   if (length && Number(length) > maxBytes) throw limitError();
   if (!response.body) throw new Error(`${label} returned an empty response body.`);
-  const reader = response.body.getReader();
+  return { reader: response.body.getReader(), limitError };
+}
+
+async function readJsonResponse(
+  response: Response,
+  maxBytes: number,
+  errorOptions: HttpErrorOptions,
+): Promise<unknown> {
+  const { label } = errorOptions;
+  const { reader, limitError } = openBody(response, "application/json", maxBytes, errorOptions);
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -171,15 +182,14 @@ export interface JsonPostOptions<TAuth> {
   errorOptions: HttpErrorOptions;
 }
 
-export async function postJson<TAuth>(options: JsonPostOptions<TAuth>): Promise<unknown> {
+async function sendPost<TAuth>(options: JsonPostOptions<TAuth>): Promise<Response> {
   const auth = await resolveWithSignal(options.resolveAuth, options.signal);
   const built = options.buildRequest(auth);
   const headers = new Headers(built.headers);
   // Authentication belongs to Pi; the JSON payload format belongs to this tool.
   headers.set("Content-Type", "application/json");
-  let response: Response;
   try {
-    response = await options.request(options.endpoint, {
+    return await options.request(options.endpoint, {
       method: "POST",
       headers,
       body: JSON.stringify(built.body),
@@ -192,5 +202,78 @@ export async function postJson<TAuth>(options: JsonPostOptions<TAuth>): Promise<
       `Cannot reach ${options.errorOptions.label}; network or redirect failure`,
     );
   }
-  return readJsonResponse(response, options.maxBytes, options.errorOptions);
+}
+
+export async function postJson<TAuth>(options: JsonPostOptions<TAuth>): Promise<unknown> {
+  return readJsonResponse(await sendPost(options), options.maxBytes, options.errorOptions);
+}
+
+export interface SsePostOptions<TAuth> extends JsonPostOptions<TAuth> {
+  // Reading stops at the first terminal event; the stream must not end before one.
+  isTerminal: (event: unknown) => boolean;
+}
+
+// Server-sent JSON events share the decoded-size budget and diagnostics of JSON responses.
+export async function postSse<TAuth>(options: SsePostOptions<TAuth>): Promise<unknown[]> {
+  const response = await sendPost(options);
+  const { label } = options.errorOptions;
+  const { reader, limitError } = openBody(
+    response,
+    "text/event-stream",
+    options.maxBytes,
+    options.errorOptions,
+  );
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const events: unknown[] = [];
+  let buffer = "";
+  let size = 0;
+  // Returns true once a terminal event has been parsed.
+  const parseBlocks = (final: boolean): boolean => {
+    const blocks = buffer.split(/\r?\n\r?\n/u);
+    buffer = final ? "" : (blocks.pop() ?? "");
+    for (const block of blocks) {
+      const data = block
+        .split(/\r?\n/u)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /u, ""))
+        .join("\n");
+      if (!data.trim() || data.trim() === "[DONE]") continue;
+      let event: unknown;
+      try {
+        event = JSON.parse(data);
+      } catch {
+        throw new Error(`${label} returned an invalid event stream.`);
+      }
+      events.push(event);
+      if (options.isTerminal(event)) return true;
+    }
+    return false;
+  };
+  try {
+    while (true) {
+      let chunk: ReadableStreamReadResult<Uint8Array>;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        throw transportError(error, `${label} response stream failed`);
+      }
+      if (!chunk.done) {
+        size += chunk.value.byteLength;
+        if (size > options.maxBytes) throw limitError();
+      }
+      try {
+        buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
+      } catch {
+        throw new Error(`${label} returned invalid UTF-8.`);
+      }
+      if (parseBlocks(chunk.done)) {
+        await reader.cancel().catch(() => {});
+        return events;
+      }
+      if (chunk.done) break;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  throw new Error(`${label} event stream ended before the response completed.`);
 }

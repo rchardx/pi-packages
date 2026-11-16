@@ -3,76 +3,87 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type Capability = "search" | "fetch";
-export type WebProviderId = "deepseek" | "anthropic";
+export type SearchProviderId = "deepseek" | "anthropic" | "openai" | "openai-codex";
+export type FetchProviderId = "deepseek" | "anthropic";
+export type WebProviderId = SearchProviderId;
 
-export type DeepSeekProviderConfig = Record<string, never>;
-
-export interface ModelProviderConfig {
+export interface ProviderConfig {
   readonly model?: string;
 }
 
-export interface CapabilityProvidersConfig {
-  deepseek?: DeepSeekProviderConfig;
-  anthropic?: ModelProviderConfig;
-}
-
-export interface CapabilityConfig {
-  providers: CapabilityProvidersConfig;
-  defaultProvider?: WebProviderId;
+export interface CapabilityConfig<P extends WebProviderId = WebProviderId> {
+  providers: Partial<Record<P, ProviderConfig>>;
+  defaultProvider?: P;
 }
 
 export interface Config {
-  search?: CapabilityConfig;
-  fetch?: CapabilityConfig;
+  search?: CapabilityConfig<SearchProviderId>;
+  fetch?: CapabilityConfig<FetchProviderId>;
 }
 
-export type ResolvedCapabilityTarget =
-  | { provider: "deepseek" }
-  | { provider: "anthropic"; model?: string };
+export interface ResolvedCapabilityTarget<P extends WebProviderId = WebProviderId> {
+  provider: P;
+  model?: string;
+}
 
-const SUPPORTED_PROVIDERS = new Set<string>(["deepseek", "anthropic"]);
+// The authority for which providers implement each capability. OpenAI has no
+// deterministic page-fetch tool, so its providers are search-only.
+const SEARCH_PROVIDERS: readonly SearchProviderId[] = [
+  "deepseek",
+  "anthropic",
+  "openai",
+  "openai-codex",
+];
+const FETCH_PROVIDERS: readonly FetchProviderId[] = ["deepseek", "anthropic"];
 const CAPABILITY_FIELDS = new Set<string>(["providers", "defaultProvider"]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isWebProviderId(value: string): value is WebProviderId {
-  return SUPPORTED_PROVIDERS.has(value);
+function supportedProvider<P extends WebProviderId>(
+  supported: readonly P[],
+  value: unknown,
+): P | undefined {
+  return supported.find((id) => id === value);
 }
 
-function parseDeepSeekEntry(capability: Capability, value: unknown): DeepSeekProviderConfig {
+function parseProviderEntry(
+  capability: Capability,
+  provider: WebProviderId,
+  value: unknown,
+): ProviderConfig {
   if (!isPlainObject(value)) {
-    throw new Error(`${capability}.providers.deepseek must be a JSON object.`);
+    throw new Error(`${capability}.providers.${provider} must be a JSON object.`);
   }
-  if (Object.keys(value).length > 0) {
-    throw new Error(
-      `${capability}.providers.deepseek must be {}; DeepSeek uses standalone endpoints and accepts no options.`,
-    );
-  }
-  return {};
-}
-
-function parseAnthropicEntry(capability: Capability, value: unknown): ModelProviderConfig {
-  if (!isPlainObject(value)) {
-    throw new Error(`${capability}.providers.anthropic must be a JSON object.`);
+  if (provider === "deepseek") {
+    if (Object.keys(value).length > 0) {
+      throw new Error(
+        `${capability}.providers.deepseek must be {}; DeepSeek uses standalone endpoints and accepts no options.`,
+      );
+    }
+    return {};
   }
   for (const key of Object.keys(value)) {
     if (key !== "model") {
       throw new Error(
-        `Unknown field in ${capability}.providers.anthropic: only model is supported.`,
+        `Unknown field in ${capability}.providers.${provider}: only model is supported.`,
       );
     }
   }
   if (!("model" in value)) return {};
   const { model } = value;
   if (typeof model !== "string" || model.length === 0 || /[\s\p{Cc}]/u.test(model)) {
-    throw new Error(`${capability}.providers.anthropic.model must be a non-empty model ID.`);
+    throw new Error(`${capability}.providers.${provider}.model must be a non-empty model ID.`);
   }
   return { model };
 }
 
-function parseCapabilityConfig(capability: Capability, value: unknown): CapabilityConfig {
+function parseCapabilityConfig<P extends WebProviderId>(
+  capability: Capability,
+  supportedIds: readonly P[],
+  value: unknown,
+): CapabilityConfig<P> {
   if (!isPlainObject(value)) {
     throw new Error(
       `${capability} must be an object with a providers map; omit ${capability} to disable it.`,
@@ -97,34 +108,33 @@ function parseCapabilityConfig(capability: Capability, value: unknown): Capabili
       `${capability}.providers must enable at least one provider; omit ${capability} to disable it.`,
     );
   }
-  const providers: CapabilityProvidersConfig = {};
+  const supported = supportedIds.join(", ");
+  const providers: CapabilityConfig<P>["providers"] = {};
   for (const [id, entry] of providerEntries) {
-    if (!isWebProviderId(id)) {
+    const provider = supportedProvider(supportedIds, id);
+    if (!provider) {
       throw new Error(
-        `Unsupported ${capability} provider "${id}"; supported providers are deepseek and anthropic.`,
+        `Unsupported ${capability} provider "${id}"; supported providers are ${supported}.`,
       );
     }
-    if (id === "deepseek") {
-      providers.deepseek = parseDeepSeekEntry(capability, entry);
-    } else {
-      providers.anthropic = parseAnthropicEntry(capability, entry);
-    }
+    providers[provider] = parseProviderEntry(capability, provider, entry);
   }
   if (!("defaultProvider" in value)) {
     return { providers };
   }
   const { defaultProvider } = value;
-  if (typeof defaultProvider !== "string" || !isWebProviderId(defaultProvider)) {
+  const provider = supportedProvider(supportedIds, defaultProvider);
+  if (!provider) {
     throw new Error(
-      `${capability}.defaultProvider must be one of the supported providers (deepseek, anthropic).`,
+      `${capability}.defaultProvider must be one of the supported providers (${supported}).`,
     );
   }
-  if (!Object.hasOwn(providers, defaultProvider)) {
+  if (!Object.hasOwn(providers, provider)) {
     throw new Error(
-      `${capability}.defaultProvider "${defaultProvider}" must also be enabled in ${capability}.providers.`,
+      `${capability}.defaultProvider "${provider}" must also be enabled in ${capability}.providers.`,
     );
   }
-  return { providers, defaultProvider };
+  return { providers, defaultProvider: provider };
 }
 
 export function parseConfig(value: unknown): Config {
@@ -133,19 +143,22 @@ export function parseConfig(value: unknown): Config {
   }
   const config: Config = {};
   for (const [key, setting] of Object.entries(value)) {
-    if (key !== "search" && key !== "fetch") {
+    if (key === "search") {
+      config.search = parseCapabilityConfig(key, SEARCH_PROVIDERS, setting);
+    } else if (key === "fetch") {
+      config.fetch = parseCapabilityConfig(key, FETCH_PROVIDERS, setting);
+    } else {
       throw new Error("Unknown configuration field; only search and fetch are supported.");
     }
-    config[key] = parseCapabilityConfig(key, setting);
   }
   return config;
 }
 
-export function resolveCapabilityTarget(
+export function resolveCapabilityTarget<P extends WebProviderId>(
   capability: Capability,
-  setting: CapabilityConfig | undefined,
+  setting: CapabilityConfig<P> | undefined,
   activeProvider: string | undefined,
-): ResolvedCapabilityTarget {
+): ResolvedCapabilityTarget<P> {
   if (!setting) {
     throw new Error(
       capability === "search"
@@ -153,18 +166,12 @@ export function resolveCapabilityTarget(
         : "Fetch is disabled. Configure fetch.providers in the user web-access.json to authorize URL disclosure and provider charges.",
     );
   }
-  const select = (provider: WebProviderId): ResolvedCapabilityTarget => {
-    if (provider === "deepseek") return { provider: "deepseek" };
-    const model = setting.providers.anthropic?.model;
-    return model ? { provider: "anthropic", model } : { provider: "anthropic" };
+  const select = (provider: P): ResolvedCapabilityTarget<P> => {
+    const model = setting.providers[provider]?.model;
+    return model ? { provider, model } : { provider };
   };
-  if (
-    activeProvider &&
-    isWebProviderId(activeProvider) &&
-    Object.hasOwn(setting.providers, activeProvider)
-  ) {
-    return select(activeProvider);
-  }
+  const active = Object.keys(setting.providers).find((id): id is P => id === activeProvider);
+  if (active) return select(active);
   if (setting.defaultProvider) {
     return select(setting.defaultProvider);
   }

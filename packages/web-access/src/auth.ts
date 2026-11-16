@@ -2,11 +2,18 @@ import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 
 export const DEEPSEEK_API_ORIGIN = "https://api.deepseek.com";
 export const ANTHROPIC_API_ORIGIN = "https://api.anthropic.com";
+export const OPENAI_API_ORIGIN = "https://api.openai.com";
+export const OPENAI_CODEX_ORIGIN = "https://chatgpt.com";
 
 const MISSING_DEEPSEEK_AUTH =
   "Configure DeepSeek authentication in Pi (/login deepseek or DEEPSEEK_API_KEY).";
 const MISSING_ANTHROPIC_AUTH =
   "Configure Anthropic authentication in Pi (/login anthropic, ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN).";
+const MISSING_OPENAI_AUTH =
+  "Configure OpenAI authentication in Pi (/login openai or OPENAI_API_KEY).";
+const MISSING_OPENAI_CODEX_AUTH =
+  "Configure OpenAI Codex authentication in Pi (/login openai-codex).";
+const CODEX_ACCOUNT_CLAIM = "https://api.openai.com/auth";
 const ANTHROPIC_VERSION = "2023-06-01";
 const ANTHROPIC_OAUTH_DEFAULTS: ReadonlyArray<readonly [string, string]> = [
   ["anthropic-beta", "claude-code-20250219,oauth-2025-04-20"],
@@ -92,6 +99,13 @@ async function resolveProviderAuth<TResult>(
   return built;
 }
 
+function bearerHeaders(apiKey: string | undefined, overrides: HeaderOverrides) {
+  const headers = new Headers();
+  if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
+  applyHeaderOverrides(headers, overrides);
+  return headers.get("Authorization")?.trim() ? headers : undefined;
+}
+
 // Pi owns configuration validity and credential resolution. These adapters only bind
 // its effective auth origin to fixed endpoints and prepare HTTP authentication.
 export async function resolveDeepSeekHeaders(registry: AuthRegistry): Promise<Headers> {
@@ -100,11 +114,50 @@ export async function resolveDeepSeekHeaders(registry: AuthRegistry): Promise<He
     label: "DeepSeek",
     origin: DEEPSEEK_API_ORIGIN,
     missingAuthMessage: MISSING_DEEPSEEK_AUTH,
+    build: bearerHeaders,
+  });
+}
+
+// Accepts both OpenAI API keys and Sign in with ChatGPT access tokens, as Pi does.
+export async function resolveOpenAIHeaders(registry: AuthRegistry): Promise<Headers> {
+  return resolveProviderAuth(registry, {
+    id: "openai",
+    label: "OpenAI",
+    origin: OPENAI_API_ORIGIN,
+    missingAuthMessage: MISSING_OPENAI_AUTH,
+    build: bearerHeaders,
+  });
+}
+
+function codexAccountId(token: string): string | undefined {
+  const payload = token.split(".")[1];
+  if (!payload) return undefined;
+  const claims: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  if (!claims || typeof claims !== "object") return undefined;
+  const auth = (claims as Record<string, unknown>)[CODEX_ACCOUNT_CLAIM];
+  if (!auth || typeof auth !== "object") return undefined;
+  const accountId = (auth as Record<string, unknown>).chatgpt_account_id;
+  return typeof accountId === "string" && accountId ? accountId : undefined;
+}
+
+// Like Pi's Codex transport, the ChatGPT access token and its account always win over
+// configured headers; the account is read from the token's own claims.
+export async function resolveOpenAICodexHeaders(registry: AuthRegistry): Promise<Headers> {
+  return resolveProviderAuth(registry, {
+    id: "openai-codex",
+    label: "OpenAI Codex",
+    origin: OPENAI_CODEX_ORIGIN,
+    missingAuthMessage: MISSING_OPENAI_CODEX_AUTH,
     build: (apiKey, overrides) => {
-      const headers = new Headers();
-      if (apiKey) headers.set("Authorization", `Bearer ${apiKey}`);
+      if (!apiKey) return undefined;
+      const accountId = codexAccountId(apiKey);
+      if (!accountId) throw new Error("Missing ChatGPT account claim.");
+      const headers = new Headers({ originator: "pi" });
       applyHeaderOverrides(headers, overrides);
-      return headers.get("Authorization")?.trim() ? headers : undefined;
+      headers.set("Authorization", `Bearer ${apiKey}`);
+      headers.set("chatgpt-account-id", accountId);
+      headers.set("OpenAI-Beta", "responses=experimental");
+      return headers;
     },
   });
 }

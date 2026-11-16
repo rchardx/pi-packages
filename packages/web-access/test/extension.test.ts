@@ -32,6 +32,8 @@ async function loadSession(
   const previousAnthropicKey = process.env.ANTHROPIC_API_KEY;
   const previousAnthropicToken = process.env.ANTHROPIC_AUTH_TOKEN;
   const previousAnthropicOAuth = process.env.ANTHROPIC_OAUTH_TOKEN;
+  const previousOpenAIKey = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.ANTHROPIC_AUTH_TOKEN;
@@ -45,6 +47,8 @@ async function loadSession(
     else process.env.ANTHROPIC_AUTH_TOKEN = previousAnthropicToken;
     if (previousAnthropicOAuth === undefined) delete process.env.ANTHROPIC_OAUTH_TOKEN;
     else process.env.ANTHROPIC_OAUTH_TOKEN = previousAnthropicOAuth;
+    if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousOpenAIKey;
   });
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("Unexpected network call");
@@ -703,4 +707,77 @@ test("SDK authHeader: true on Anthropic sends only Bearer Authorization without 
   const first = result.content[0];
   assert.equal(first?.type, "text");
   assert.match(first.text, /Authenticated with Bearer only\./u);
+});
+
+function sse(events: object[]): Response {
+  return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
+
+test("Pi routes search to OpenAI and OpenAI Codex by active model with their own credentials", async (t) => {
+  const config = JSON.stringify({
+    search: { providers: { openai: {}, "openai-codex": { model: "gpt-6-sol" } } },
+  });
+  const claims = Buffer.from(
+    JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct-test" } }),
+  ).toString("base64url");
+  const codexToken = `header.${claims}.signature`;
+  // The Codex provider is OAuth-only; a configured key stands in for a ChatGPT login.
+  const { session, modelRuntime } = await loadSession(t, ["web_search"], config, {
+    providers: { "openai-codex": { apiKey: codexToken } },
+  });
+  await modelRuntime.setRuntimeApiKey("openai", "sk-openai-runtime-key");
+  await modelRuntime.setRuntimeApiKey("deepseek", "deepseek-runtime-key");
+  const openaiModel = modelRuntime.getProvider("openai")?.getModels()[0];
+  const codexModel = modelRuntime.getProvider("openai-codex")?.getModels()[0];
+  const deepseekModel = modelRuntime.getProvider("deepseek")?.getModels()[0];
+  assert.ok(openaiModel && codexModel && deepseekModel);
+  const seen: string[] = [];
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    seen.push(String(url));
+    const headers = new Headers(init?.headers);
+    const body = JSON.parse(String(init?.body)) as { model: string; stream: boolean };
+    assert.equal(body.stream, true);
+    if (url === "https://api.openai.com/v1/responses") {
+      assert.equal(headers.get("authorization"), "Bearer sk-openai-runtime-key");
+      assert.equal(body.model, "gpt-5.4-mini");
+    } else {
+      assert.equal(url, "https://chatgpt.com/backend-api/codex/responses");
+      assert.equal(headers.get("authorization"), `Bearer ${codexToken}`);
+      assert.equal(headers.get("chatgpt-account-id"), "acct-test");
+      assert.equal(body.model, "gpt-6-sol");
+    }
+    return sse([
+      {
+        type: "response.output_item.done",
+        item: { type: "web_search_call", status: "completed", action: { type: "search" } },
+      },
+      {
+        type: "response.output_item.done",
+        item: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Grounded.", annotations: [] }],
+        },
+      },
+      { type: "response.completed", response: { status: "completed" } },
+    ]);
+  });
+  const search = session.agent.state.tools.find((tool) => tool.name === "web_search");
+  assert.ok(search);
+  await session.setModel(openaiModel);
+  assert.equal((await search.execute("openai", { query: "test" })).details.provider, "openai");
+  await session.setModel(codexModel);
+  assert.equal((await search.execute("codex", { query: "test" })).details.provider, "openai-codex");
+  // No defaultProvider: an unrelated active model fails before resolving credentials.
+  await session.setModel(deepseekModel);
+  await assert.rejects(
+    search.execute("deepseek", { query: "test" }),
+    /Active model provider "deepseek" is not enabled in search\.providers/u,
+  );
+  assert.deepEqual(seen, [
+    "https://api.openai.com/v1/responses",
+    "https://chatgpt.com/backend-api/codex/responses",
+  ]);
 });

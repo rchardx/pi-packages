@@ -25,6 +25,44 @@ test("both hosted tools require independent provider authorization tables", () =
   }
 });
 
+test("OpenAI and OpenAI Codex are search-only providers with optional model overrides", () => {
+  const value = {
+    search: {
+      providers: { openai: { model: "gpt-5.4-mini" }, "openai-codex": {} },
+      defaultProvider: "openai-codex",
+    },
+  };
+  assert.deepEqual(parseConfig(value), value);
+  assert.throws(
+    () => parseConfig({ search: { providers: { openai: { apiKey: "secret" } } } }),
+    /Unknown field in search\.providers\.openai: only model is supported/u,
+  );
+  for (const provider of ["openai", "openai-codex"]) {
+    assert.throws(
+      () => parseConfig({ fetch: { providers: { [provider]: {} } } }),
+      new RegExp(
+        `Unsupported fetch provider "${provider}"; supported providers are deepseek, anthropic\\.`,
+        "u",
+      ),
+    );
+    assert.throws(
+      () =>
+        parseConfig({
+          fetch: { providers: { deepseek: {} }, defaultProvider: provider },
+        }),
+      /fetch\.defaultProvider must be one of the supported providers \(deepseek, anthropic\)/u,
+    );
+  }
+  const search = parseConfig(value).search;
+  assert.deepEqual(resolveCapabilityTarget("search", search, "openai"), {
+    provider: "openai",
+    model: "gpt-5.4-mini",
+  });
+  assert.deepEqual(resolveCapabilityTarget("search", search, "anthropic"), {
+    provider: "openai-codex",
+  });
+});
+
 for (const value of [null, [], true, "text", { unknown: true }]) {
   test(`rejects malformed top-level configuration ${JSON.stringify(value)}`, () => {
     assert.throws(() => parseConfig(value));
@@ -41,7 +79,7 @@ for (const key of ["search", "fetch"] as const) {
     [{ providers: {} }, new RegExp(`${key}\\.providers must enable at least one`, "u")],
     [{ providers: [] }, new RegExp(`${key}\\.providers must be`, "u")],
     [{ providers: { auto: {} } }, /Unsupported .* provider "auto"/u],
-    [{ providers: { openai: {} } }, /Unsupported .* provider "openai"/u],
+    [{ providers: { google: {} } }, /Unsupported .* provider "google"/u],
     [{ providers: { deepseek: null } }, /providers\.deepseek must be a JSON object/u],
     [{ providers: { deepseek: { model: "deepseek-chat" } } }, /providers\.deepseek must be \{\}/u],
     [{ providers: { deepseek: { apiKey: "secret" } } }, /providers\.deepseek must be \{\}/u],

@@ -34,6 +34,8 @@ type Context = KeybindingHints & { isError: boolean; durationMs: number | undefi
 const PROVIDER_LABELS: Readonly<Record<string, string>> = {
   anthropic: "Anthropic",
   deepseek: "DeepSeek",
+  openai: "OpenAI",
+  "openai-codex": "OpenAI Codex",
 };
 
 // Provider text must not introduce terminal control sequences. Model-facing content is untouched.
