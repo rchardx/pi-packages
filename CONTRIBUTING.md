@@ -44,24 +44,23 @@ loading, dependency resolution, or child processes. Loading source with `pi -e`
 is useful for quick edits, but a checkout's `node_modules` can hide missing
 runtime dependencies or incorrect resolution of Pi's host-provided peers.
 
-### Prepare an isolated development environment
+### Prepare an independent installation directory
 
-Run these Bash commands from the repository root. Keep the development runtime
-outside the checkout, and use a separate Pi agent directory and scratch working
-directory so personal and project package declarations do not load another copy:
+The default workflow registers installed copies in your normal Pi user settings.
+Starting `pi` then uses the development packages with your existing authentication
+and plugin configuration; no `-e` flags or separate agent directory are required.
+Use the default agent directory for these commands, without a
+`PI_CODING_AGENT_DIR` override. This changes the packages used by your daily Pi
+sessions; use the optional isolated workflow below when that is not desirable.
+
+Run these Bash commands from the repository root. Keep installation copies outside
+the checkout so they cannot resolve dependencies through workspace links:
 
 ```bash
 repo="$PWD"
 dev_root="$HOME/.local/share/pi-packages-dev"
-mkdir -p "$dev_root/agent" "$dev_root/work" "$dev_root/installs"
+mkdir -p "$dev_root/installs"
 ```
-
-`PI_CODING_AGENT_DIR` isolates Pi settings, authentication, sessions, and these
-packages' configuration files. It is not a security sandbox: environment API keys
-and normal filesystem permissions still apply. Configure development credentials
-explicitly if model calls are needed; do not copy personal credentials by default.
-Keep the scratch directory free of project `.pi` configuration. For tasks that
-need a real project, inspect its package declarations before granting trust.
 
 ### Pack and install each iteration
 
@@ -94,12 +93,71 @@ working installation. If packing or installation fails, do not launch that
 iteration; the previous one remains available. Do not use `npm link` or install
 workspace directories as a substitute for tarballs.
 
-### Launch and verify
+### Register the iteration in your normal Pi environment
 
-Set `install_dir` to the successful iteration path printed above, then launch:
+After installation succeeds, stop Pi sessions and their background tasks before
+switching registrations. Run `pi list` and record the old sources for rollback.
+Remove each existing registration of these four packages with `pi remove <source>`;
+use the source shown by `pi list` or its resolved absolute local path. Skip removal
+for packages that are not installed. This removes registrations, not the local
+installation directories. Leave unrelated packages alone.
+
+Also check the target project's `.pi/settings.json` and any explicit extension
+configuration for other copies. Project-scoped package registrations need removal
+with `pi remove --local <source>` from that project. Different iteration directories
+are different local sources: installing a new path does not replace the old one.
+Do not combine these registered packages with source-directory `-e` arguments.
+
+Set `install_dir` to the successful iteration path printed above, then register:
 
 ```bash
 install_dir="$dev_root/installs/iteration.REPLACE_ME"
+(
+  set -e
+  for name in background subagents statusline web-access; do
+    pi install "$install_dir/node_modules/@rchardx/pi-$name"
+  done
+  pi list
+)
+```
+
+Confirm that only the intended copy of each package is registered. Installation
+updates the normal user settings in `~/.pi/agent/settings.json`; authentication
+and plugin configuration are retained. No credentials need copying. The commands
+are not an atomic switch: if registration fails partway through, inspect `pi list`
+and either finish registering the new iteration or remove its registrations and
+restore the recorded old sources before starting Pi.
+
+### Launch, verify, and roll back
+
+From your usual project directory, start Pi normally:
+
+```bash
+pi
+```
+
+Check startup diagnostics and exercise the behavior you changed through the real
+Pi CLI. For subagents, include actual child delegation, not just extension loading.
+For web-access, existing explicit provider opt-in still applies; missing or invalid
+configuration is not repaired by reinstalling. Live provider calls can incur
+charges. Automated tests must continue to use boundary substitutes, not credentials.
+
+Restart Pi after switching iterations; `/reload` is not proof that existing child
+processes use updated code. To roll back, stop the affected sessions and tasks,
+remove the new iteration's registrations, reinstall the recorded old sources with
+`pi install`, and restart. Keep the previous installation until the new one is
+verified. Remove unused iteration directories only after their registrations,
+sessions, and tasks are gone. The currently registered installation directory must
+remain available, but the source checkout is not needed to run it. Source edits
+do not affect an installed copy until you pack, install, and register it again.
+
+### Optional: verify with isolated Pi configuration
+
+To investigate configuration effects or test without changing your daily Pi
+registrations, skip the registration step and launch installed copies temporarily:
+
+```bash
+mkdir -p "$dev_root/agent" "$dev_root/work"
 (
   cd "$dev_root/work" || exit
   PI_CODING_AGENT_DIR="$dev_root/agent" pi \
@@ -110,22 +168,17 @@ install_dir="$dev_root/installs/iteration.REPLACE_ME"
 )
 ```
 
-These `-e` paths load the installed copies for that invocation, not the checkout,
-and do not add persistent package declarations. Do not also register source paths
-or other copies of the same packages in the development environment.
+Set `install_dir` to a successful iteration first. These `-e` paths load installed
+copies for that invocation without persistent registration. Keep this agent
+configuration and scratch directory free of other copies and project `.pi`
+configuration. Inspect project package declarations before granting trust if you
+switch to a real project.
 
-Check startup diagnostics and exercise the behavior you changed through the real
-Pi CLI. For subagents, include actual child delegation, not just extension loading.
-For web-access, configure explicit provider opt-in in the development agent
-directory before expecting its tools to appear; live provider calls can incur
-charges. Automated tests must continue to use boundary substitutes, not credentials.
-
-Stop the development session and its tasks before switching iterations, then
-restart with the new paths. `/reload` alone does not select the newly installed
-iteration or prove that existing child processes use updated code. Roll back by
-launching a previous successful iteration. Keep it until the new one is verified;
-remove unused iteration directories only after their sessions and tasks have ended.
-Changes in the checkout do not affect an installed copy until it is packed again.
+`PI_CODING_AGENT_DIR` isolates Pi settings, authentication, sessions, and these
+packages' configuration files. It is not a security sandbox: environment API keys
+and normal filesystem permissions still apply. Configure development credentials
+and provider opt-in explicitly if needed; do not copy personal credentials by
+default. Restart with the new installed paths when testing another iteration.
 
 ### Know what this validates
 
