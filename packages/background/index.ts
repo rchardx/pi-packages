@@ -32,7 +32,7 @@ const parameters = Type.Object({
   timeout: Type.Optional(
     Type.Number({
       description:
-        "Timeout in seconds (optional, no default timeout). A command that exceeds it is killed.",
+        "Timeout in seconds; the command is killed when it expires. Without it, a long-running command may move to the background.",
     }),
   ),
   background: Type.Optional(
@@ -40,6 +40,13 @@ const parameters = Type.Object({
       description: "Run the command in the background and return immediately.",
     }),
   ),
+});
+
+/** Structured result of a command that is still running as a background job. */
+const backgroundOutputSchema = Type.Object({
+  job_id: Type.String(),
+  log_path: Type.Optional(Type.String()),
+  output: Type.String({ description: "Output captured before the job moved to the background" }),
 });
 
 function sleep(ms: number): { promise: Promise<void>; cancel: () => void } {
@@ -121,21 +128,23 @@ export default function background(pi: ExtensionAPI) {
     name: "bash",
     label: builtin.label,
     description:
-      "Execute a bash command in the current working directory. Set " +
-      "background: true to run in the background (tui/rpc only).\n\n" +
+      "Execute a bash command in the current working directory.\n\n" +
       "Foreground execution returns stdout and stderr, truncated to the last " +
       `${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output ` +
       "is saved to a temp file.\n\n" +
       "Background execution returns a job id and available log path, then " +
-      "notifies automatically on completion.\n\n" +
-      "Optionally provide a timeout in seconds.",
+      "notifies automatically on completion.",
     ...(builtin.promptSnippet ? { promptSnippet: builtin.promptSnippet } : {}),
     promptGuidelines: [
       ...(builtin.promptGuidelines ?? []),
       "Use bash background execution for long-running commands when available. Do not poll background jobs or launch duplicate copies; continue other work or end your turn and wait for the completion notification.",
     ],
     parameters,
-    ...(builtin.outputSchema ? { outputSchema: builtin.outputSchema } : {}),
+    // Every successful result carries structured content, so codemode scripts
+    // see foreground and background results through one declared type.
+    ...(builtin.outputSchema
+      ? { outputSchema: Type.Union([builtin.outputSchema, backgroundOutputSchema]) }
+      : {}),
     ...(builtin.constrainedSampling ? { constrainedSampling: builtin.constrainedSampling } : {}),
     ...(builtin.renderCall ? { renderCall: builtin.renderCall } : {}),
     ...(builtin.renderResult ? { renderResult: builtin.renderResult } : {}),
@@ -289,7 +298,15 @@ export default function background(pi: ExtensionAPI) {
           : `Command exceeded the ${config.thresholdSeconds}s foreground threshold.\n` +
             `Moved to background job ${job.id}.\n${logLine}` +
             (tail ? `\n\nOutput so far:\n${tail}` : "");
-      return { content: [{ type: "text", text }], details: undefined };
+      return {
+        content: [{ type: "text", text }],
+        details: undefined,
+        structuredContent: {
+          job_id: job.id,
+          ...(job.logPath ? { log_path: job.logPath } : {}),
+          output: tail,
+        },
+      };
     },
   });
 }

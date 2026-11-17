@@ -46,7 +46,9 @@ command so long commands truncate first. Cards occupy one content row with one
 blank row above and below. Expanding reveals the log path and output tail without
 extra padding between fields. Pi retains its normal spacing between messages.
 
-The tool description summarizes foreground and background results. Prompt
+The tool description summarizes foreground and background results; the
+`timeout` parameter notes that omitting it allows automatic backgrounding.
+Background-only modes are reported when a call asks for them. Prompt
 guidelines explain waiting for completion notifications without polling or
 duplicate commands; these rules are not repeated in each result. Explicit
 background starts return only the job id and log path (or a log-unavailable
@@ -152,10 +154,10 @@ A missing file uses defaults.
   kills all of its jobs.
 - If several background jobs are running, each completion sends its own
   notification; Pi sees them queued in order.
-- The tool keeps the built-in `outputSchema`, but a result that moved to the
-  background carries no `structuredContent` — codemode scripts receive the
-  text form (which states the job id and log path) instead of
-  `{ output, exit_code, … }`.
+- The tool's `outputSchema` accepts the built-in foreground result or
+  `{ job_id, log_path?, output }` for a command still running in the
+  background, where `output` holds what was captured before backgrounding.
+  Codemode scripts receive one of these objects.
 - If another extension also replaces `bash`, the last one registered wins (Pi
   emits no warning). Do not combine this package with other `bash` overrides.
 
