@@ -206,20 +206,20 @@ test("peer routing supports direct and broadcast delivery and rejects completed 
     },
   );
 
-  const idA = await tasks.launch({ ...launch, task: "Task A" });
+  const idA = await tasks.launch({ ...launch, role: "explorer", task: "Task A" });
   const idB = await tasks.launch({ ...launch, task: "Task B" });
   const idClosing = await tasks.launch({ ...launch, task: "Closing task" });
   const idFull = await tasks.launch({ ...launch, task: "Full queue task" });
 
   const viewFromA = tasks.list(idA);
   assert.deepEqual(
-    viewFromA.map((entry) => ({ id: entry.id, self: entry.self })),
+    viewFromA.map((entry) => ({ id: entry.id, self: entry.self, role: entry.role })),
     [
-      { id: "main", self: false },
-      { id: idA, self: true },
-      { id: idB, self: false },
-      { id: idClosing, self: false },
-      { id: idFull, self: false },
+      { id: "main", self: false, role: undefined },
+      { id: idA, self: true, role: "explorer" },
+      { id: idB, self: false, role: undefined },
+      { id: idClosing, self: false, role: undefined },
+      { id: idFull, self: false, role: undefined },
     ],
   );
 

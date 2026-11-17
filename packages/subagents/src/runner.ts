@@ -57,8 +57,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     launch.provider,
     "--model",
     launch.model,
-    "--thinking",
-    launch.thinking,
+    ...(launch.thinking !== undefined ? ["--thinking", launch.thinking] : []),
     ...(allowedTools.length ? ["--tools", allowedTools.join(",")] : ["--no-tools"]),
     ...(launch.cliFlags ?? []),
     ...launch.extensions.flatMap((path) => ["-e", path]),
@@ -136,6 +135,8 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
         send({
           type: "configure",
           id: launch.id ?? "child",
+          role: launch.role,
+          instructions: launch.instructions,
           requiredTools: launch.requiredTools,
           activeTools: launch.activeTools,
           provider: launch.provider,
@@ -226,7 +227,17 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     clearTimeout(startup);
     clearTimeout(deadline);
     clearTimeout(force);
-    readyReject(new Error(reason?.report ?? `Child exited before startup (exit ${code}).`));
+    const detail = stderr.trim();
+    readyReject(
+      new Error(
+        reason?.report ??
+          bounded(
+            detail
+              ? `Child exited before startup (exit ${code}).\n${detail}`
+              : `Child exited before startup (exit ${code}).`,
+          ),
+      ),
+    );
     if (reason)
       doneResolve({ ...reason, requests: result?.requests ?? 0, tokens: result?.tokens ?? 0 });
     else if (code === 0 && result) doneResolve(result);

@@ -118,6 +118,7 @@ export function formatAgentList(agents: readonly LiveAgent[]): string {
   const lines = agents.map((agent) => {
     const selfTag = agent.self ? " (self)" : "";
     const parts = [`- ${agent.id}${selfTag}`];
+    if (agent.role) parts.push(agent.role);
     if (agent.elapsedMs !== undefined) parts.push(formatDuration(agent.elapsedMs));
     if (agent.task) parts.push(agent.task);
     return parts.join(" · ");

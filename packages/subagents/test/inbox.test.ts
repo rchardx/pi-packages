@@ -96,9 +96,13 @@ test("formatting helpers produce concise agent listings, receipts, and wait outc
   assert.equal(
     formatAgentList([
       { id: "main", self: false },
-      { id: "child-1", self: true, elapsedMs: 12_000, task: "Inspect config" },
+      { id: "child-1", self: true, role: "explorer", elapsedMs: 12_000, task: "Inspect config" },
+      { id: "child-2", self: false, elapsedMs: 4_000, task: "Run checks" },
     ]),
-    "Live agents in this session (2):\n- main\n- child-1 (self) · 12s · Inspect config",
+    "Live agents in this session (3):\n" +
+      "- main\n" +
+      "- child-1 (self) · explorer · 12s · Inspect config\n" +
+      "- child-2 · 4s · Run checks",
   );
   assert.match(
     formatDeliveryReceipt({
