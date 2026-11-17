@@ -98,7 +98,7 @@ Print and JSON modes remain foreground-only. See the
 
 Delegate well-scoped work to background child agents (up to 8 concurrent by
 default) with fresh context and a shared working directory. Children can edit
-files and run commands; completion steers the parent automatically with a
+files and run commands; completion reaches the parent automatically with a
 collapsible TUI card and without polling. Live agents in the same root session
 can discover peers (`subagent_list`), exchange direct or broadcast messages
 (`subagent_send`), and wait for replies (`subagent_wait`); finished children

@@ -2,7 +2,7 @@
 
 Background task delegation for Pi. Children start with fresh conversation context,
 can edit files and run commands in the shared working directory, and report back
-through Pi's steering mechanism. The parent can continue independent work.
+automatically. The parent can continue independent work.
 
 ## Usage
 
@@ -35,10 +35,11 @@ subagent_cancel({ id: "<full UUID returned by subagent>" })
 
 Each launch returns a full UUID after the child has loaded and is ready to work.
 Completion arrives automatically as a `subagent:result` message (with a compact,
-collapsible card in the TUI) using `deliverAs: "steer"` and `triggerTurn: true`.
-An idle parent is awakened; a busy parent receives the report at a supported
-steering boundary, without preempting running tools. Do not poll or use sleep
-loops. If nothing independent remains, end the turn and wait for the notification.
+collapsible card in the TUI). An idle parent is awakened; a busy parent receives
+the report after its current turn, without preempting running tools. Do not poll
+or use sleep loops. If nothing independent remains, end the turn and wait for the
+notification. See [Delivery to the root session](#delivery-to-the-root-session)
+for how hosts observe these updates.
 
 ### Inspect running subagents
 
@@ -75,8 +76,8 @@ messages without polling or monitoring a dashboard:
   child UUID, or `"*"` (broadcast to a snapshot of live peers excluding the
   sender). Sender identity is stamped by the root session runtime and cannot be
   forged or cross root-session boundaries. Delivery means the recipient accepted
-  the `subagent:message` entry into its steering queue (`deliverAs: "steer"`,
-  `triggerTurn: true`), not that the recipient has already processed it.
+  the `subagent:message` for its next turn, not that the recipient has already
+  processed it.
 - `subagent_wait` suspends the current turn until an incoming message (or, in
   `"main"`, a child completion notification) arrives, no running children remain,
   `timeoutSeconds` elapses (default `120`, maximum `300`), or the turn is aborted.
@@ -90,13 +91,33 @@ messages without polling or monitoring a dashboard:
   including a continuation requested by another extension at Pi's pre-settlement
   boundary, remains reachable. Messages accepted by a child that is then
   cancelled, times out, or hits its request limit are not processed.
-- **Host queue clearing:** queued updates wait in Pi's steering queue. Clearing
-  that queue (RPC `clear_queue`, or restoring queued input in the TUI) drops
-  queued peer messages and completion notifications without delivering them;
-  senders keep their earlier queued receipt. Pi reports the removal to no
-  extension event, so dropped updates stop counting toward the queue limit and
-  `subagent_wait` only at the next turn or settlement boundary where Pi's queue is
-  empty. One `subagent_wait` call before that boundary can return early.
+
+### Delivery to the root session
+
+Completion reports and peer messages for `"main"` stay in the extension until Pi
+can take them; they never wait in Pi's steering queue. Clearing that queue (RPC
+`clear_queue`, or restoring queued input in the TUI) therefore does not drop
+them, and the 32-message limit counts exactly the peer messages not yet handed
+over.
+
+- **Busy root:** updates are appended as session entries when the current turn
+  ends and the run continues with them. RPC and JSON hosts observe an
+  `entry_appended` event whose entry has `type: "custom_message"`.
+- **Idle root:** the oldest update starts a run, requested once even when Pi
+  defers the start until its `agent_settled` handlers finish. Hosts observe the
+  update as a custom `message_start` / `message_end`. One further pending update
+  joins any starting run as an extra starting message; the rest follow at that
+  run's first turn boundary.
+- **Aborted run:** updates pending when a run is aborted are recorded in the
+  session without starting another run. The model sees them on its next turn.
+- **Compaction or branch summary on an idle root:** an update arriving meanwhile
+  is delivered with the next run or the next update, because Pi signals the end
+  of that work to no extension event.
+- Another extension that replaces the entry list at the same boundary instead of
+  extending it removes these updates. Handoff is attempted once.
+
+Children run headless, where nothing clears the steering queue, so messages for
+a child are steered into its active run and processed before it settles.
 
 ## Task and execution boundaries
 

@@ -17,65 +17,14 @@ export type WaitOutcome = {
   waitedMs: number;
 };
 
-/**
- * Tracks queued steering messages and completion events not yet committed to the
- * session transcript, enforcing peer queue bounds and event-driven wakeups.
- */
-export class AgentInbox {
-  private readonly queuedMessageIds = new Set<string>();
-  private readonly queuedEventIds = new Set<string>();
+/** Event-driven waiting on updates that an agent has not yet been shown. */
+export abstract class Waitable {
   private readonly waiters = new Set<() => void>();
-  private readonly maxMessages: number;
 
-  constructor(maxMessages = MAX_INBOX_MESSAGES) {
-    this.maxMessages = maxMessages;
-  }
-
-  acceptMessage(id: string): boolean {
-    if (this.queuedMessageIds.size >= this.maxMessages) return false;
-    this.queuedMessageIds.add(id);
-    this.wake();
-    return true;
-  }
-
-  acceptEvent(id: string): void {
-    this.queuedEventIds.add(id);
-    this.wake();
-  }
-
-  markMessageCommitted(id: string): void {
-    this.queuedMessageIds.delete(id);
-  }
-
-  markEventCommitted(id: string): void {
-    this.queuedEventIds.delete(id);
-  }
-
-  hasQueued(): boolean {
-    return this.queuedMessageIds.size > 0 || this.queuedEventIds.size > 0;
-  }
-
-  queuedMessageCount(): number {
-    return this.queuedMessageIds.size;
-  }
+  abstract hasQueued(): boolean;
 
   wake(): void {
     for (const notify of [...this.waiters]) notify();
-  }
-
-  /**
-   * Drop records for updates the host removed without committing them. Call only
-   * when the host queue is known to be empty; nothing new arrived, so no wakeup.
-   */
-  discardQueued(): void {
-    this.queuedMessageIds.clear();
-    this.queuedEventIds.clear();
-  }
-
-  clear(): void {
-    this.queuedMessageIds.clear();
-    this.queuedEventIds.clear();
-    this.wake();
   }
 
   async wait(
@@ -126,6 +75,41 @@ export class AgentInbox {
       this.waiters.add(onWake);
       signal?.addEventListener("abort", onAbort, { once: true });
     });
+  }
+}
+
+/**
+ * Child-side record of steering messages accepted into the host queue and not yet
+ * committed to the transcript. A child runs headless, where nothing clears that
+ * queue, so every accepted message reaches a message_end.
+ */
+export class AgentInbox extends Waitable {
+  private readonly queuedMessageIds = new Set<string>();
+  private readonly maxMessages: number;
+
+  constructor(maxMessages = MAX_INBOX_MESSAGES) {
+    super();
+    this.maxMessages = maxMessages;
+  }
+
+  acceptMessage(id: string): boolean {
+    if (this.queuedMessageIds.size >= this.maxMessages) return false;
+    this.queuedMessageIds.add(id);
+    this.wake();
+    return true;
+  }
+
+  markMessageCommitted(id: string): void {
+    this.queuedMessageIds.delete(id);
+  }
+
+  hasQueued(): boolean {
+    return this.queuedMessageIds.size > 0;
+  }
+
+  clear(): void {
+    this.queuedMessageIds.clear();
+    this.wake();
   }
 }
 
@@ -207,7 +191,7 @@ export function registerCommunicationTools(
     description:
       `Send a message (at most ${MAX_MESSAGE_BYTES / 1024} KiB) to a live agent in this root session: ` +
       'pass a subagent UUID, "main" for the root session, or "*" to broadcast to all live peers excluding yourself. ' +
-      "Delivery queues the message for steering without waiting for a reply. Completed subagents cannot receive messages.",
+      "Delivery queues the message for the recipient's next turn without waiting for a reply. Completed subagents cannot receive messages.",
     parameters: Type.Object({
       to: Type.String({
         description:

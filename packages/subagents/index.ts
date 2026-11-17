@@ -3,11 +3,13 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ExtensionToolContext,
+  SessionBoundaryDraft,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { parentOptions } from "./src/cli.ts";
 import { loadConfig } from "./src/config.ts";
-import { AgentInbox, registerCommunicationTools } from "./src/inbox.ts";
+import { registerCommunicationTools } from "./src/inbox.ts";
+import { Mailbox } from "./src/mailbox.ts";
 import {
   buildNotification,
   formatDuration,
@@ -27,7 +29,6 @@ import {
   MAIN_AGENT_ID,
   MAX_TASK_BYTES,
   type MessageEnvelope,
-  record,
 } from "./src/protocol.ts";
 import { Tasks } from "./src/tasks.ts";
 
@@ -101,7 +102,7 @@ export default function subagents(pi: ExtensionAPI) {
   let tasks: Tasks | undefined;
   let currentCtx: ExtensionContext | undefined;
   let sessionClosed = false;
-  const mainInbox = new AgentInbox();
+  const mailbox = new Mailbox();
 
   function updateStatus(ctx = currentCtx): void {
     if (!ctx) return;
@@ -109,61 +110,51 @@ export default function subagents(pi: ExtensionAPI) {
     ctx.ui.setStatus("subagents", count > 0 ? `subagents: ${count} running` : undefined);
   }
 
+  // Updates reach the root agent through handoffs Pi completes synchronously: the
+  // messages that start a run, or session entries appended at a run boundary. None
+  // waits in Pi's steering queue.
+  //
+  // Pi defers a run requested while agent_settled handlers execute and stays idle
+  // until it begins, so a wake is requested once and later updates wait for that run.
+  let wakeRequested = false;
+  function wakeIdleSession(): void {
+    if (sessionClosed || wakeRequested || !currentCtx?.isIdle()) return;
+    const update = mailbox.take();
+    if (!update) return;
+    wakeRequested = true;
+    pi.sendMessage({ ...update, display: true }, { triggerTurn: true });
+  }
+  pi.on("before_agent_start", () => {
+    wakeRequested = false;
+    // Pi accepts one extra starting message per handler, so the oldest pending update
+    // reaches the first model request; any others follow at the first turn boundary.
+    const update = mailbox.take();
+    if (update) return { message: { ...update, display: true } };
+  });
+
   function deliverToMain(envelope: MessageEnvelope): DeliveryAck {
     if (sessionClosed) return { accepted: false, reason: "finished" };
-    if (!mainInbox.acceptMessage(envelope.id)) {
-      return { accepted: false, reason: "queue_full" };
-    }
-    try {
-      pi.sendMessage(
-        {
-          customType: MESSAGE_TYPE,
-          content: formatPeerMessage(envelope),
-          display: true,
-          details: envelope,
-        },
-        { deliverAs: "steer", triggerTurn: true },
-      );
-      return { accepted: true };
-    } catch {
-      mainInbox.markMessageCommitted(envelope.id);
-      return { accepted: false, reason: "finished" };
-    }
+    const accepted = mailbox.offerMessage({
+      customType: MESSAGE_TYPE,
+      content: formatPeerMessage(envelope),
+      details: envelope,
+    });
+    if (!accepted) return { accepted: false, reason: "queue_full" };
+    wakeIdleSession();
+    return { accepted: true };
   }
 
   function ensureTasks(): Tasks {
     if (!tasks) {
       tasks = new Tasks(
         (child, result) => {
-          const { content, details } = buildNotification(child, result);
-          try {
-            mainInbox.acceptEvent(child.id);
-            pi.sendMessage(
-              {
-                customType: NOTIFICATION_TYPE,
-                content,
-                display: true,
-                details,
-              },
-              { deliverAs: "steer", triggerTurn: true },
-            );
-          } catch {
-            mainInbox.markEventCommitted(child.id);
-            // No retry: a replacement session must not receive the old result.
-            try {
-              currentCtx?.ui.notify(
-                `Could not deliver completion for subagent ${child.id}.`,
-                "error",
-              );
-            } catch {
-              /* Session has closed. */
-            }
-          }
+          mailbox.addResult({ customType: NOTIFICATION_TYPE, ...buildNotification(child, result) });
+          wakeIdleSession();
         },
         undefined,
         () => {
           updateStatus();
-          if ((tasks?.runningCount() ?? 0) === 0) mainInbox.wake();
+          if ((tasks?.runningCount() ?? 0) === 0) mailbox.wake();
         },
         deliverToMain,
       );
@@ -176,32 +167,34 @@ export default function subagents(pi: ExtensionAPI) {
     updateStatus(ctx);
   });
 
-  pi.on("message_end", (event) => {
-    if (event.message.role !== "custom" || !record(event.message.details)) return;
-    if (event.message.customType === MESSAGE_TYPE && typeof event.message.details.id === "string") {
-      mainInbox.markMessageCommitted(event.message.details.id);
-    } else if (
-      event.message.customType === NOTIFICATION_TYPE &&
-      typeof event.message.details.id === "string"
-    ) {
-      mainInbox.markEventCommitted(event.message.details.id);
-    }
-  });
-
-  // The host can drop queued steering messages without a message_end (RPC
-  // clear_queue, restoring queued input in the TUI) and reports that to no
-  // extension event. An empty pending list at a boundary proves nothing sent
-  // earlier is still queued, so records that were never committed are stale.
-  const reconcileInbox = (event: { context: { pendingMessages: readonly unknown[] } }) => {
-    if (event.context.pendingMessages.length === 0) mainInbox.discardQueued();
+  const deliverAtBoundary = (event: { entries: SessionBoundaryDraft[] }) => {
+    const updates = mailbox.drain();
+    if (updates.length === 0) return;
+    return {
+      entries: [
+        ...event.entries,
+        ...updates.map((update) => ({ type: "custom_message" as const, ...update, display: true })),
+      ],
+      continue: true,
+    };
   };
-  pi.on("turn_end", reconcileInbox);
-  pi.on("agent_before_settle", reconcileInbox);
+  pi.on("turn_end", deliverAtBoundary);
+  pi.on("agent_before_settle", deliverAtBoundary);
+
+  pi.on("agent_settled", (event) => {
+    if (!event.aborted) {
+      wakeIdleSession();
+      return;
+    }
+    // The user stopped the run: record what arrived after its last boundary
+    // without starting another one.
+    for (const update of mailbox.drain()) pi.sendMessage({ ...update, display: true });
+  });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     currentCtx = ctx;
     sessionClosed = true;
-    mainInbox.clear();
+    mailbox.clear();
     await tasks?.shutdown();
   });
 
@@ -308,7 +301,7 @@ export default function subagents(pi: ExtensionAPI) {
         return ensureTasks().send(MAIN_AGENT_ID, to, message);
       },
       wait(timeoutSeconds, signal) {
-        return mainInbox.wait(timeoutSeconds, signal, () => (tasks?.runningCount() ?? 0) > 0);
+        return mailbox.wait(timeoutSeconds, signal, () => (tasks?.runningCount() ?? 0) > 0);
       },
     },
     { isChild: false },
