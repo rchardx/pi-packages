@@ -97,7 +97,7 @@ workspace directories as a substitute for tarballs.
 
 After installation succeeds, stop Pi sessions and their background tasks before
 switching registrations. Run `pi list` and record the old sources for rollback.
-Remove each existing registration of these four packages with `pi remove <source>`;
+Remove each existing registration of these workspace packages with `pi remove <source>`;
 use the source shown by `pi list` or its resolved absolute local path. Skip removal
 for packages that are not installed. This removes registrations, not the local
 installation directories. Leave unrelated packages alone.
@@ -114,7 +114,7 @@ Set `install_dir` to the successful iteration path printed above, then register:
 install_dir="$dev_root/installs/iteration.REPLACE_ME"
 (
   set -e
-  for name in background subagents statusline web-access; do
+  for name in ask background subagents statusline web-access; do
     pi install "$install_dir/node_modules/@rchardx/pi-$name"
   done
   pi list
@@ -161,6 +161,7 @@ mkdir -p "$dev_root/agent" "$dev_root/work"
 (
   cd "$dev_root/work" || exit
   PI_CODING_AGENT_DIR="$dev_root/agent" pi \
+    -e "$install_dir/node_modules/@rchardx/pi-ask" \
     -e "$install_dir/node_modules/@rchardx/pi-background" \
     -e "$install_dir/node_modules/@rchardx/pi-subagents" \
     -e "$install_dir/node_modules/@rchardx/pi-statusline" \
