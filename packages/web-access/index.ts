@@ -15,7 +15,7 @@ export default async function webAccess(pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_search",
     defaultActive: config.search !== undefined,
-    label: "Web search",
+    label: "web_search",
     description:
       "Search the web through the configured provider. " +
       `Defaults to ${DEFAULT_SEARCH_COUNT} results with provider summaries or synthesis. ` +
@@ -41,7 +41,7 @@ export default async function webAccess(pi: ExtensionAPI) {
   pi.registerTool({
     name: "web_fetch",
     defaultActive: config.fetch !== undefined,
-    label: "Web fetch",
+    label: "web_fetch",
     description:
       "Fetch an HTTP(S) page through the configured provider and return its title and Markdown or text content. " +
       "Content may be incomplete; use read on the returned local file when output is truncated.",

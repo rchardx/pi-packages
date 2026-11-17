@@ -227,16 +227,16 @@ and [Anthropic web search documentation](https://docs.anthropic.com/en/docs/agen
 
 ## Tool cards in Pi
 
-The tool names remain `web_fetch` and `web_search`; their cards display **Web fetch**
-and **Web search**. Calls show the URL or query, with a compact result summary
-(provider, optional helper model, result count, and Pi-reported execution time)
-and up to three source titles for Search.
+Cards display lowercase **`web_fetch`** and **`web_search`** headers matching
+the tool names. Calls show the URL or query, with a compact result summary
+(fetched page title for Fetch, plus provider, optional helper model, result
+count for Search, and Pi-reported execution time).
 
 Use Pi's expand-tools shortcut (normally `ctrl+o`) to reveal Markdown content,
-grounded synthesis, source URLs, summaries, and cited excerpts. The title and
-summary keep the same style in both views; the shortcut hint follows your
-keybindings. Provider text is untrusted and extraction may be incomplete. Errors,
-omitted-source notices, and full-output file paths remain visible when collapsed.
+grounded synthesis, numbered search results, source URLs, summaries, and cited
+excerpts. The title and summary keep the same style in both views; the shortcut
+hint follows your keybindings. Errors, omitted-source notices, and full-output
+file paths remain visible when collapsed.
 
 Expansion only reveals the existing bounded preview: it does not fetch again or
 read the full-output file. Use `read` for that file. Presentation metadata in

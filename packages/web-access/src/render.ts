@@ -49,7 +49,7 @@ function displayText(value: string): string {
 export function renderWebCall(kind: Kind, value: unknown, theme: Theme) {
   const argument = typeof value === "string" ? singleLine(displayText(value)) : "";
   return new TruncatedText(
-    theme.fg("toolTitle", theme.bold(`Web ${kind}`)) +
+    theme.fg("toolTitle", theme.bold(`web_${kind}`)) +
       (argument ? `  ${theme.fg("muted", argument)}` : ""),
     0,
     0,
@@ -153,44 +153,34 @@ export function renderWebResult(
     );
   }
   if (expanded) {
-    view.addChild(
-      new Text(theme.fg("dim", "Untrusted provider content · completeness not guaranteed"), 0, 0),
-    );
     if (kind === "search" && synthesis) {
       view.addChild(new Spacer(1));
       view.addChild(new Text(theme.fg("dim", "Synthesis"), 0, 0));
       view.addChild(new Markdown(synthesis, 0, 0, getMarkdownTheme()));
     }
-  }
-  const visible = expanded ? sections : kind === "search" ? sections.slice(0, 3) : [];
-  for (const section of visible) {
-    if (expanded) view.addChild(new Spacer(1));
-    if (kind === "search") view.addChild(heading(section));
-    if (!expanded) continue;
-    if (section.url) view.addChild(new Text(theme.fg("muted", read(section.url)), 0, 0));
-    const sectionMetadata = section.metadata.map(read).filter(Boolean).join(" · ");
-    if (sectionMetadata) view.addChild(new Text(theme.fg("dim", sectionMetadata), 0, 0));
-    for (const [index, range] of section.body.entries()) {
-      const body = read(range);
-      if (body) {
-        if (kind === "search") {
-          view.addChild(new Spacer(1));
-          const bodyLabel =
-            index === 0
-              ? providerId === "anthropic"
-                ? "Cited excerpt"
-                : "Summary"
-              : "Page content";
-          view.addChild(new Text(theme.fg("dim", bodyLabel), 0, 0));
+    for (const section of sections) {
+      view.addChild(new Spacer(1));
+      if (kind === "search") view.addChild(heading(section));
+      if (section.url) view.addChild(new Text(theme.fg("muted", read(section.url)), 0, 0));
+      const sectionMetadata = section.metadata.map(read).filter(Boolean).join(" · ");
+      if (sectionMetadata) view.addChild(new Text(theme.fg("dim", sectionMetadata), 0, 0));
+      for (const [index, range] of section.body.entries()) {
+        const body = read(range);
+        if (body) {
+          if (kind === "search") {
+            view.addChild(new Spacer(1));
+            const bodyLabel =
+              index === 0
+                ? providerId === "anthropic"
+                  ? "Cited excerpt"
+                  : "Summary"
+                : "Page content";
+            view.addChild(new Text(theme.fg("dim", bodyLabel), 0, 0));
+          }
+          view.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
         }
-        view.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
       }
     }
-  }
-  if (!expanded && kind === "search" && sections.length > visible.length) {
-    view.addChild(
-      new Text(theme.fg("dim", `${sections.length - visible.length} more in preview`), 0, 0),
-    );
   }
   return view;
 }

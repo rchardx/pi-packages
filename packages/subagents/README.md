@@ -61,10 +61,12 @@ Subagents · 2 running
   Review documentation changes.
 ```
 
-With no running children it displays `No subagents running.` Collapsed
-`subagent:result` and `subagent:message` cards show a single summary line in the
-TUI; expanding reveals full IDs, metadata, and sanitized body text without
-changing the model-facing message.
+With no running children it displays `No subagents running.` Tool calls
+(`subagent`, `subagent_send`, `subagent_list`, `subagent_wait`, and
+`subagent_cancel`) and incoming `subagent:result` / `subagent:message` cards
+render compact lowercase summaries when collapsed; expanding reveals full IDs,
+metadata, and sanitized Markdown task, message, or report bodies without
+changing model-facing messages.
 
 ### Live session communication
 

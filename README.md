@@ -66,7 +66,7 @@ fallback on failure. Fetch has a 60-second total deadline; Search defaults to
 available page content on DeepSeek Search without invoking `web_fetch`). Each
 API response is limited to 2 MiB; long output is saved in a private local file
 for continuing with Pi's `read` tool. Content is untrusted and may be incomplete
-or lose original formatting. Pi displays compact **Web fetch** / **Web search**
+or lose original formatting. Pi displays compact `web_fetch` / `web_search`
 cards; expanding adds Markdown synthesis, excerpts, and content beneath the same
 summary without changing the model-facing output.
 
