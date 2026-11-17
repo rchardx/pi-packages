@@ -5,11 +5,13 @@ import { formatPeerMessage } from "./notify.ts";
 import {
   bounded,
   CHILD_ENV,
+  COMMUNICATION_TOOLS,
   childInstructions,
   type DeliveryReceipt,
   isDeliveryReceipt,
   isLiveAgent,
   isMessageEnvelope,
+  isRoleName,
   type LiveAgent,
   MAX_REQUESTS,
   MESSAGE_TYPE,
@@ -17,8 +19,6 @@ import {
   type Result,
   validateSendInput,
 } from "./protocol.ts";
-
-const COMMUNICATION_TOOLS = new Set(["subagent_list", "subagent_send", "subagent_wait"]);
 
 /** Loaded only in the managed CLI process; IPC is separate from extension stdout. */
 export default async function child(pi: ExtensionAPI) {
@@ -59,6 +59,8 @@ export default async function child(pi: ExtensionAPI) {
 
   const config = await new Promise<{
     id: string;
+    role: string | undefined;
+    instructions: string | undefined;
     requiredTools: string[];
     activeTools: string[];
     provider: string;
@@ -89,6 +91,11 @@ export default async function child(pi: ExtensionAPI) {
                 : MAX_REQUESTS;
             resolve({
               id: typeof message.id === "string" && message.id.length > 0 ? message.id : "child",
+              role: isRoleName(message.role) ? message.role : undefined,
+              instructions:
+                typeof message.instructions === "string" && message.instructions.trim().length > 0
+                  ? message.instructions
+                  : undefined,
               requiredTools: message.requiredTools,
               activeTools: message.activeTools,
               provider: message.provider,
@@ -292,7 +299,7 @@ export default async function child(pi: ExtensionAPI) {
     }
     const canCommunicate = [...COMMUNICATION_TOOLS].some((name) => active.has(name));
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${childInstructions(config.id, canCommunicate)}`,
+      systemPrompt: `${event.systemPrompt}\n\n${childInstructions(config.id, canCommunicate, config.role, config.instructions)}`,
     };
   });
 

@@ -23,7 +23,8 @@ The model calls these tools, not shell commands or slash commands:
 
 ```typescript
 subagent({
-  task: "Implement maxJobs validation in src/config.ts, preserve unrelated changes, add tests, and report observed test results."
+  task: "Implement maxJobs validation in src/config.ts, preserve unrelated changes, add tests, and report observed test results.",
+  role: "explorer" // optional: built-in "explorer" / "researcher", or a custom role from subagents.json
 })
 
 subagent_list({})
@@ -56,7 +57,7 @@ Subagents · 2 running
 550e8400-e29b-41d4-a716-446655440000  running  1m12s
   Implement config validation and run tests.
 
-6ba7b810-9dad-41d1-80b4-00c04fd430c8  running  18s
+6ba7b810-9dad-41d1-80b4-00c04fd430c8  explorer  running  18s
   Review documentation changes.
 ```
 
@@ -71,7 +72,8 @@ Live agents in the same root session (`"main"` and running children) can exchang
 messages without polling or monitoring a dashboard:
 
 - `subagent_list` lists live agents in the current root session, marking the
-  caller as `(self)` and omitting finished or cancelled children.
+  caller as `(self)`, showing any assigned `role`, and omitting finished or
+  cancelled children.
 - `subagent_send` delivers a message (at most 16 KiB UTF-8) to `"main"`, a live
   child UUID, or `"*"` (broadcast to a snapshot of live peers excluding the
   sender). Sender identity is stamped by the root session runtime and cannot be
@@ -124,9 +126,10 @@ a child are steered into its active run and processed before it settles.
 - **Fresh context:** children do not see parent conversation history or later
   messages. Include relevant decisions, constraints, and expected outcomes in the
   task; reference project files the child can read itself.
-- **Capable, not read-only:** children receive the selected tools, including file
-  mutation and commands when enabled in the parent. A task may request a read-only
-  review, but that instruction is not a separate permission sandbox.
+- **Capable unless narrowed by role:** by default, children receive the parent's
+  selected tools, including file mutation and commands when enabled in the parent.
+  A configured `role` can restrict tools (for example, `["read", "grep", "find", "ls"]`
+  or `[]`), whereas a task prompt alone is not a separate permission sandbox.
 - **Shared filesystem:** edits are immediately visible. Avoid overlapping edits.
   Failure and cancellation do not roll back changes. Worktree use, file ownership,
   and merging are task/model decisions, not extension-managed operations.
@@ -162,13 +165,21 @@ internal child lifecycle extension) load; tool metadata does not reopen discover
 An inherited `PI_OFFLINE` remains effective. Pi's offline mode limits automatic
 network activity; it is not a network sandbox for arbitrary tools.
 
-The current provider/model and thinking level are selected explicitly. A different
-resolved model or missing required tool fails startup before model execution.
-The registration whitelist includes both active tools and indirectly callable
-`deferred`/`codemode` tools. After registration, the child restores the parent's
-active tool set before building its first prompt: indirectly callable tools remain
-available without being automatically declared to the model or adding their
-active-only prompt guidelines. Existing tool exclusions still apply.
+The current provider/model and thinking level are selected explicitly unless
+overridden by a configured `role`. When a role overrides `provider` and `model`
+without setting `thinking`, Pi resolves the configured thinking level for that
+model. A different resolved model, missing provider authentication, or missing
+required tool fails startup before model execution.
+By default, the registration whitelist includes both active tools and indirectly
+callable `deferred`/`codemode` tools; after registration, the child restores the
+selected active tool set before building its first prompt so indirectly callable
+tools remain available without being automatically declared to the model or
+adding their active-only prompt guidelines. A role's `tools` list can either
+replace the selection with exact tool names (including inactive built-in tools
+available in the parent such as `grep`, `find`, and `ls`, or `[]` for no tools)
+or modify the inherited selection with `+name` and `-name` entries. Parent CLI
+restrictions and tool exclusions still apply; roles cannot enable tools blocked
+in the parent or enable `subagent` / `subagent_cancel`.
 Providers must be available from the child's configuration or loaded extensions.
 Runtime-only provider registrations, API-key overrides, custom extension flags,
 and in-memory settings mutations are not copied. Configure these through normal
@@ -230,6 +241,8 @@ background-shell extensions do not accidentally return before their commands fin
 | --- | --- |
 | Concurrent children per root session | 8, including startups; excess launches fail |
 | Task input | 32 KiB UTF-8, nonempty |
+| Role description | 512 bytes UTF-8, single-line nonempty when set |
+| Role instructions | 16 KiB UTF-8, nonempty when set |
 | Peer message input | 16 KiB UTF-8, nonempty |
 | Queued unprocessed messages per recipient | 32; excess sends fail without dropping accepted mail |
 | Wait timeout (`subagent_wait`) | 120 seconds default, 300 seconds maximum |
@@ -240,17 +253,39 @@ background-shell extensions do not accidentally return before their commands fin
 | Diagnostic stderr retained per child | 4 KiB |
 | Retained terminal records per session | 256; older IDs expire |
 
-### Settings
+### Roles and settings
 
-Optional user configuration at `~/.pi/agent/subagents.json`, re-read on each
-`subagent` launch. A missing file uses defaults; invalid or unreadable
-configuration fails the call before starting a child.
+Two built-in read-only roles are available by default without creating a
+configuration file:
+
+- `explorer` — local codebase search and navigation with `["read", "grep", "find", "ls"]`.
+- `researcher` — documentation, web, and reference research with
+  `["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"]` (keeps
+  enabled `web_search`, `web_fetch`, MCP, and peer tools while stripping local
+  edits and shell commands).
+
+Optional user configuration at `~/.pi/agent/subagents.json` is re-read on each
+`subagent` launch (and before parent runs to advertise active roles in a
+`<subagent_roles>` system-prompt section while `subagent` is active). A missing
+file uses defaults; invalid or unreadable configuration fails the `subagent`
+call before starting a child.
 
 ```json
 {
   "maxConcurrent": 8,
   "maxRequests": 64,
-  "deadlineSeconds": 1800
+  "deadlineSeconds": 1800,
+  "roles": {
+    "explorer": {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "thinking": "low"
+    },
+    "researcher": {
+      "maxRequests": 16,
+      "deadlineSeconds": 300
+    }
+  }
 }
 ```
 
@@ -259,6 +294,23 @@ configuration fails the call before starting a child.
 | `maxConcurrent` | `8` | Maximum concurrent children in a root session, including startups. |
 | `maxRequests` | `64` | Maximum admitted model turns per child execution. |
 | `deadlineSeconds` | `1800` | Total child execution deadline in seconds, including startup. |
+| `roles` | `explorer`, `researcher` | Role presets merged over the built-in roles; set a role to `false` to disable it. |
+
+Role names use 1–64 ASCII letters, digits, hyphens, or underscores starting with
+a letter or digit. Partial overrides on `explorer` or `researcher` retain their
+other built-in fields; set `"explorer": false` or `"researcher": false` to
+disable a built-in role. Unknown or empty `role` arguments fail before launch.
+Each role object supports:
+
+| Role field | Meaning |
+| --- | --- |
+| `description` | Optional single-line summary (at most 512 bytes) shown to the parent model. |
+| `provider`, `model` | Optional model override; must be specified together and have configured Pi authentication. |
+| `thinking` | Optional thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). |
+| `tools` | Optional tool list following Pi's `--tools` rules: plain names replace the selection (`[]` disables all tools; omit `subagent_list`/`subagent_send`/`subagent_wait` if peer tools are unwanted, or include them explicitly), whereas `+name`/`-name` entries modify the inherited selection in order. Plain names and modifiers cannot be mixed; `*` patterns and `subagent`/`subagent_cancel` are rejected. |
+| `instructions` | Optional role instructions (at most 16 KiB UTF-8) appended to the child's system prompt separately from `task`. |
+| `maxRequests` | Optional per-child model-turn limit overriding top-level `maxRequests`. |
+| `deadlineSeconds` | Optional per-child execution deadline overriding top-level `deadlineSeconds`. |
 
 There is no hidden task queue or whole-task automatic retry. Pi may retry provider
 requests according to its settings. States distinguish `completed`, `failed`,
@@ -280,4 +332,4 @@ They exercise actual child CLI startup, package discovery, tool execution,
 file changes, extension hooks, and parent completion delivery. Real-provider
 compatibility is not implied by those tests.
 
-See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible user-defined roles and nested spawning lifecycle. These are not current features.
+See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible role-authorized nested spawning and broadcast filtering. These are not current features.

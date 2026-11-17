@@ -5,20 +5,17 @@ are directions for future discussion, not shipped features or release
 commitments. See [README.md](README.md) for current behavior and limits,
 including live peer-to-peer and broadcast communication.
 
-## User-defined roles
+## Role-authorized spawning and routing
 
-Allow a role to select instructions, model, tools, and whether it can spawn agents.
-A solver specialist is one example. A possible call is
-`subagent({ role: "solver", task })`; the configuration format, discovery paths,
-role/group broadcast filtering, and precedence remain undecided.
+Built-in `explorer` and `researcher` roles and user-defined roles in
+`~/.pi/agent/subagents.json` currently configure child instructions, model,
+thinking level, tools, and per-child turn/deadline limits. Project-scoped role
+discovery, role/group broadcast filtering, and role-enabled child spawning
+remain future discussion topics.
 
-Keep role instructions, per-task input, and execution configuration distinct.
-Roles select capabilities; main/sub identity does not introduce a separate
-permission or approval system. Applicable host restrictions still apply.
-
-Ordinary children remain unable to spawn. A custom role may explicitly opt in,
+Ordinary children remain unable to spawn. A future role option may explicitly opt in,
 including creating another instance of itself. Each child's spawn capability
-comes from its own role, not automatically from its parent's capability. Do not
+would come from its own role, not automatically from its parent's capability. Do not
 impose a hidden fixed depth limit or prohibit cycles behind the user's back.
 Resource budgets must be explicit and separate from spawn policy; deliberately
 unbounded recursion can consume unbounded resources.

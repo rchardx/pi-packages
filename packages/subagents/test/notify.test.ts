@@ -59,6 +59,32 @@ test("buildNotification preserves model-facing content and populates card detail
     durationMs: 72_000,
     ...result,
   });
+
+  const roled = buildNotification(
+    { id: CHILD_ID, role: "reviewer", task: "Review changes", startedAt: 1_000 },
+    result,
+    11_000,
+  );
+  assert.match(roled.content, new RegExp(`^Subagent ${CHILD_ID} \\(reviewer\\): completed\n`, "u"));
+  assert.equal(roled.details.role, "reviewer");
+  const roledCard = renderNotification(
+    { details: roled.details },
+    { expanded: false, outputPad: 1 },
+    plainTheme,
+  );
+  assert.ok(roledCard);
+  assert.match(
+    roledCard.render(100)[1] ?? "",
+    /subagent 550e8400 \(reviewer\) · completed · 10s · Review changes/u,
+  );
+  assert.equal(
+    renderNotification(
+      { details: { ...roled.details, role: "bad role" } },
+      { expanded: false, outputPad: 1 },
+      plainTheme,
+    ),
+    undefined,
+  );
 });
 
 test("renderNotification draws a one-line collapsed card and keeps status before long tasks", () => {

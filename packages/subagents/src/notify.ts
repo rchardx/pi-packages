@@ -4,6 +4,7 @@ import {
   bounded,
   isMessageEnvelope,
   isResult,
+  isRoleName,
   MAIN_AGENT_ID,
   type MessageEnvelope,
   record,
@@ -18,6 +19,7 @@ const TASK_DISPLAY_CHARS = 80;
 
 export interface ResultDetails extends Result {
   id: string;
+  role?: string;
   task: string;
   durationMs: number;
 }
@@ -63,6 +65,7 @@ function isResultDetails(value: unknown): value is ResultDetails {
     record(value) &&
     typeof value.id === "string" &&
     value.id.length > 0 &&
+    (value.role === undefined || isRoleName(value.role)) &&
     typeof value.task === "string" &&
     typeof value.durationMs === "number" &&
     Number.isFinite(value.durationMs) &&
@@ -71,13 +74,14 @@ function isResultDetails(value: unknown): value is ResultDetails {
 }
 
 export function buildNotification(
-  child: { id: string; task: string; startedAt: number },
+  child: { id: string; role?: string; task: string; startedAt: number },
   result: Result,
   now = Date.now(),
 ): { content: string; details: ResultDetails } {
   const durationMs = Math.max(0, now - child.startedAt);
+  const roleTag = child.role ? ` (${child.role})` : "";
   const content =
-    `Subagent ${child.id}: ${result.status}\n` +
+    `Subagent ${child.id}${roleTag}: ${result.status}\n` +
     `Task: ${bounded(child.task, 512)}\n` +
     `Duration: ${Math.round(durationMs / 1000)}s; requests: ${result.requests}; tokens: ${result.tokens}\n\n` +
     result.report;
@@ -85,6 +89,7 @@ export function buildNotification(
     content,
     details: {
       id: child.id,
+      ...(child.role ? { role: child.role } : {}),
       task: oneLine(child.task),
       durationMs,
       ...result,
@@ -108,7 +113,9 @@ export function renderNotification(
   if (!isResultDetails(details)) return undefined;
   const succeeded = details.status === "completed";
   const icon = succeeded ? theme.fg("success", "✓") : theme.fg("error", "✗");
-  const label = `subagent ${details.id.slice(0, 8)}`;
+  const label = details.role
+    ? `subagent ${details.id.slice(0, 8)} (${sanitizeDisplayText(details.role)})`
+    : `subagent ${details.id.slice(0, 8)}`;
   const summary = `${statusPhrase(details.status)} · ${formatDuration(details.durationMs)}`;
   const task = sanitizeDisplayText(details.task).replaceAll("\n", " ");
   const headline = `${icon} ${theme.bold(label)} · ${summary} · ${task}`;

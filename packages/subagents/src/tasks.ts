@@ -18,6 +18,7 @@ import { type Execution, type RunnerOptions, startChild } from "./runner.ts";
 
 export interface Task {
   id: string;
+  role?: string;
   task: string;
   startedAt: number;
   handedOff: boolean;
@@ -70,6 +71,7 @@ export class Tasks {
       ...this.runningTasks().map((task) => ({
         id: task.id,
         self: viewerId === task.id,
+        ...(task.role ? { role: task.role } : {}),
         elapsedMs: Math.max(0, now - task.startedAt),
         task: oneLine(task.task, 120),
       })),
@@ -213,6 +215,7 @@ export class Tasks {
       );
     const task: Task = {
       id: randomUUID(),
+      ...(launch.role ? { role: launch.role } : {}),
       task: launch.task,
       startedAt: Date.now(),
       handedOff: false,

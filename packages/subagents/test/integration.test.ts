@@ -1731,3 +1731,427 @@ test("sibling subagents discover peers and exchange direct and broadcast message
   assert.equal(broadcasts[0]?.broadcast, true);
   assert.equal(broadcasts[0]?.message, "BROADCAST_PING");
 });
+
+test("roles configure child model, instructions, tool selection, limits, and parent prompt advertisement", {
+  timeout: 45_000,
+}, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-subagents-roles-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldOffline = process.env.PI_OFFLINE;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  process.env.PI_OFFLINE = "1";
+  t.after(() => {
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldOffline === undefined) delete process.env.PI_OFFLINE;
+    else process.env.PI_OFFLINE = oldOffline;
+  });
+
+  await writeFile(join(dir, "sample.txt"), "ALPHA_NEEDLE_42\n");
+
+  const parentRequests: Record<string, unknown>[] = [];
+  const childRequests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  let holdExplorer: Promise<void> | undefined;
+  let releaseExplorer: (() => void) | undefined;
+
+  const server = createServer(async (req, res) => {
+    let raw = "";
+    for await (const chunk of req) raw += chunk;
+    const parsed: unknown = JSON.parse(raw);
+    assert.ok(record(parsed));
+    const messages = Array.isArray(parsed.messages) ? parsed.messages.filter(record) : [];
+    const serialized = JSON.stringify(messages);
+    const isChild = serialized.includes("Delegated task:");
+    const toolCount = messages.filter((m) => m.role === "tool").length;
+
+    if (!isChild) {
+      parentRequests.push(parsed);
+    } else {
+      childRequests.push({ url: req.url ?? "", body: parsed });
+    }
+
+    if (isChild && serialized.includes("INSPECT_REPO") && holdExplorer) {
+      await holdExplorer;
+    }
+
+    let toolCall: { name: string; arguments: string } | undefined;
+    let reply = "Parent acknowledged.";
+    if (isChild) {
+      if (serialized.includes("INSPECT_REPO")) {
+        if (toolCount === 0) {
+          toolCall = {
+            name: "grep",
+            arguments: JSON.stringify({ pattern: "ALPHA_NEEDLE_42", path: "sample.txt" }),
+          };
+        } else {
+          reply = `Explorer found needle (${String(parsed.model)}).`;
+        }
+      } else if (serialized.includes("SOLVE_PURE")) {
+        reply = "Pure reasoning solution.";
+      } else if (serialized.includes("LOOP_RESEARCH")) {
+        toolCall = {
+          name: "read",
+          arguments: JSON.stringify({ path: "sample.txt", offset: 1, limit: 5 }),
+        };
+      }
+    }
+
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const chunk = {
+      id: "mock",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: String(parsed.model ?? "test-model"),
+      choices: [
+        {
+          index: 0,
+          delta: toolCall
+            ? {
+                role: "assistant",
+                tool_calls: [
+                  { index: 0, id: `call-${toolCount}`, type: "function", function: toolCall },
+                ],
+              }
+            : { role: "assistant", content: reply },
+          finish_reason: null,
+        },
+      ],
+    };
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    res.write(
+      `data: ${JSON.stringify({
+        ...chunk,
+        choices: [{ index: 0, delta: {}, finish_reason: toolCall ? "tool_calls" : "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })}\n\n`,
+    );
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    releaseExplorer?.();
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  });
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+
+  await writeFile(
+    join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        mock: {
+          baseUrl: `http://127.0.0.1:${address.port}/mock/v1`,
+          api: "openai-completions",
+          apiKey: "test-only",
+          models: [
+            {
+              id: "test-model",
+              name: "Test",
+              reasoning: false,
+              input: ["text"],
+              contextWindow: 32000,
+              maxTokens: 1000,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
+        fast: {
+          baseUrl: `http://127.0.0.1:${address.port}/fast/v1`,
+          api: "openai-completions",
+          apiKey: "test-only",
+          models: [
+            {
+              id: "reader-model",
+              name: "Fast Reader",
+              reasoning: true,
+              input: ["text"],
+              contextWindow: 32000,
+              maxTokens: 1000,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
+      },
+    }),
+  );
+
+  const docToolPath = join(dir, "docs-tool.ts");
+  await writeFile(
+    docToolPath,
+    `export default function(pi) {
+      pi.registerTool({
+        name: 'docs_lookup',
+        label: 'Docs',
+        description: 'Reference lookup fixture',
+        parameters: { type: 'object', properties: {} },
+        execute: async () => ({ content: [{ type: 'text', text: 'docs' }], details: {} }),
+      });
+    }`,
+  );
+
+  const settingsManager = SettingsManager.inMemory();
+  const loader = new DefaultResourceLoader({
+    cwd: dir,
+    agentDir: dir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    additionalExtensionPaths: [fileURLToPath(new URL("../", import.meta.url)), docToolPath],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  const runtime = await ModelRuntime.create({
+    authPath: join(dir, "auth.json"),
+    modelsPath: join(dir, "models.json"),
+    refreshOnCreate: false,
+  });
+  const model = runtime.getModel("mock", "test-model");
+  assert.ok(model);
+  // Omit explicit `tools` so Pi uses normal default active tools while keeping grep/find/ls registered inactive.
+  const { session } = await createAgentSession({
+    cwd: dir,
+    agentDir: dir,
+    modelRuntime: runtime,
+    model,
+    resourceLoader: loader,
+    settingsManager,
+    sessionManager: SessionManager.inMemory(dir),
+  });
+  t.after(async () => {
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    await session.abort();
+    session.dispose();
+  });
+  const notices: string[] = [];
+  await session.bindExtensions({
+    mode: "rpc",
+    uiContext: {
+      ...session.extensionRunner.createContext().ui,
+      notify: (message) => {
+        notices.push(message);
+      },
+    },
+  });
+
+  // Built-in `explorer` and `researcher` are advertised out of the box with no subagents.json.
+  await session.prompt("Check default built-in roles.");
+  const defaultParentPrompt = JSON.stringify(parentRequests[0]?.messages);
+  assert.match(defaultParentPrompt, /<subagent_roles>/u);
+  assert.match(
+    defaultParentPrompt,
+    /- explorer \(tools: read, grep, find, ls\): Read-only local codebase search and navigation\./u,
+  );
+  assert.match(
+    defaultParentPrompt,
+    /- researcher \(tools: \+grep, \+find, \+ls, -edit, -write, -bash, -powershell\): Read-only documentation/u,
+  );
+
+  // Partial overrides customize built-in explorer/researcher without losing their built-in tools/instructions.
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({
+      roles: {
+        explorer: {
+          provider: "fast",
+          model: "reader-model",
+          thinking: "low",
+        },
+        researcher: {
+          maxRequests: 1,
+        },
+        solver: {
+          tools: [],
+          instructions: "ROLE_SOLVER_MARKER",
+        },
+      },
+    }),
+  );
+
+  await session.prompt("Check overridden roles.");
+  const overriddenParentPrompt = JSON.stringify(parentRequests[1]?.messages);
+  assert.match(
+    overriddenParentPrompt,
+    /- explorer \(fast\/reader-model; thinking: low; tools: read, grep, find, ls\): Read-only local codebase search and navigation\./u,
+  );
+  assert.match(overriddenParentPrompt, /- solver \(tools: none\)/u);
+
+  const tool = session.agent.state.tools.find((entry) => entry.name === "subagent");
+  const listTool = session.agent.state.tools.find((entry) => entry.name === "subagent_list");
+  assert.ok(tool && listTool);
+
+  const updates = deliveredUpdates(session);
+
+  // 1. Built-in explorer with model override retains built-in read-only tools and instructions, excluding docs_lookup.
+  holdExplorer = new Promise<void>((resolve) => {
+    releaseExplorer = resolve;
+  });
+  const startedExplorer = await tool.execute("call-explorer", {
+    task: "INSPECT_REPO",
+    role: "explorer",
+  });
+  assert.match(JSON.stringify(startedExplorer.content), /role: explorer/u);
+  assert.ok(record(startedExplorer.details));
+  assert.equal(startedExplorer.details.role, "explorer");
+  const explorerId = String(startedExplorer.details.id);
+
+  const liveListing = await listTool.execute("list-explorer", {});
+  assert.match(JSON.stringify(liveListing.content), new RegExp(`${explorerId} · explorer · `, "u"));
+  await session.prompt("/subagents");
+  assert.match(notices.at(-1) ?? "", new RegExp(`${explorerId}  explorer  running`, "u"));
+
+  releaseExplorer?.();
+  holdExplorer = undefined;
+  const explorerUpdate = await updates.next("subagent:result", 0);
+  await session.waitForIdle();
+  assert.match(
+    String(explorerUpdate.content),
+    new RegExp(`Subagent ${explorerId} \\(explorer\\): completed`, "u"),
+  );
+  assert.match(String(explorerUpdate.content), /Explorer found needle \(reader-model\)\./u);
+  assert.ok(record(explorerUpdate.details));
+  assert.equal(explorerUpdate.details.role, "explorer");
+
+  const explorerReq = childRequests.find((entry) =>
+    JSON.stringify(entry.body.messages).includes("INSPECT_REPO"),
+  );
+  assert.ok(explorerReq);
+  assert.equal(explorerReq.url, "/fast/v1/chat/completions");
+  assert.equal(explorerReq.body.model, "reader-model");
+  const explorerTools = Array.isArray(explorerReq.body.tools)
+    ? explorerReq.body.tools
+        .filter(record)
+        .map((entry) => (record(entry.function) ? entry.function.name : undefined))
+    : [];
+  assert.deepEqual(explorerTools, ["read", "grep", "find", "ls"]);
+  const explorerPrompt = JSON.stringify(explorerReq.body.messages);
+  assert.match(explorerPrompt, /Your assigned role is explorer\./u);
+  assert.match(explorerPrompt, /Explore the local codebase without modifying files\./u);
+  assert.doesNotMatch(explorerPrompt, /subagent_send/u);
+  assert.doesNotMatch(explorerPrompt, /<subagent_roles>/u);
+
+  // 2. Zero-tool custom role (`tools: []`).
+  const beforeSolver = updates.seen.length;
+  await tool.execute("call-solver", { task: "SOLVE_PURE", role: "solver" });
+  const solverUpdate = await updates.next("subagent:result", beforeSolver);
+  await session.waitForIdle();
+  assert.ok(record(solverUpdate.details));
+  assert.equal(solverUpdate.details.role, "solver");
+  assert.equal(solverUpdate.details.status, "completed");
+  const solverReq = childRequests.find((entry) =>
+    JSON.stringify(entry.body.messages).includes("SOLVE_PURE"),
+  );
+  assert.ok(solverReq);
+  const solverTools = Array.isArray(solverReq.body.tools) ? solverReq.body.tools : [];
+  assert.deepEqual(solverTools, []);
+  const solverPrompt = JSON.stringify(solverReq.body.messages);
+  assert.match(solverPrompt, /ROLE_SOLVER_MARKER/u);
+  assert.doesNotMatch(solverPrompt, /subagent_send/u);
+
+  // 3. Built-in researcher keeps research/extension and communication tools, enables grep/find/ls, and removes edit/write/bash.
+  const originalArgv = process.argv;
+  process.argv = [process.execPath, "pi", "-e", docToolPath];
+  t.after(() => {
+    process.argv = originalArgv;
+  });
+  const beforeResearcher = updates.seen.length;
+  await tool.execute("call-researcher", { task: "LOOP_RESEARCH", role: "researcher" });
+  process.argv = originalArgv;
+  const researcherUpdate = await updates.next("subagent:result", beforeResearcher);
+  await session.waitForIdle();
+  assert.ok(record(researcherUpdate.details));
+  assert.equal(researcherUpdate.details.role, "researcher");
+  assert.equal(researcherUpdate.details.status, "limit_reached");
+  assert.equal(researcherUpdate.details.requests, 1);
+  const researcherReq = childRequests.find((entry) =>
+    JSON.stringify(entry.body.messages).includes("LOOP_RESEARCH"),
+  );
+  assert.ok(researcherReq && Array.isArray(researcherReq.body.tools));
+  const researcherTools = researcherReq.body.tools
+    .filter(record)
+    .map((entry) => (record(entry.function) ? entry.function.name : undefined));
+  for (const expected of ["read", "grep", "find", "ls", "docs_lookup", "subagent_send"]) {
+    assert.ok(researcherTools.includes(expected), `researcher missing ${expected}`);
+  }
+  for (const forbidden of ["edit", "write", "bash", "powershell", "subagent"]) {
+    assert.ok(!researcherTools.includes(forbidden), `researcher leaked ${forbidden}`);
+  }
+
+  // 4. Disabling built-in roles with `false` omits <subagent_roles> without a reload.
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({ roles: { explorer: false, researcher: false } }),
+  );
+  const beforeCount = parentRequests.length;
+  await session.prompt("Check roles after disabling.");
+  const disabledParentPrompt = JSON.stringify(parentRequests[beforeCount]?.messages);
+  assert.doesNotMatch(disabledParentPrompt, /<subagent_roles>/u);
+});
+
+test("roles fail closed on unknown names, unavailable models, and parent tool restrictions", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await fixture(t);
+  const oldXaiKey = process.env.XAI_API_KEY;
+  delete process.env.XAI_API_KEY;
+  t.after(() => {
+    if (oldXaiKey === undefined) delete process.env.XAI_API_KEY;
+    else process.env.XAI_API_KEY = oldXaiKey;
+  });
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({
+      roles: {
+        needs_grep: {
+          tools: ["read", "grep"],
+        },
+        adds_grep: {
+          tools: ["+grep"],
+        },
+        bad_model: {
+          provider: "mock",
+          model: "nonexistent-model",
+          tools: ["read"],
+        },
+        unauthed_model: {
+          provider: "xai",
+          model: "grok-4.7",
+          tools: ["read"],
+        },
+      },
+    }),
+  );
+
+  // `parentSession` restricts parent allowed tools to ["read", "write", "bash", "subagent", "subagent_cancel"].
+  const { tool } = await parentSession(t, dir);
+
+  await assert.rejects(
+    tool.execute("empty-role", { task: "Inspect.", role: "   " }),
+    /Role name must be nonempty/u,
+  );
+  await assert.rejects(
+    tool.execute("unknown-role", { task: "Inspect.", role: "unknown" }),
+    /Unknown subagent role "unknown"\. Configured roles: explorer, researcher, needs_grep, adds_grep, bad_model, unauthed_model\./u,
+  );
+  await assert.rejects(
+    tool.execute("restricted-plain", { task: "Inspect.", role: "needs_grep" }),
+    /Role "needs_grep" requires unavailable tool "grep"\./u,
+  );
+  await assert.rejects(
+    tool.execute("restricted-plus", { task: "Inspect.", role: "adds_grep" }),
+    /Role "adds_grep" requires unavailable tool "grep"\./u,
+  );
+  await assert.rejects(
+    tool.execute("unavailable-model", { task: "Inspect.", role: "bad_model" }),
+    /Role "bad_model" model mock\/nonexistent-model is not available\./u,
+  );
+  await assert.rejects(
+    tool.execute("unauthed-provider", { task: "Inspect.", role: "unauthed_model" }),
+    /Child exited before startup[\s\S]*xai/iu,
+  );
+});
