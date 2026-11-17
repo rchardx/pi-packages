@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { setImmediate } from "node:timers/promises";
+import { Check } from "typebox/value";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -134,15 +135,21 @@ test("bash exposes a concise description and separates usage guidelines", async 
   const { session, tool } = await loadSession(t);
   assert.equal(
     tool.description,
-    "Execute a bash command in the current working directory. Set " +
-      "background: true to run in the background (tui/rpc only).\n\n" +
+    "Execute a bash command in the current working directory.\n\n" +
       "Foreground execution returns stdout and stderr, truncated to the last " +
       "2000 lines or 50KB (whichever is hit first). If truncated, full output " +
       "is saved to a temp file.\n\n" +
       "Background execution returns a job id and available log path, then " +
-      "notifies automatically on completion.\n\n" +
-      "Optionally provide a timeout in seconds.",
+      "notifies automatically on completion.",
   );
+  assert.match(
+    JSON.stringify(tool.parameters),
+    /Without it, a long-running command may move to the background/u,
+  );
+  const foreground = await tool.execute("fg-schema", { command: nodeScript("process.exit(0)") });
+  assert.ok(tool.outputSchema);
+  assert.equal(Check(tool.outputSchema, foreground.structuredContent), true);
+  assert.equal(Check(tool.outputSchema, { job_id: "bg_00000000" }), false);
   const metadata = session.getAllTools().find((candidate) => candidate.name === "bash");
   assert.ok(metadata);
   const guidelines = metadata.promptGuidelines?.join("\n") ?? "";
@@ -320,6 +327,9 @@ test("background: true returns immediately, notifies on completion, and logs out
   assert.ok(logPath);
   assert.ok(logPath.startsWith(join(directory, "bash-jobs")), logPath);
   assert.equal(startedText, `Started background job ${jobId}.\nLog: ${logPath}`);
+  assert.deepEqual(started.structuredContent, { job_id: jobId, log_path: logPath, output: "" });
+  assert.ok(tool.outputSchema);
+  assert.equal(Check(tool.outputSchema, started.structuredContent), true);
 
   const notification = await waitFor(() =>
     notificationMessages(session).find((message) => message.customType === "bash-job:notification"),
@@ -368,6 +378,13 @@ test("a slow foreground command moves to the background at the threshold", async
   );
   const jobId = /background job (bg_[0-9a-f]{8})/u.exec(movedText)?.[1];
   assert.ok(jobId);
+  assert.deepEqual(moved.structuredContent, {
+    job_id: jobId,
+    log_path: join(directory, "bash-jobs", session.sessionManager.getSessionId(), `${jobId}.log`),
+    output: "",
+  });
+  assert.ok(tool.outputSchema);
+  assert.equal(Check(tool.outputSchema, moved.structuredContent), true);
 
   const notification = await waitFor(() =>
     notificationMessages(session).find(
@@ -590,9 +607,8 @@ test("a backgrounded job survives aborting the turn signal (Esc) that spawned it
 });
 
 for (const mode of ["print", "json"] as const) {
-  test(`${mode} mode documents and rejects background, and never auto-backgrounds`, async (t) => {
+  test(`${mode} mode rejects background and never auto-backgrounds`, async (t) => {
     const { directory, tool } = await loadSession(t, mode);
-    assert.match(tool.description, /background: true to run in the background \(tui\/rpc only\)/u);
     await assert.rejects(
       tool.execute("pr-1", { command: nodeScript("process.exit(0)"), background: true }),
       new RegExp(`unavailable in ${mode} mode`, "u"),
