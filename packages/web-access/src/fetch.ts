@@ -25,8 +25,7 @@ export const FetchParameters = Type.Object(
     url: Type.String({
       minLength: 1,
       maxLength: MAX_FETCH_URL_CHARACTERS,
-      description:
-        "HTTP(S) page URL to disclose to the configured provider and fetch as Markdown or text",
+      description: "Absolute public HTTP(S) URL",
     }),
   },
   { additionalProperties: false },

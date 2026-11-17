@@ -40,13 +40,13 @@ export const SearchParameters = Type.Object(
       Type.Integer({
         minimum: 1,
         maximum: MAX_SEARCH_COUNT,
-        description: `Maximum results (default: ${DEFAULT_SEARCH_COUNT}); use fewer with need_content`,
+        description: `Maximum results (default: ${DEFAULT_SEARCH_COUNT}); request fewer with need_content`,
       }),
     ),
     need_content: Type.Optional(
       Type.Boolean({
         description:
-          "Include available page content when supported by the provider (DeepSeek only; default: false)",
+          "Request available page content (default: false); when unsupported, results say to use web_fetch",
       }),
     ),
   },

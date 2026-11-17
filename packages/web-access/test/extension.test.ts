@@ -207,12 +207,12 @@ test("fetch defaults active only after its own opt-in and reload", async (t) => 
   const { session, directory } = await loadSession(t);
   assert.ok(!session.getActiveToolNames().includes("web_fetch"));
   assert.ok(!session.getActiveToolNames().includes("web_search"));
-  assert.doesNotMatch(session.systemPrompt, /web_fetch|configured provider/u);
+  assert.doesNotMatch(session.systemPrompt, /web_fetch|hosted provider/u);
   await writeFile(join(directory, "web-access.json"), enabledFetch);
   await session.reload();
   assert.ok(session.getActiveToolNames().includes("web_fetch"));
   assert.ok(!session.getActiveToolNames().includes("web_search"));
-  assert.match(session.systemPrompt, /web_fetch discloses the URL to the configured provider/u);
+  assert.match(session.systemPrompt, /web_fetch sends the URL to a hosted provider/u);
 });
 
 test("Pi search requires opt-in before resolving credentials and supports the environment key", async (t) => {
@@ -298,10 +298,14 @@ test("default visibility omits search metadata until enabled and reloaded", asyn
   await session.reload();
   assert.ok(session.getActiveToolNames().includes("web_search"));
   assert.ok(!session.getActiveToolNames().includes("web_fetch"));
-  assert.match(session.systemPrompt, /web_search|DeepSeek/u);
-  assert.match(session.systemPrompt, /provider summaries are not verified quotations/u);
+  assert.match(session.systemPrompt, /web_search sends the query to a hosted provider/u);
   const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
   assert.ok(tool);
+  // Provider-specific limits are reported by the selected provider, not advertised to every model.
+  assert.doesNotMatch(
+    `${tool.description}${JSON.stringify(tool.parameters)}${session.systemPrompt}`,
+    /DeepSeek|Anthropic|OpenAI|Gemini/u,
+  );
   await writeFile(join(directory, "web-access.json"), "{}");
   await assert.rejects(tool.execute("revoked", { query: "API" }), /Search is disabled/u);
 });
