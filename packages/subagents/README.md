@@ -23,8 +23,8 @@ The model calls these tools, not shell commands or slash commands:
 
 ```typescript
 subagent({
-  task: "Implement maxJobs validation in src/config.ts, preserve unrelated changes, add tests, and report observed test results.",
-  role: "explorer" // optional: built-in "explorer" / "researcher", or a custom role from subagents.json
+  task: "Locate maxJobs validation in src/config.ts and report its constraints with file and line references.",
+  role: "explorer" // optional: built-in "explorer" / "librarian", or a custom role from subagents.json
 })
 
 subagent_list({})
@@ -257,14 +257,17 @@ background-shell extensions do not accidentally return before their commands fin
 
 ### Roles and settings
 
-Two built-in read-only roles are available by default without creating a
-configuration file:
+Two built-in roles are available by default without creating a configuration
+file:
 
 - `explorer` — local codebase search and navigation with `["read", "grep", "find", "ls"]`.
-- `researcher` — documentation, web, and reference research with
-  `["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"]` (keeps
-  enabled `web_search`, `web_fetch`, MCP, and peer tools while stripping local
-  edits and shell commands).
+- `librarian` — find documentation and reference material and cite sources. Uses
+  `["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"]`, keeping
+  enabled web, MCP, and peer tools while removing local edit and shell tools.
+
+Neither role overrides the parent's model or thinking level by default. Omit
+`role` for tasks that require writing code or running experiments. The librarian's
+tool selection is not a read-only sandbox for retained MCP or custom tools.
 
 Optional user configuration at `~/.pi/agent/subagents.json` is re-read on each
 `subagent` launch (and before parent runs to advertise active roles in a
@@ -283,7 +286,7 @@ call before starting a child.
       "model": "claude-haiku-4-5",
       "thinking": "low"
     },
-    "researcher": {
+    "librarian": {
       "maxRequests": 16,
       "deadlineSeconds": 300
     }
@@ -296,11 +299,11 @@ call before starting a child.
 | `maxConcurrent` | `8` | Maximum concurrent children in a root session, including startups. |
 | `maxRequests` | `64` | Maximum admitted model turns per child execution. |
 | `deadlineSeconds` | `1800` | Total child execution deadline in seconds, including startup. |
-| `roles` | `explorer`, `researcher` | Role presets merged over the built-in roles; set a role to `false` to disable it. |
+| `roles` | `explorer`, `librarian` | Role presets merged over the built-in roles; set a role to `false` to disable it. |
 
 Role names use 1–64 ASCII letters, digits, hyphens, or underscores starting with
-a letter or digit. Partial overrides on `explorer` or `researcher` retain their
-other built-in fields; set `"explorer": false` or `"researcher": false` to
+a letter or digit. Partial overrides on `explorer` or `librarian` retain their
+other built-in fields; set `"explorer": false` or `"librarian": false` to
 disable a built-in role. Unknown or empty `role` arguments fail before launch.
 Each role object supports:
 
