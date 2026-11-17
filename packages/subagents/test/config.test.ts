@@ -21,8 +21,21 @@ import {
   MAX_ROLE_TOOLS,
 } from "../src/protocol.ts";
 
-test("parseConfig includes built-in explorer and researcher roles and merges user overrides", () => {
-  assert.deepEqual(Object.keys(BUILTIN_ROLES), ["explorer", "researcher"]);
+test("parseConfig includes built-in explorer and librarian roles and merges user overrides", () => {
+  assert.deepEqual(Object.keys(BUILTIN_ROLES), ["explorer", "librarian"]);
+  assert.ok(BUILTIN_ROLES.librarian);
+  assert.equal(
+    BUILTIN_ROLES.librarian.description,
+    "Find documentation and reference material. No local edits or shell commands.",
+  );
+  assert.equal(
+    BUILTIN_ROLES.librarian.instructions,
+    "Find documentation, web sources, and reference code relevant to the task. Cite source URLs or exact file paths. Do not modify local files or run shell commands.",
+  );
+  assert.throws(
+    () => resolveRole(parseConfig({}), "researcher"),
+    /Unknown subagent role "researcher"\. Configured roles: explorer, librarian\./u,
+  );
   assert.deepEqual(parseConfig({}), {
     maxConcurrent: DEFAULT_MAX_CONCURRENT,
     maxRequests: DEFAULT_MAX_REQUESTS,
@@ -42,7 +55,7 @@ test("parseConfig includes built-in explorer and researcher roles and merges use
     MAX_DEADLINE_SECONDS,
   );
 
-  // Partial override on built-in `explorer` preserves built-in tools/instructions; `false` disables `researcher`.
+  // Partial override on built-in `explorer` preserves built-in tools/instructions; `false` disables `librarian`.
   const parsed = parseConfig({
     roles: {
       explorer: {
@@ -52,7 +65,7 @@ test("parseConfig includes built-in explorer and researcher roles and merges use
         maxRequests: 12,
         deadlineSeconds: 180,
       },
-      researcher: false,
+      librarian: false,
       solver: {
         tools: [],
       },
@@ -71,6 +84,11 @@ test("parseConfig includes built-in explorer and researcher roles and merges use
       tools: [],
     },
   });
+});
+
+test("researcher is an ordinary custom role without built-in restrictions", () => {
+  const configured = parseConfig({ roles: { researcher: { description: "Custom research." } } });
+  assert.deepEqual(configured.roles.researcher, { description: "Custom research." });
 });
 
 test("parseConfig rejects invalid input", () => {
@@ -204,7 +222,7 @@ test("parseConfig rejects invalid input", () => {
 });
 
 test("resolveRole and formatRolesPrompt enforce exact lookup and concise prompt formatting", () => {
-  const empty = parseConfig({ roles: { explorer: false, researcher: false } });
+  const empty = parseConfig({ roles: { explorer: false, librarian: false } });
   assert.equal(resolveRole(empty, undefined), undefined);
   assert.equal(formatRolesPrompt(empty.roles), undefined);
   assert.throws(() => resolveRole(empty, ""), /nonempty/u);
@@ -221,7 +239,7 @@ test("resolveRole and formatRolesPrompt enforce exact lookup and concise prompt 
         thinking: "low",
         tools: ["read", "grep"],
       },
-      researcher: false,
+      librarian: false,
       solver: {
         tools: [],
       },

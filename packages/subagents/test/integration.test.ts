@@ -1939,7 +1939,7 @@ test("roles configure child model, instructions, tool selection, limits, and par
     },
   });
 
-  // Built-in `explorer` and `researcher` are advertised out of the box with no subagents.json.
+  // Built-in `explorer` and `librarian` are advertised out of the box with no subagents.json.
   await session.prompt("Check default built-in roles.");
   const defaultParentPrompt = JSON.stringify(parentRequests[0]?.messages);
   assert.match(defaultParentPrompt, /<subagent_roles>/u);
@@ -1949,10 +1949,10 @@ test("roles configure child model, instructions, tool selection, limits, and par
   );
   assert.match(
     defaultParentPrompt,
-    /- researcher \(tools: \+grep, \+find, \+ls, -edit, -write, -bash, -powershell\): Read-only documentation/u,
+    /- librarian \(tools: \+grep, \+find, \+ls, -edit, -write, -bash, -powershell\): Find documentation and reference material\. No local edits or shell commands\./u,
   );
 
-  // Partial overrides customize built-in explorer/researcher without losing their built-in tools/instructions.
+  // Partial overrides customize built-in explorer/librarian without losing their built-in tools/instructions.
   await writeFile(
     join(dir, "subagents.json"),
     JSON.stringify({
@@ -1962,7 +1962,7 @@ test("roles configure child model, instructions, tool selection, limits, and par
           model: "reader-model",
           thinking: "low",
         },
-        researcher: {
+        librarian: {
           maxRequests: 1,
         },
         solver: {
@@ -2055,39 +2055,46 @@ test("roles configure child model, instructions, tool selection, limits, and par
   assert.match(solverPrompt, /ROLE_SOLVER_MARKER/u);
   assert.doesNotMatch(solverPrompt, /subagent_send/u);
 
-  // 3. Built-in researcher keeps research/extension and communication tools, enables grep/find/ls, and removes edit/write/bash.
+  // 3. Built-in librarian keeps research/extension and communication tools, enables grep/find/ls, and removes edit/write/bash.
   const originalArgv = process.argv;
   process.argv = [process.execPath, "pi", "-e", docToolPath];
   t.after(() => {
     process.argv = originalArgv;
   });
-  const beforeResearcher = updates.seen.length;
-  await tool.execute("call-researcher", { task: "LOOP_RESEARCH", role: "researcher" });
+  const beforeLibrarian = updates.seen.length;
+  await tool.execute("call-librarian", { task: "LOOP_RESEARCH", role: "librarian" });
   process.argv = originalArgv;
-  const researcherUpdate = await updates.next("subagent:result", beforeResearcher);
+  const librarianUpdate = await updates.next("subagent:result", beforeLibrarian);
   await session.waitForIdle();
-  assert.ok(record(researcherUpdate.details));
-  assert.equal(researcherUpdate.details.role, "researcher");
-  assert.equal(researcherUpdate.details.status, "limit_reached");
-  assert.equal(researcherUpdate.details.requests, 1);
-  const researcherReq = childRequests.find((entry) =>
+  assert.ok(record(librarianUpdate.details));
+  assert.equal(librarianUpdate.details.role, "librarian");
+  assert.equal(librarianUpdate.details.status, "limit_reached");
+  assert.equal(librarianUpdate.details.requests, 1);
+  const librarianReq = childRequests.find((entry) =>
     JSON.stringify(entry.body.messages).includes("LOOP_RESEARCH"),
   );
-  assert.ok(researcherReq && Array.isArray(researcherReq.body.tools));
-  const researcherTools = researcherReq.body.tools
+  assert.ok(librarianReq && Array.isArray(librarianReq.body.tools));
+  const librarianPrompt = JSON.stringify(librarianReq.body.messages);
+  assert.match(librarianPrompt, /Your assigned role is librarian\./u);
+  assert.ok(
+    librarianPrompt.includes(
+      "Find documentation, web sources, and reference code relevant to the task. Cite source URLs or exact file paths. Do not modify local files or run shell commands.",
+    ),
+  );
+  const librarianTools = librarianReq.body.tools
     .filter(record)
     .map((entry) => (record(entry.function) ? entry.function.name : undefined));
   for (const expected of ["read", "grep", "find", "ls", "docs_lookup", "subagent_send"]) {
-    assert.ok(researcherTools.includes(expected), `researcher missing ${expected}`);
+    assert.ok(librarianTools.includes(expected), `librarian missing ${expected}`);
   }
   for (const forbidden of ["edit", "write", "bash", "powershell", "subagent"]) {
-    assert.ok(!researcherTools.includes(forbidden), `researcher leaked ${forbidden}`);
+    assert.ok(!librarianTools.includes(forbidden), `librarian leaked ${forbidden}`);
   }
 
   // 4. Disabling built-in roles with `false` omits <subagent_roles> without a reload.
   await writeFile(
     join(dir, "subagents.json"),
-    JSON.stringify({ roles: { explorer: false, researcher: false } }),
+    JSON.stringify({ roles: { explorer: false, librarian: false } }),
   );
   const beforeCount = parentRequests.length;
   await session.prompt("Check roles after disabling.");
@@ -2138,7 +2145,7 @@ test("roles fail closed on unknown names, unavailable models, and parent tool re
   );
   await assert.rejects(
     tool.execute("unknown-role", { task: "Inspect.", role: "unknown" }),
-    /Unknown subagent role "unknown"\. Configured roles: explorer, researcher, needs_grep, adds_grep, bad_model, unauthed_model\./u,
+    /Unknown subagent role "unknown"\. Configured roles: explorer, librarian, needs_grep, adds_grep, bad_model, unauthed_model\./u,
   );
   await assert.rejects(
     tool.execute("restricted-plain", { task: "Inspect.", role: "needs_grep" }),

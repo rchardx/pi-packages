@@ -106,7 +106,7 @@ exit immediately and never receive further messages. Use `subagent_cancel` to
 stop a child and `/subagents` to inspect running tasks. Tasks belong to the root
 session and do not survive its shutdown.
 See the [subagents usage guide](packages/subagents/README.md) for resource reloading,
-model access, process requirements, built-in `explorer` and `researcher` roles,
+model access, process requirements, built-in `explorer` and `librarian` roles,
 optional `~/.pi/agent/subagents.json` limits and role overrides, and boundaries.
 Children rebuild their own system prompts and retain supported parent CLI
 restrictions and explicit prompt inputs. Indirectly callable deferred/codemode

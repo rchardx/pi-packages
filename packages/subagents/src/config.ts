@@ -80,12 +80,11 @@ export const BUILTIN_ROLES: Readonly<Record<string, RoleConfig>> = {
     instructions:
       "Explore the local codebase without modifying files. Prefer targeted grep, find, ls, and read calls over broad scans, and cite exact file paths and line numbers.",
   },
-  researcher: {
-    description:
-      "Read-only documentation, web, and reference research without local edits or shell commands.",
+  librarian: {
+    description: "Find documentation and reference material. No local edits or shell commands.",
     tools: ["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"],
     instructions:
-      "Research documentation, web sources, and reference code without modifying local files or running shell commands. Verify version-specific behavior and cite source URLs or exact file paths.",
+      "Find documentation, web sources, and reference code relevant to the task. Cite source URLs or exact file paths. Do not modify local files or run shell commands.",
   },
 };
 

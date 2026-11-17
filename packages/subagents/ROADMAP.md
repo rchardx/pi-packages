@@ -7,7 +7,7 @@ including live peer-to-peer and broadcast communication.
 
 ## Role-authorized spawning and routing
 
-Built-in `explorer` and `researcher` roles and user-defined roles in
+Built-in `explorer` and `librarian` roles and user-defined roles in
 `~/.pi/agent/subagents.json` currently configure child instructions, model,
 thinking level, tools, and per-child turn/deadline limits. Project-scoped role
 discovery, role/group broadcast filtering, and role-enabled child spawning
