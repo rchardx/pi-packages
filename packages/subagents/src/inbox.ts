@@ -200,16 +200,14 @@ export function registerCommunicationTools(
     name: "subagent_send",
     label: "subagent_send",
     description:
-      `Send a message (at most ${MAX_MESSAGE_BYTES / 1024} KiB) to a live agent in this root session: ` +
-      'pass a subagent UUID, "main" for the root session, or "*" to broadcast to all live peers excluding yourself. ' +
-      "Delivery queues the message for the recipient's next turn without waiting for a reply. Completed subagents cannot receive messages.",
+      "Send a message to a live agent in this root session. It is queued for the recipient's next turn; this does not wait for a reply.",
     parameters: Type.Object({
       to: Type.String({
         description:
-          'Recipient subagent UUID, "main" for the root session, or "*" to broadcast to all live peers.',
+          'Live subagent UUID, "main" for the root session, or "*" to broadcast to all live peers except yourself.',
       }),
       message: Type.String({
-        description: "Nonempty message text to deliver to the recipient(s).",
+        description: `Message text (at most ${MAX_MESSAGE_BYTES / 1024} KiB).`,
       }),
     }),
     renderCall: renderSendCall,
@@ -228,9 +226,9 @@ export function registerCommunicationTools(
     name: "subagent_wait",
     label: "subagent_wait",
     description: options.isChild
-      ? `Wait without polling for an incoming peer message (default ${DEFAULT_WAIT_SECONDS}s, max ${MAX_WAIT_SECONDS}s). ` +
+      ? "Wait without polling for an incoming peer message. " +
         "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent."
-      : `Wait without polling for an incoming subagent message or completion notification (default ${DEFAULT_WAIT_SECONDS}s, max ${MAX_WAIT_SECONDS}s). ` +
+      : "Wait without polling for an incoming subagent message or completion notification. " +
         "Returns immediately when updates are already queued or no subagents are running.",
     parameters: Type.Object({
       timeoutSeconds: Type.Optional(
