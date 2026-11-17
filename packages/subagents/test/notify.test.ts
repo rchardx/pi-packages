@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { before, test } from "node:test";
+import { stripVTControlCharacters } from "node:util";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   buildNotification,
@@ -20,6 +22,10 @@ const plainTheme = {
   fg: (_token: string, text: string) => text,
   bold: (text: string) => text,
 };
+
+before(() => {
+  initTheme("dark");
+});
 
 test("formatDuration renders compact durations", () => {
   assert.equal(formatDuration(45_000), "45s");
@@ -97,7 +103,7 @@ test("renderNotification draws a one-line collapsed card and keeps status before
       },
       {
         status,
-        report: `${ESC}[32mFinished check${ESC}[0m\nAll assertions passed.`,
+        report: `## Findings\n\n${ESC}[2J${ESC}]52;c;YQ==\u0007**Finished** check.\nAll assertions passed.`,
         requests: 1,
         tokens: 95,
       },
@@ -127,11 +133,21 @@ test("renderNotification draws a one-line collapsed card and keeps status before
     assert.equal(narrow.length, 3);
     assert.ok(narrow.every((line) => visibleWidth(line) <= 30));
 
-    const expandedLines = expanded.render(120);
-    const expandedText = expandedLines.map((line) => line.trimEnd()).join("\n");
+    const expandedRaw = expanded.render(120).join("\n");
+    for (const control of [`${ESC}[2J`, `${ESC}]52;`, "\u0007"]) {
+      assert.ok(
+        !expandedRaw.includes(control),
+        "strip terminal control sequences from child report",
+      );
+    }
+    const expandedText = stripVTControlCharacters(expandedRaw)
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n");
     assert.match(expandedText, new RegExp(`${CHILD_ID} · 1 request · 95 tokens`, "u"));
-    assert.match(expandedText, /Finished check\n All assertions passed\./u);
-    assert.ok(!expandedText.includes(ESC), "strip ANSI sequences from child report display");
+    assert.match(expandedText, /Findings/u);
+    assert.match(expandedText, /Finished check\.\n All assertions passed\./u);
+    assert.doesNotMatch(expandedText, /\*\*Finished\*\*/u);
   }
 
   assert.equal(renderNotification({}, { expanded: false, outputPad: 1 }, plainTheme), undefined);
@@ -151,7 +167,7 @@ test("formatPeerMessage and renderMessageNotification format collapsible peer me
     from: CHILD_ID,
     to: "main",
     broadcast: false,
-    message: `${ESC}[31mNeed port confirmation${ESC}[0m\nDefaulting to 8080 unless overridden.`,
+    message: `${ESC}[2J**Need port confirmation**\n\nDefaulting to \`8080\` unless overridden.`,
     sentAt: 1_000,
   };
   assert.match(
@@ -172,16 +188,19 @@ test("formatPeerMessage and renderMessageNotification format collapsible peer me
   assert.ok(collapsed && expanded);
   const collapsedLines = collapsed.render(80);
   assert.equal(collapsedLines.length, 3);
-  assert.ok((collapsedLines[1] ?? "").includes("✉ subagent 550e8400 · direct · Need port"));
+  assert.ok((collapsedLines[1] ?? "").includes("✉ subagent 550e8400 · direct · **Need port"));
   assert.ok(visibleWidth(collapsedLines[1] ?? "") <= 80);
 
-  const expandedText = expanded
-    .render(120)
+  const expandedRaw = expanded.render(120).join("\n");
+  assert.ok(!expandedRaw.includes(`${ESC}[2J`));
+  const expandedText = stripVTControlCharacters(expandedRaw)
+    .split("\n")
     .map((line) => line.trimEnd())
     .join("\n");
   assert.match(expandedText, new RegExp(`${CHILD_ID} → main · direct`, "u"));
-  assert.match(expandedText, /Need port confirmation\n Defaulting to 8080/u);
-  assert.ok(!expandedText.includes(ESC));
+  assert.match(expandedText, /Need port confirmation/u);
+  assert.match(expandedText, /Defaulting to 8080/u);
+  assert.doesNotMatch(expandedText, /\*\*Need port confirmation\*\*/u);
   assert.equal(
     renderMessageNotification({}, { expanded: false, outputPad: 1 }, plainTheme),
     undefined,

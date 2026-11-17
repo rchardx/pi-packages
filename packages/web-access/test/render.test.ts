@@ -137,7 +137,7 @@ function text(component: ToolExecutionComponent, expanded = false, width = 100) 
 
 test("Pi uses readable headers during argument streaming and the same fetch summary when expanded", async () => {
   const component = card("fetch", {});
-  assert.match(text(component), /^Web fetch/u);
+  assert.match(text(component), /^web_fetch/u);
   assert.doesNotMatch(text(component), /undefined|url=/u);
   component.updateArgs({ url });
   component.setArgsComplete();
@@ -146,19 +146,22 @@ test("Pi uses readable headers during argument streaming and the same fetch summ
   const before = JSON.stringify(result);
   component.updateResult({ ...result, isError: false, durationMs: 2400 });
   assert.deepEqual(lines(component), [
-    `Web fetch  ${url}`,
+    `web_fetch  ${url}`,
     "An article",
     "DeepSeek · 2.4s · alt+o to expand",
   ]);
   const expanded = lines(component, true);
   assert.deepEqual(expanded.slice(0, 3), [
-    `Web fetch  ${url}`,
+    `web_fetch  ${url}`,
     "An article",
     "DeepSeek · 2.4s · alt+o to collapse",
   ]);
   assert.match(expanded.join("\n"), /Body heading/u);
   assert.match(expanded.join("\n"), /A bold paragraph\./u);
-  assert.doesNotMatch(expanded.join("\n"), /Provider:|Requested URL:|Title:|\*\*bold\*\*/u);
+  assert.doesNotMatch(
+    expanded.join("\n"),
+    /Provider:|Requested URL:|Title:|Untrusted provider content|\*\*bold\*\*/u,
+  );
   assert.equal(JSON.stringify(result), before);
   assert.equal(
     result.content[0]?.text,
@@ -179,7 +182,7 @@ test("Pi uses readable headers during argument streaming and the same fetch summ
   assert.deepEqual(lines(restored, true), expanded);
 });
 
-test("search keeps numbered headings and adds sources, dates, summaries and optional content on expansion", async () => {
+test("search uses a two-line collapsed summary and adds numbered results, sources, dates, summaries and optional content on expansion", async () => {
   const component = card("search");
   const result = await searched([
     source("First", 1),
@@ -189,14 +192,11 @@ test("search keeps numbered headings and adds sources, dates, summaries and opti
     { ...source("Bad"), url: "file:///private" },
   ]);
   component.updateResult({ ...result, isError: false, durationMs: 800 });
-  const folded = text(component);
-  assert.match(
-    folded,
-    /^Web search {2}release notes\nDeepSeek · 4 results · 0\.8s · alt\+o to expand/u,
-  );
-  assert.match(folded, /1\. First\n2\. Second\n3\. Third\n1 more in preview/u);
-  assert.match(folded, /Omitted 1 unusable source URL/u);
-  assert.doesNotMatch(folded, /Summary for|Page for|4\. Fourth/u);
+  assert.deepEqual(lines(component), [
+    "web_search  release notes",
+    "DeepSeek · 4 results · 0.8s · alt+o to expand",
+    "Omitted 1 unusable source URL(s).",
+  ]);
   const expanded = text(component, true);
   assert.match(expanded, /1\. First\nhttps:\/\/example.test\/1\nExample · 2026-11-09/u);
   assert.match(expanded, /Summary for First\./u);
@@ -204,9 +204,14 @@ test("search keeps numbered headings and adds sources, dates, summaries and opti
   assert.match(expanded, /4\. Fourth/u);
   assert.doesNotMatch(
     expanded,
-    /Provider summary:|Page content \(provider-returned\):|file:\/\/\/private/u,
+    /Provider summary:|Page content \(provider-returned\):|Untrusted provider content|file:\/\/\/private/u,
   );
-  component.updateResult({ ...(await searched([source("First")], false)), isError: false });
+  const cleanResult = await searched([source("First", 1), source("Second", 2)], false);
+  component.updateResult({ ...cleanResult, isError: false, durationMs: 500 });
+  assert.deepEqual(lines(component), [
+    "web_search  release notes",
+    "DeepSeek · 2 results · 0.5s · alt+o to expand",
+  ]);
   assert.doesNotMatch(text(component, true), /Page for First/u);
 });
 
@@ -383,7 +388,7 @@ test("Anthropic fetch and grounded search cards display model metadata, synthesi
   fetchCard.markExecutionStarted();
   fetchCard.updateResult({ ...fetchResult, isError: false, durationMs: 1800 });
   assert.deepEqual(lines(fetchCard), [
-    `Web fetch  ${url}`,
+    `web_fetch  ${url}`,
     "Anthropic page",
     "Anthropic · claude-haiku-5-5 · 1.8s · alt+o to expand",
   ]);
@@ -464,11 +469,11 @@ test("Anthropic fetch and grounded search cards display model metadata, synthesi
   const searchCard = card("search");
   searchCard.updateResult({ ...searchResult, isError: false, durationMs: 1200 });
   assert.deepEqual(lines(searchCard), [
-    "Web search  release notes",
+    "web_search  release notes",
     "Anthropic · claude-haiku-5-5 · 1 results · 1.2s · alt+o to expand",
-    "1. Release notes",
   ]);
   const expandedSearch = text(searchCard, true);
+  assert.doesNotMatch(expandedSearch, /Untrusted provider content/u);
   assert.match(expandedSearch, /Synthesis\nKey release highlights\./u);
   assert.match(
     expandedSearch,

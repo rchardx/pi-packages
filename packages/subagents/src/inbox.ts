@@ -11,6 +11,14 @@ import {
   validateWaitTimeout,
   WAIT_COALESCE_MS,
 } from "./protocol.ts";
+import {
+  renderListCall,
+  renderListResult,
+  renderSendCall,
+  renderSendResult,
+  renderWaitCall,
+  renderWaitResult,
+} from "./render.ts";
 
 export type WaitOutcome = {
   outcome: "woke" | "idle" | "timeout";
@@ -172,10 +180,12 @@ export function registerCommunicationTools(
 ): void {
   pi.registerTool({
     name: "subagent_list",
-    label: "List agents",
+    label: "subagent_list",
     description:
       'List live agents in the current root session, including "main" and running subagents. Completed or cancelled subagents are omitted.',
     parameters: Type.Object({}),
+    renderCall: renderListCall,
+    renderResult: renderListResult,
     async execute(_callId, _params, signal, _update, ctx) {
       transport.checkContext?.(ctx);
       const agents = await transport.list(signal, ctx);
@@ -188,7 +198,7 @@ export function registerCommunicationTools(
 
   pi.registerTool({
     name: "subagent_send",
-    label: "Send agent message",
+    label: "subagent_send",
     description:
       `Send a message (at most ${MAX_MESSAGE_BYTES / 1024} KiB) to a live agent in this root session: ` +
       'pass a subagent UUID, "main" for the root session, or "*" to broadcast to all live peers excluding yourself. ' +
@@ -202,6 +212,8 @@ export function registerCommunicationTools(
         description: "Nonempty message text to deliver to the recipient(s).",
       }),
     }),
+    renderCall: renderSendCall,
+    renderResult: renderSendResult,
     async execute(_callId, { to, message }, signal, _update, ctx) {
       transport.checkContext?.(ctx);
       const receipt = await transport.send(to, message, signal, ctx);
@@ -214,7 +226,7 @@ export function registerCommunicationTools(
 
   pi.registerTool({
     name: "subagent_wait",
-    label: "Wait for agent message",
+    label: "subagent_wait",
     description: options.isChild
       ? `Wait without polling for an incoming peer message (default ${DEFAULT_WAIT_SECONDS}s, max ${MAX_WAIT_SECONDS}s). ` +
         "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent."
@@ -227,6 +239,8 @@ export function registerCommunicationTools(
         }),
       ),
     }),
+    renderCall: renderWaitCall,
+    renderResult: renderWaitResult,
     async execute(_callId, { timeoutSeconds }, signal, _update, ctx) {
       transport.checkContext?.(ctx);
       const outcome = await transport.wait(timeoutSeconds, signal, ctx);

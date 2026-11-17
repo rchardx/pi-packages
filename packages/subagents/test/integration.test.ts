@@ -1995,10 +1995,12 @@ test("roles configure child model, instructions, tool selection, limits, and par
     task: "INSPECT_REPO",
     role: "explorer",
   });
-  assert.match(JSON.stringify(startedExplorer.content), /role: explorer/u);
   assert.ok(record(startedExplorer.details));
   assert.equal(startedExplorer.details.role, "explorer");
   const explorerId = String(startedExplorer.details.id);
+  assert.deepEqual(startedExplorer.content, [
+    { type: "text", text: `Started subagent ${explorerId} (role: explorer).` },
+  ]);
 
   const liveListing = await listTool.execute("list-explorer", {});
   assert.match(JSON.stringify(liveListing.content), new RegExp(`${explorerId} · explorer · `, "u"));

@@ -1,5 +1,12 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Box, stripTerminalSequences, Text, TruncatedText } from "@earendil-works/pi-tui";
+import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import {
+  Box,
+  Markdown,
+  Spacer,
+  stripTerminalSequences,
+  Text,
+  TruncatedText,
+} from "@earendil-works/pi-tui";
 import {
   bounded,
   isMessageEnvelope,
@@ -48,7 +55,7 @@ export function oneLine(text: string, max = TASK_DISPLAY_CHARS): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
-function statusPhrase(status: Status): string {
+export function statusPhrase(status: Status): string {
   switch (status) {
     case "timed_out":
       return "timed out";
@@ -127,12 +134,15 @@ export function renderNotification(
       new Text(theme.fg("dim", `${details.id} · ${requestLabel} · ${details.tokens} tokens`), 0, 0),
     );
     const report = sanitizeDisplayText(details.report).trim();
-    if (report) box.addChild(new Text(theme.fg("muted", report), 0, 0));
+    if (report) {
+      box.addChild(new Spacer(1));
+      box.addChild(new Markdown(report, 0, 0, getMarkdownTheme()));
+    }
   }
   return box;
 }
 
-/** Collapsed one-line peer message card; expanded view reveals full endpoints and body. */
+/** Collapsed one-line peer message card; expanded view reveals full endpoints and Markdown body. */
 export function renderMessageNotification(
   message: { details?: unknown },
   options: { expanded: boolean; outputPad: number },
@@ -144,13 +154,18 @@ export function renderMessageNotification(
     details.from === MAIN_AGENT_ID ? MAIN_AGENT_ID : `subagent ${details.from.slice(0, 8)}`;
   const mode = details.broadcast ? "broadcast" : "direct";
   const preview = oneLine(details.message);
-  const headline = `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)} · ${mode} · ${preview}`;
+  const headline = options.expanded
+    ? `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)} · ${mode}`
+    : `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)} · ${mode} · ${preview}`;
   const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
   box.addChild(options.expanded ? new Text(headline, 0, 0) : new TruncatedText(headline, 0, 0));
   if (options.expanded) {
     box.addChild(new Text(theme.fg("dim", `${details.from} → ${details.to} · ${mode}`), 0, 0));
     const body = sanitizeDisplayText(details.message).trim();
-    if (body) box.addChild(new Text(theme.fg("muted", body), 0, 0));
+    if (body) {
+      box.addChild(new Spacer(1));
+      box.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
+    }
   }
   return box;
 }
