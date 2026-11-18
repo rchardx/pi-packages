@@ -114,7 +114,7 @@ Set `install_dir` to the successful iteration path printed above, then register:
 install_dir="$dev_root/installs/iteration.REPLACE_ME"
 (
   set -e
-  for name in ask background subagents statusline web-access; do
+  for name in ask background lsp subagents statusline web-access; do
     pi install "$install_dir/node_modules/@rchardx/pi-$name"
   done
   pi list
@@ -163,6 +163,7 @@ mkdir -p "$dev_root/agent" "$dev_root/work"
   PI_CODING_AGENT_DIR="$dev_root/agent" pi \
     -e "$install_dir/node_modules/@rchardx/pi-ask" \
     -e "$install_dir/node_modules/@rchardx/pi-background" \
+    -e "$install_dir/node_modules/@rchardx/pi-lsp" \
     -e "$install_dir/node_modules/@rchardx/pi-subagents" \
     -e "$install_dir/node_modules/@rchardx/pi-statusline" \
     -e "$install_dir/node_modules/@rchardx/pi-web-access"
