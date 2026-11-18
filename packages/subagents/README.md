@@ -187,11 +187,14 @@ Runtime-only provider registrations, API-key overrides, custom extension flags,
 and in-memory settings mutations are not copied. Configure these through normal
 Pi configuration or a reloadable extension before delegation.
 
-Tools from Pi's built-in MCP support are not required at startup: each child
-connects its own MCP servers, and Pi registers their tools as the servers connect.
-Once the parent has MCP tools registered, the child is limited to the ones the
-parent could call. A server that cannot connect in the child surfaces as a failed
-tool call, not as a launch failure. See
+Tools from Pi's built-in MCP support are not required at startup: when a child's
+selected tools include neither MCP tools nor tools that reach other tools (such
+as `explorer`, `tools: []`, or when the parent has no reachable MCP tools), it
+starts with `--no-mcp` and does not connect MCP servers; otherwise each child
+connects its own MCP servers and registers their tools as they connect (when the
+selection includes MCP tools from the parent, only those MCP tools remain
+reachable). A server that cannot connect in the child surfaces as a failed tool
+call, not as a launch failure. See
 [Pi's MCP documentation](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/mcp.md)
 for when Pi waits for a server. Tools that other extensions register
 asynchronously are still required at startup.
