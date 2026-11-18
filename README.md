@@ -34,10 +34,23 @@ alone does not validate packaged dependency resolution.
 
 | Package | Surface | Try for one session | Install for your Pi user | Usage guide |
 | --- | --- | --- | --- | --- |
+| ask | `ask` | `pi -e ./packages/ask` | `pi install ./packages/ask` | [Usage, limits, and compatibility](packages/ask/README.md) |
 | web-access | `web_fetch`, `web_search` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
 | background | `bash` (override), `/background` | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
 | subagents | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
 | statusline | Interactive TUI footer | `pi -e ./packages/statusline` | `pi install ./packages/statusline` | [Usage, limits, and compatibility](packages/statusline/README.md) |
+
+### ask
+
+Collect structured pre-execution user clarification through 1–4 multiple-choice
+questions (2–5 options each, optional `multiSelect`, plus an automatic `Other…`
+free-text input) instead of guessing across ambiguous requirements. Interactive
+`tui` sessions render a keyboard-navigable multi-tab prompt with CJK IME cursor
+support; `rpc` sessions fall back to `select` and `input` dialogs; `print` and
+`json` sessions (including delegated subagent runs) hide `ask` via
+`prepareLoadout` without removing it from persisted session tool selections, and
+fail closed if invoked directly. See the [ask usage guide](packages/ask/README.md)
+for schema and mode details.
 
 ### web-access
 
