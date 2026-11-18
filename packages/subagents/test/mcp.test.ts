@@ -24,10 +24,11 @@ type ToolCall = { name: string; arguments: Record<string, unknown> };
 
 interface Options {
   exposure?: "codemode" | "direct";
+  toolExposure?: Record<string, "codemode" | "direct">;
   /** Tool-list responses from this request number on wait for `release`. */
   holdListsFrom: number;
   /** Scripted model: the tool to call for a request, or the final answer. */
-  model(request: { child: boolean; toolResults: number }): ToolCall | string;
+  model(request: { child: boolean; toolResults: number; text: string }): ToolCall | string;
 }
 
 /** One local server acting as the model endpoint and as a streamable-HTTP MCP server. */
@@ -51,7 +52,7 @@ async function fixture(t: TestContext, options: Options) {
   const childAsked = latch();
   const childRequests: Record<string, unknown>[] = [];
   const calls = { ping: 0, other: 0 };
-  let lists = 0;
+  const mcpRequests = { initializes: 0, lists: 0 };
   const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
@@ -64,7 +65,8 @@ async function fixture(t: TestContext, options: Options) {
 
     if (req.url === "/v1/chat/completions") {
       const messages = Array.isArray(input.messages) ? input.messages.filter(record) : [];
-      const child = JSON.stringify(messages).includes("Delegated task:");
+      const text = JSON.stringify(messages);
+      const child = text.includes("Delegated task:");
       if (child) {
         childRequests.push(input);
         childAsked.resolve();
@@ -72,6 +74,7 @@ async function fixture(t: TestContext, options: Options) {
       const step = options.model({
         child,
         toolResults: messages.filter((message) => message.role === "tool").length,
+        text,
       });
       const delta =
         typeof step === "string"
@@ -115,6 +118,7 @@ async function fixture(t: TestContext, options: Options) {
     }
     let result: unknown = {};
     if (input.method === "initialize") {
+      mcpRequests.initializes++;
       assert.ok(record(input.params));
       result = {
         protocolVersion: input.params.protocolVersion,
@@ -122,8 +126,8 @@ async function fixture(t: TestContext, options: Options) {
         serverInfo: { name: "fixture", version: "1" },
       };
     } else if (input.method === "tools/list") {
-      lists++;
-      if (lists >= options.holdListsFrom) await release.promise;
+      mcpRequests.lists++;
+      if (mcpRequests.lists >= options.holdListsFrom) await release.promise;
       result = {
         tools: ["ping", "other"].map((name) => ({
           name,
@@ -178,16 +182,71 @@ async function fixture(t: TestContext, options: Options) {
   await writeFile(
     join(dir, "mcp.json"),
     JSON.stringify({
-      mcpServers: { fixture: { url: `${url}/mcp`, exposure: options.exposure ?? "codemode" } },
+      mcpServers: {
+        fixture: {
+          url: `${url}/mcp`,
+          exposure: options.exposure ?? "codemode",
+          ...(options.toolExposure ? { toolExposure: options.toolExposure } : {}),
+        },
+      },
     }),
   );
-  return { dir, release, childAsked, childRequests, calls };
+  return { dir, release, childAsked, childRequests, calls, mcpRequests };
+}
+
+async function rpcSession(t: TestContext, dir: string, expectedReports = 1) {
+  const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
+  const installedRoot = join(dir, "packages", "subagents");
+  await mkdir(installedRoot, { recursive: true });
+  const manifest: unknown = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
+  assert.ok(record(manifest) && Array.isArray(manifest.files));
+  for (const entry of ["package.json", ...manifest.files]) {
+    assert.ok(typeof entry === "string");
+    await cp(join(sourceRoot, entry), join(installedRoot, entry), { recursive: true });
+  }
+  const client = new RpcClient({
+    cliPath: join(getPackageDir(), "dist", "bundle", "cli.js"),
+    cwd: dir,
+    provider: "mock",
+    model: "test-model",
+    args: ["--no-session", "-ns", "-np", "--no-themes", "-e", installedRoot],
+  });
+  t.after(() => client.stop());
+  const reports: string[] = [];
+  const completed = new Promise<void>((resolve, reject) => {
+    client.onEvent((event) => {
+      if (event.type === "tool_execution_end" && event.isError) {
+        reject(new Error(`Tool failed: ${JSON.stringify(event.result)}`));
+      }
+      if (
+        event.type === "message_end" &&
+        event.message.role === "custom" &&
+        event.message.customType === "subagent:result" &&
+        typeof event.message.content === "string"
+      ) {
+        reports.push(event.message.content);
+      }
+      // A root that is still busy receives the report as an appended entry instead.
+      if (
+        event.type === "entry_appended" &&
+        event.entry.type === "custom_message" &&
+        event.entry.customType === "subagent:result" &&
+        typeof event.entry.content === "string"
+      ) {
+        reports.push(event.entry.content);
+      }
+      if (event.type === "agent_settled" && reports.length >= expectedReports) resolve();
+    });
+  });
+  await client.start();
+  return { client, reports, completed };
 }
 
 const script = (code: string): ToolCall => ({ name: "codemode", arguments: { code } });
 
 function declared(request: Record<string, unknown> | undefined): unknown[] {
-  assert.ok(request && Array.isArray(request.tools));
+  assert.ok(request);
+  if (!Array.isArray(request.tools)) return [];
   return request.tools
     .filter(record)
     .map((tool) => (record(tool.function) ? tool.function.name : undefined));
@@ -210,57 +269,14 @@ test("a delegated child starts before its MCP servers connect and still reaches 
     },
   });
   // Install outside the workspace, as a user would, and let Pi discover its built-ins.
-  const sourceRoot = fileURLToPath(new URL("../", import.meta.url));
-  const installedRoot = join(dir, "packages", "subagents");
-  await mkdir(installedRoot, { recursive: true });
-  const manifest: unknown = JSON.parse(await readFile(join(sourceRoot, "package.json"), "utf8"));
-  assert.ok(record(manifest) && Array.isArray(manifest.files));
-  for (const entry of ["package.json", ...manifest.files]) {
-    assert.ok(typeof entry === "string");
-    await cp(join(sourceRoot, entry), join(installedRoot, entry), { recursive: true });
-  }
-  const client = new RpcClient({
-    cliPath: join(getPackageDir(), "dist", "bundle", "cli.js"),
-    cwd: dir,
-    provider: "mock",
-    model: "test-model",
-    args: ["--no-session", "-ns", "-np", "--no-themes", "-e", installedRoot],
-  });
-  t.after(() => client.stop());
-  let report = "";
-  const completed = new Promise<void>((resolve, reject) => {
-    client.onEvent((event) => {
-      if (event.type === "tool_execution_end" && event.isError) {
-        reject(new Error(`Tool failed: ${JSON.stringify(event.result)}`));
-      }
-      if (
-        event.type === "message_end" &&
-        event.message.role === "custom" &&
-        event.message.customType === "subagent:result" &&
-        typeof event.message.content === "string"
-      ) {
-        report = event.message.content;
-      }
-      // A root that is still busy receives the report as an appended entry instead.
-      if (
-        event.type === "entry_appended" &&
-        event.entry.type === "custom_message" &&
-        event.entry.customType === "subagent:result" &&
-        typeof event.entry.content === "string"
-      ) {
-        report = event.entry.content;
-      }
-      if (event.type === "agent_settled" && report) resolve();
-    });
-  });
-  await client.start();
+  const { client, reports, completed } = await rpcSession(t, dir);
   await client.prompt("Use the MCP tool, then delegate.");
   await Promise.race([childAsked.promise, completed]);
   assert.equal(calls.ping, 1, "only the parent has reached the server so far");
   release.resolve();
   await completed;
 
-  assert.match(report, /: completed\n[\s\S]*Child reached MCP\./u);
+  assert.match(reports[0] ?? "", /: completed\n[\s\S]*Child reached MCP\./u);
   assert.equal(calls.ping, 2);
   // Exposure is unchanged: the tool is reached through codemode, not declared to the model.
   assert.ok(declared(childRequests[0]).includes("codemode"));
@@ -325,4 +341,107 @@ test("direct MCP tools are declared in the child's first request", {
   assert.equal(result.status, "completed", result.report);
   assert.deepEqual(declared(childRequests[0]), ["read", PING]);
   assert.deepEqual(calls, { ping: 1, other: 0 });
+});
+
+test("children without MCP or reaching tools pass --no-mcp and never connect MCP servers", {
+  timeout: 30_000,
+}, async (t) => {
+  // With `exposure: "direct"` and `holdListsFrom: 2` left unreleased, any child that loads
+  // `builtin:mcp` would initialize the server and block startup waiting for `tools/list`.
+  const { dir, childRequests, mcpRequests } = await fixture(t, {
+    exposure: "direct",
+    holdListsFrom: 2,
+    model: ({ child, toolResults }) => {
+      if (child) return "No MCP needed.";
+      if (toolResults === 0) {
+        return { name: "subagent", arguments: { task: "Inspect local files.", role: "explorer" } };
+      }
+      if (toolResults === 1) {
+        return { name: "subagent", arguments: { task: "Pure reasoning.", role: "solver" } };
+      }
+      if (toolResults === 2) {
+        return { name: "subagent", arguments: { task: "Modifier stripped MCP.", role: "no_mcp" } };
+      }
+      return "Parent done.";
+    },
+  });
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({
+      roles: {
+        solver: { tools: [] },
+        no_mcp: { tools: [`-${PING}`, `-${OTHER}`] },
+      },
+    }),
+  );
+  const { client, reports, completed } = await rpcSession(t, dir, 3);
+  await client.prompt("Delegate to explorer, solver, and no_mcp.");
+  await completed;
+
+  assert.equal(reports.length, 3);
+  for (const report of reports) {
+    assert.match(report, /: completed\n[\s\S]*No MCP needed\./u);
+  }
+  assert.equal(childRequests.length, 3);
+  for (const request of childRequests) {
+    assert.ok(!declared(request).includes(PING));
+    assert.ok(!declared(request).includes(OTHER));
+  }
+  assert.deepEqual(mcpRequests, { initializes: 1, lists: 1 });
+});
+
+test("modifier, MCP-selecting, and codemode roles retain MCP access", {
+  timeout: 60_000,
+}, async (t) => {
+  const { dir, calls, mcpRequests } = await fixture(t, {
+    exposure: "codemode",
+    toolExposure: { other: "direct" },
+    holdListsFrom: 99,
+    model: ({ child, toolResults, text }) => {
+      if (child) {
+        if (toolResults > 0) return "Role reached MCP.";
+        return text.includes("USE_CODEMODE")
+          ? script(`text(await tools.${PING}({}));`)
+          : { name: OTHER, arguments: {} };
+      }
+      if (toolResults === 0) {
+        return {
+          name: "subagent",
+          arguments: { task: "Use MCP via librarian.", role: "librarian" },
+        };
+      }
+      if (toolResults === 1) {
+        return {
+          name: "subagent",
+          arguments: { task: "Use MCP via explicit allowlist.", role: "mcp_reader" },
+        };
+      }
+      if (toolResults === 2) {
+        return {
+          name: "subagent",
+          arguments: { task: "USE_CODEMODE", role: "scripter" },
+        };
+      }
+      return "Parent done.";
+    },
+  });
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({
+      roles: {
+        mcp_reader: { tools: ["read", OTHER] },
+        scripter: { tools: ["read", "codemode"] },
+      },
+    }),
+  );
+  const { client, reports, completed } = await rpcSession(t, dir, 3);
+  await client.prompt("Delegate to librarian, mcp_reader, and scripter.");
+  await completed;
+
+  assert.equal(reports.length, 3);
+  for (const report of reports) {
+    assert.match(report, /: completed\n[\s\S]*Role reached MCP\./u);
+  }
+  assert.deepEqual(calls, { ping: 1, other: 2 });
+  assert.ok(mcpRequests.initializes >= 4);
 });

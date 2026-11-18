@@ -155,10 +155,12 @@ export function environment(
   // Pi registers these as each process connects its MCP servers, and waits for a server when
   // a prompt or call needs it. A child allows them without demanding them at startup.
   const mcpTools = new Set<string>();
+  let reachesOtherTools = false;
   for (const tool of allTools) {
     if (!selected.has(tool.name) || COMMUNICATION_TOOLS.has(tool.name)) continue;
     const path = tool.sourceInfo.path;
     if (path === "builtin:mcp") mcpTools.add(tool.name);
+    if (tool.reachesTools !== undefined) reachesOtherTools = true;
     if (path.startsWith("builtin:")) {
       if (
         !options.noExtensions &&
@@ -175,6 +177,7 @@ export function environment(
         `Tool ${tool.name} has no reloadable extension path (${path}). Inline/SDK tools cannot be copied into a child process.`,
       );
   }
+  const disableMcp = !options.noMcp && mcpTools.size === 0 && !reachesOtherTools;
   return {
     ...(role ? { role: role.name } : {}),
     ...(role?.config.instructions ? { instructions: role.config.instructions } : {}),
@@ -188,7 +191,7 @@ export function environment(
     activeTools,
     requiredTools: [...selected].filter((name) => !mcpTools.has(name)),
     mcpTools: [...mcpTools],
-    cliFlags: options.flags,
+    cliFlags: disableMcp ? [...options.flags, "--no-mcp"] : options.flags,
     task,
   };
 }

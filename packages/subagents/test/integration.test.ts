@@ -729,14 +729,52 @@ test("disabled discovery is not reopened by parent tool-source metadata", {
   t.after(() => {
     process.argv = original;
   });
-  const launch = environment(
-    api,
-    session.extensionRunner.createToolContext("test", undefined),
-    "Task",
-  );
+  const ctx = session.extensionRunner.createToolContext("test", undefined);
+  const launch = environment(api, ctx, "Task");
   assert.deepEqual(launch.extensions, ["npm:@example/pi-tools"]);
   assert.ok(launch.requiredTools.includes("extra"));
   assert.deepEqual(launch.cliFlags, ["--no-extensions", "--no-mcp"]);
+  assert.deepEqual(
+    environment(api, ctx, "Task", { name: "reader", config: { tools: ["read"] } }).cliFlags,
+    ["--no-extensions", "--no-mcp"],
+  );
+});
+
+test("environment retains MCP for reachesTools selections and disables it when MCP is unreachable", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await fixture(t);
+  const orchestrate = join(dir, "orchestrate.ts");
+  await writeFile(
+    orchestrate,
+    `export default function(pi){pi.registerTool({name:'orchestrate',label:'Orchestrate',description:'Reaches tools',parameters:{type:'object',properties:{}},reachesTools:()=>['mcp__fixture'],execute:async()=>({content:[],details:{}})});}`,
+  );
+  const { session, api } = await parentSession(t, dir, false, [orchestrate], ["orchestrate"]);
+  const original = process.argv;
+  process.argv = [process.execPath, "pi"];
+  t.after(() => {
+    process.argv = original;
+  });
+  const ctx = session.extensionRunner.createToolContext("test", undefined);
+  // Default launch inherits active `orchestrate` (`reachesTools`), so MCP stays enabled.
+  assert.deepEqual(environment(api, ctx, "Task").cliFlags, []);
+  // Modifier stripping `orchestrate` and plain replacement without it both disable MCP.
+  assert.deepEqual(
+    environment(api, ctx, "Task", { name: "no_reach", config: { tools: ["-orchestrate"] } })
+      .cliFlags,
+    ["--no-mcp"],
+  );
+  assert.deepEqual(
+    environment(api, ctx, "Task", { name: "reader", config: { tools: ["read"] } }).cliFlags,
+    ["--no-mcp"],
+  );
+  assert.deepEqual(
+    environment(api, ctx, "Task", {
+      name: "orchestrator",
+      config: { tools: ["read", "orchestrate"] },
+    }).cliFlags,
+    [],
+  );
 });
 
 for (const exposure of ["deferred", "codemode"]) {
