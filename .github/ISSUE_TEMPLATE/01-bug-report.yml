@@ -1,0 +1,92 @@
+name: Bug report
+description: Report reproducible incorrect behavior in a package or repository workflow.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write in English and use a concise title describing the observed problem.
+        Never include API keys, tokens, private URLs, or sensitive logs.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package
+      description: Select the package or repository area where the bug occurs.
+      options:
+        - ask
+        - background
+        - lsp
+        - statusline
+        - subagents
+        - web-access
+        - Repository / CI / Nightly
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      description: How is the package loaded in Pi?
+      options:
+        - Local checkout (pi -e ./packages/...)
+        - Local checkout (pi install ./packages/...)
+        - Nightly tarball
+        - Local packed tarball
+        - Other / not applicable
+    validations:
+      required: true
+  - type: dropdown
+    id: session-mode
+    attributes:
+      label: Pi session mode
+      description: Which Pi runtime mode reproduced the bug?
+      options:
+        - tui (interactive)
+        - rpc
+        - print
+        - json
+        - Not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and expected behavior
+      description: Describe what happened and what you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Include the smallest steps, command, tool call, or config that reproduces the bug.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Pi, Node.js, OS, and commit SHA or nightly tag (plus provider or language server if relevant).
+      placeholder: |
+        - Pi: 1.5.2
+        - Node.js: 22.19.0
+        - OS: Linux / macOS / Windows
+        - Package revision: main (<sha>) or nightly (<tag>)
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and error output
+      description: Optional redacted error output, stack traces, or terminal output.
+      render: text
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and verified this is not a duplicate.
+          required: true
+        - label: I removed credentials, tokens, private URLs, and sensitive local paths.
+          required: true

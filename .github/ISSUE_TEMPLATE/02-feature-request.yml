@@ -1,0 +1,50 @@
+name: Feature request
+description: Propose a new capability, package improvement, or user-facing change.
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write in English. Discuss new packages, major runtime dependencies, and
+        runtime support changes here before implementing them.
+  - type: dropdown
+    id: package
+    attributes:
+      label: Affected package or area
+      description: Select the target package or proposal area.
+      options:
+        - ask
+        - background
+        - lsp
+        - statusline
+        - subagents
+        - web-access
+        - New package proposal
+        - Repository / CI / Docs
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and motivation
+      description: What concrete problem or limitation does this proposal solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the intended user-facing or model-facing behavior, affected Pi modes, and explicit non-goals.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional workarounds or alternative designs you considered.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Observable acceptance criteria
+      description: Optional list of concrete, independently verifiable outcomes.

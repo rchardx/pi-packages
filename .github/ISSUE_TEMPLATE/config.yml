@@ -1,1 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: Pi coding agent (upstream)
+    url: https://github.com/earendil-works/pi/issues
+    about: Report issues with the Pi coding agent harness, SDK, or built-in tools upstream.
+  - name: Security vulnerability or credential exposure
+    url: https://github.com/rchardx/pi-packages/security/advisories/new
+    about: Report security issues privately instead of opening a public issue.
+  - name: Contributing guide
+    url: https://github.com/rchardx/pi-packages/blob/main/CONTRIBUTING.md
+    about: Read setup, validation, and contribution rules before opening an issue or PR.
