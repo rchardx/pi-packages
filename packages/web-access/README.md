@@ -24,6 +24,10 @@ To enable it persistently for your Pi user instead:
 pi install ./packages/web-access
 ```
 
+For a checkout-free development snapshot, follow the
+[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+Nightlies are rolling prereleases, not npm registry publications.
+
 The local install refers to this checkout; keep it in place and reload Pi after
 changes. Do not install both the directory and its entrypoint. The repository
 root is not a Pi package.
@@ -307,7 +311,8 @@ cancellation, deadlines, and TUI card rendering. No live account is needed; thes
 checks do not guarantee site availability or extraction quality.
 
 Host-provided libraries use `"*"` peers as Pi recommends; this does not promise
-compatibility with every Pi release. The package remains private and unpublished.
+compatibility with every Pi release. The package remains `private: true` and is not
+published to npm.
 
 ## Development
 

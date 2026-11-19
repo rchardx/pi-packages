@@ -25,6 +25,10 @@ pi -e ./packages/lsp
 pi install ./packages/lsp
 ```
 
+For a checkout-free development snapshot, follow the
+[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+Nightlies are rolling prereleases, not npm registry publications.
+
 ## What it does
 
 ### Diagnostics after an edit

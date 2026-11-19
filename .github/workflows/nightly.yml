@@ -1,0 +1,123 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild and replace nightly even when main has not changed
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      minimum: ${{ steps.source.outputs.minimum }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - name: Require main
+        env:
+          SOURCE_REF: ${{ github.ref }}
+        run: test "$SOURCE_REF" = refs/heads/main
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Select source and minimum runtime
+        id: source
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'JS'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const { engines } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const match = /^>=(\d+\.\d+\.\d+)$/.exec(engines?.node);
+          if (!match) throw new Error('engines.node must be a single >=x.y.z floor');
+          appendFileSync(process.env.GITHUB_OUTPUT, `minimum=${match[1]}\n`);
+          JS
+      - name: Skip an unchanged published nightly unless forced
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SHA: ${{ steps.source.outputs.sha }}
+          NIGHTLY_FORCE: ${{ inputs.force || false }}
+        run: node --experimental-strip-types scripts/nightly-release.ts plan
+
+  verify:
+    needs: plan
+    if: needs.plan.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [minimum, development]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          lfs: true
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.runtime == 'minimum' && needs.plan.outputs.minimum || '' }}
+          node-version-file: .node-version
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: git diff --check
+      - name: Pack private workspaces without modifying source versions
+        env:
+          NIGHTLY_SHA: ${{ needs.plan.outputs.sha }}
+        run: node --experimental-strip-types scripts/nightly-pack.ts "$RUNNER_TEMP/archives"
+      - name: Verify installed tarballs outside the checkout
+        run: node --import tsx scripts/nightly-smoke.ts "$RUNNER_TEMP/archives"
+      - name: Upload verified tarballs
+        if: matrix.runtime == 'development'
+        uses: actions/upload-artifact@v7
+        with:
+          name: nightly-tarballs
+          path: ${{ runner.temp }}/archives/*.tgz
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 1
+
+  publish:
+    needs: [plan, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: nightly-tarballs
+          path: ${{ runner.temp }}/archives
+      - name: Replace nightly assets and advance the rolling tag last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIGHTLY_SHA: ${{ needs.plan.outputs.sha }}
+        run: node --experimental-strip-types scripts/nightly-release.ts publish "$RUNNER_TEMP/archives"

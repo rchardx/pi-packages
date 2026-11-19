@@ -14,6 +14,10 @@ pi -e ./packages/subagents
 pi install ./packages/subagents
 ```
 
+For a checkout-free development snapshot, follow the
+[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+Nightlies are rolling prereleases, not npm registry publications.
+
 Ask Pi to delegate a concrete task, for example:
 
 > Have a subagent implement config validation and run the relevant tests while

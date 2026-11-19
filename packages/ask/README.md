@@ -18,6 +18,10 @@ Install persistently:
 pi install ./packages/ask
 ```
 
+For a checkout-free development snapshot, follow the
+[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+Nightlies are rolling prereleases, not npm registry publications.
+
 Example call:
 
 ```typescript

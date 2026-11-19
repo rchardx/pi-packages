@@ -72,6 +72,10 @@ Install persistently:
 pi install ./packages/background
 ```
 
+For a checkout-free development snapshot, follow the
+[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+Nightlies are rolling prereleases, not npm registry publications.
+
 ### Inspect running jobs
 
 While jobs are running, Pi's status area shows `background: N running`.

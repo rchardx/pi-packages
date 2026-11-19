@@ -4,8 +4,9 @@ Personal [Pi coding agent](https://github.com/earendil-works/pi) packages mainta
 in one npm-workspaces repository. Each capability lives in its own
 [`packages/<capability>/`](packages/README.md) directory.
 
-Packages are maintained locally and have not been published. Install individual
-packages from a checkout, not the repository root.
+Install individual packages from a checkout or, when available, the rolling
+[Nightly GitHub release](https://github.com/rchardx/pi-packages/releases/tag/nightly).
+Packages are not published to npm; the repository root is not an installable bundle.
 
 ## Setup
 
@@ -193,6 +194,25 @@ the individual package installations above.
 
 Packages remain marked `private: true` and have not been published to npm.
 Publication is a separate decision from source licensing.
+
+### Nightly tarballs
+
+The [nightly workflow](.github/workflows/nightly.yml) checks `main` daily at
+00:00 UTC and supports manual dispatch on `main` with optional `force` (default
+`false`). It skips unchanged published commits unless forced.
+
+After checks, tests, and installed-tarball smoke tests pass on both Node
+runtimes, it updates one rolling `nightly` tag and **Nightly** prerelease
+(never Latest) with one `pi-<capability>-nightly.tgz` archive per package under
+`packages/`. Package versions use `<base>-nightly.<github.run_number>.g<full SHA>`
+while source versions stay unchanged and `private: true`.
+
+Nightlies are automated development snapshots, not stable releases. Follow
+[install a nightly snapshot](CONTRIBUTING.md#install-a-nightly-snapshot) to
+install downloaded tarballs into a fresh npm prefix and register the installed
+directories with Pi. See
+[nightly publishing and recovery](CONTRIBUTING.md#nightly-publishing-and-recovery)
+for failure handling.
 
 ## License
 
