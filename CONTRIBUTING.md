@@ -137,7 +137,13 @@ Before publishing, both the minimum and development Node runtimes run checks,
 tests, tarball packing (`<base>-nightly.<run_number>.g<full SHA>`, leaving
 source versions unchanged and `private: true`), and isolated installed-tarball
 smoke tests. Only the `publish` job requests `contents: write` (using the
-built-in `GITHUB_TOKEN`). It replaces each package's `pi-<capability>-nightly.tgz`
+built-in `GITHUB_TOKEN`). Before writing, it reads the current `main` SHA again.
+If the read fails, publication stops; if `main` has moved, the job skips without
+changing the release or tag, even when forced. To publish the new head, start a
+fresh run instead of rerunning the old failed jobs. This guard runs from the
+verified commit: do not rerun failed publish jobs from commits predating it.
+
+For a matching SHA, it replaces each package's `pi-<capability>-nightly.tgz`
 asset in place, updates the release notes, publishes the draft on first run, and
 advances the lightweight `nightly` tag last. If publication fails partway
 through, rerun the workflow (or dispatch with `force: true` for a same-SHA

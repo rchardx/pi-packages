@@ -11,6 +11,7 @@ const sha = "a".repeat(40);
 const oldSha = "b".repeat(40);
 const apiBase = "https://api.github.com/repos/example/packages";
 const uploadBase = "https://uploads.github.com/repos/example/packages";
+const mainUrl = `${apiBase}/git/ref/heads/main`;
 const refUrl = `${apiBase}/git/ref/tags/nightly`;
 const refsUrl = `${apiBase}/git/refs/tags/nightly`;
 const releasesUrl = `${apiBase}/releases?per_page=100`;
@@ -21,6 +22,9 @@ const filenames = names.map((name) => `pi-${name}-nightly.tgz`);
 const publicRelease = { id: 12, tag_name: "nightly", draft: false, prerelease: true };
 const draftRelease = { ...publicRelease, draft: true };
 const tagBody = (value = sha) => ({ object: { type: "commit", sha: value } });
+
+const mainRef = { ref: "refs/heads/main", ...tagBody() };
+const currentMain = { method: "GET", url: mainUrl, response: mainRef };
 
 interface Step {
   method: string;
@@ -200,6 +204,7 @@ test("existing release overwrites matching assets, updates notes, and moves tag 
   const f = fixture();
   try {
     const mock = fakeFetch([
+      currentMain,
       { method: "GET", url: releasesUrl, response: [publicRelease] },
       { method: "GET", url: refUrl, response: tagBody(oldSha) },
       {
@@ -242,6 +247,7 @@ test("first run creates draft, uploads assets, publishes, and establishes tag", 
   const f = fixture();
   try {
     const mock = fakeFetch([
+      currentMain,
       { method: "GET", url: releasesUrl, response: [] },
       { method: "GET", url: refUrl, status: 404 },
       { method: "POST", url: `${apiBase}/releases`, status: 201, response: draftRelease },
@@ -268,6 +274,43 @@ test("first run creates draft, uploads assets, publishes, and establishes tag", 
   }
 });
 
+test("stale publish skips without mutation, even when forced", async () => {
+  const f = fixture();
+  try {
+    const mock = fakeFetch([{ ...currentMain, response: { ...mainRef, ...tagBody(oldSha) } }]);
+    await runNightly(
+      ["publish", f.archives],
+      { ...f.env, NIGHTLY_FORCE: "true" },
+      f.root,
+      mock.fetchImpl,
+    );
+    mock.done();
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("failed or malformed main ref lookup aborts without mutation", async () => {
+  const f = fixture();
+  try {
+    for (const [step, error] of [
+      [{ ...currentMain, status: 404 }, /HTTP 404/u],
+      [{ ...currentMain, response: { ...mainRef, ...tagBody("bad") } }, /main ref/u],
+      [{ ...currentMain, response: { ...mainRef, object: { type: "tag", sha } } }, /main ref/u],
+      [{ ...currentMain, response: { ...mainRef, ref: "refs/heads/other" } }, /main ref/u],
+    ] as const) {
+      const mock = fakeFetch([step]);
+      await assert.rejects(
+        runNightly(["publish", f.archives], f.env, f.root, mock.fetchImpl),
+        error,
+      );
+      mock.done();
+    }
+  } finally {
+    f.cleanup();
+  }
+});
+
 test("preflight rejects missing or empty archives before remote mutation", async () => {
   const f = fixture();
   try {
@@ -287,6 +330,7 @@ test("annotated tag and upload failures abort before tag mutation", async () => 
   const f = fixture();
   try {
     const annotated = fakeFetch([
+      currentMain,
       { method: "GET", url: releasesUrl, response: [publicRelease] },
       { method: "GET", url: refUrl, response: { object: { type: "tag", sha } } },
     ]);
@@ -297,6 +341,7 @@ test("annotated tag and upload failures abort before tag mutation", async () => 
     annotated.done();
 
     const failedUpload = fakeFetch([
+      currentMain,
       { method: "GET", url: releasesUrl, response: [publicRelease] },
       { method: "GET", url: refUrl, response: tagBody(oldSha) },
       { method: "GET", url: assetsUrl, response: [] },

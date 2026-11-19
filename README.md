@@ -199,7 +199,8 @@ Publication is a separate decision from source licensing.
 
 The [nightly workflow](.github/workflows/nightly.yml) checks `main` daily at
 00:00 UTC and supports manual dispatch on `main` with optional `force` (default
-`false`). It skips unchanged published commits unless forced.
+`false`). It skips unchanged published commits unless forced. Even when forced,
+a run skips publication if its verified commit is no longer the head of `main`.
 
 After checks, tests, and installed-tarball smoke tests pass on both Node
 runtimes, it updates one rolling `nightly` tag and **Nightly** prerelease
