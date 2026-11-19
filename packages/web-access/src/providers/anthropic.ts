@@ -2,7 +2,7 @@ import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import { ANTHROPIC_API_ORIGIN, type AnthropicRequestAuth } from "../auth.ts";
 import { formatGroundedSearch, formatModelFetch, SourceCollector } from "../grounded.ts";
-import { postJson, type WebToolKind, withDeadline } from "../request.ts";
+import { modelNotFoundReason, postJson, type WebToolKind, withDeadline } from "../request.ts";
 import { normalizeFetchUrl } from "../url.ts";
 import {
   DEFAULT_SEARCH_COUNT,
@@ -23,7 +23,7 @@ const CLAUDE_CODE_SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI
 
 const LABELS = { search: "Anthropic Search", fetch: "Anthropic Fetch" } as const;
 
-function anthropicErrorOptions(tool: WebToolKind) {
+function anthropicErrorOptions(tool: WebToolKind, model: string) {
   return {
     label: LABELS[tool],
     providerLabel: "Anthropic",
@@ -33,7 +33,7 @@ function anthropicErrorOptions(tool: WebToolKind) {
         tool === "fetch"
           ? "Anthropic web_fetch access denied; verify organization and credential permissions."
           : "Anthropic web_search access denied; verify organization and credential permissions.",
-      404: "Requested Anthropic model or endpoint was not found.",
+      404: modelNotFoundReason(tool, "anthropic", model),
     },
   };
 }
@@ -181,7 +181,7 @@ export async function fetchAnthropic(
       signal: combined,
       maxBytes: MAX_RESPONSE_BYTES,
       request,
-      errorOptions: anthropicErrorOptions("fetch"),
+      errorOptions: anthropicErrorOptions("fetch", model),
     });
     if (!Check(MessageEnvelope, data)) {
       throw new Error("Anthropic Fetch returned an invalid page schema.");
@@ -281,7 +281,7 @@ export async function searchAnthropic(
       signal: combined,
       maxBytes: MAX_RESPONSE_BYTES,
       request,
-      errorOptions: anthropicErrorOptions("search"),
+      errorOptions: anthropicErrorOptions("search", model),
     });
     if (!Check(MessageEnvelope, data)) {
       throw new Error("Anthropic Search returned an invalid results schema.");

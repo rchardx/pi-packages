@@ -224,6 +224,20 @@ test("Anthropic Search rejects ungrounded completions, refusals, paused turns, s
   }
   assert.equal(resolutions, 0);
 
+  await assert.rejects(
+    searchAnthropic(
+      { query: "test" },
+      apiKeyAuth,
+      { model: "retired-model" },
+      undefined,
+      async () => new Response(`raw ${secret}`, { status: 404 }),
+    ),
+    {
+      message:
+        'Anthropic Search HTTP 404: Requested model "retired-model" was not found; set search.providers.anthropic.model in web-access.json to an available model.',
+    },
+  );
+
   // Model answered without running web_search -> must be rejected.
   await assert.rejects(
     searchAnthropic({ query: "test" }, apiKeyAuth, {}, undefined, async () =>
@@ -622,7 +636,10 @@ test("Anthropic Fetch rejects ungrounded completions, refusals, paused turns, se
       403,
       "Anthropic Fetch HTTP 403: Anthropic web_fetch access denied; verify organization and credential permissions.",
     ],
-    [404, "Anthropic Fetch HTTP 404: Requested Anthropic model or endpoint was not found."],
+    [
+      404,
+      'Anthropic Fetch HTTP 404: Requested model "claude-haiku-5-5" was not found; set fetch.providers.anthropic.model in web-access.json to an available model.',
+    ],
     [
       529,
       "Anthropic Fetch HTTP 529: Anthropic service is overloaded. This may be transient; retry later.",

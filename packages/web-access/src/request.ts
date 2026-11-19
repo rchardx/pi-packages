@@ -7,6 +7,11 @@ export interface HttpErrorOptions {
   reasons?: Readonly<Record<number, string>>;
 }
 
+// Built-in defaults can be retired upstream; name the model and the setting that replaces it.
+export function modelNotFoundReason(tool: WebToolKind, provider: string, model: string): string {
+  return `Requested model "${model}" was not found; set ${tool}.providers.${provider}.model in web-access.json to an available model.`;
+}
+
 export function httpError(status: number, options: HttpErrorOptions): Error {
   const { label, providerLabel, tool } = options;
   const defaults: Record<number, string> = {

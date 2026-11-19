@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { OPENAI_API_ORIGIN, OPENAI_CODEX_ORIGIN } from "../auth.ts";
 import { formatGroundedSearch, SourceCollector } from "../grounded.ts";
-import { postSse, withDeadline } from "../request.ts";
+import { modelNotFoundReason, postSse, withDeadline } from "../request.ts";
 import {
   DEFAULT_SEARCH_COUNT,
   MAX_RESPONSE_BYTES,
@@ -27,7 +27,7 @@ export const OPENAI_BACKENDS: Readonly<Record<OpenAIProviderId, OpenAIBackend>> 
     label: "OpenAI Search",
     providerLabel: "OpenAI",
     endpoint: `${OPENAI_API_ORIGIN}/v1/responses`,
-    defaultModel: "gpt-5.4-mini",
+    defaultModel: "gpt-6-luna",
     includeSources: true,
   },
   "openai-codex": {
@@ -178,7 +178,7 @@ export async function searchOpenAI(
         label,
         providerLabel: backend.providerLabel,
         tool: "search",
-        reasons: { 404: `Requested ${backend.providerLabel} model or endpoint was not found.` },
+        reasons: { 404: modelNotFoundReason("search", provider, model) },
       },
     });
 
