@@ -7,7 +7,7 @@ import {
   buildNotification,
   formatDuration,
   formatPartialProgress,
-  formatPeerMessage,
+  formatMessage,
   oneLine,
   renderMessageNotification,
   renderNotification,
@@ -246,19 +246,14 @@ test("renderNotification draws a one-line collapsed card and keeps status before
   );
 });
 
-test("formatPeerMessage and renderMessageNotification format collapsible peer message cards", () => {
+test("formatMessage and renderMessageNotification format collapsible message cards", () => {
   const envelope: MessageEnvelope = {
     id: "msg-1",
     from: CHILD_ID,
     to: "main",
-    broadcast: false,
     message: `${ESC}[2J**Need port confirmation**\n\nDefaulting to \`8080\` unless overridden.`,
-    sentAt: 1_000,
   };
-  assert.match(
-    formatPeerMessage(envelope),
-    new RegExp(`^Peer message from subagent ${CHILD_ID} \\(direct\\):`, "u"),
-  );
+  assert.match(formatMessage(envelope), new RegExp(`^Message from subagent ${CHILD_ID}:\n\n`, "u"));
 
   const collapsed = renderMessageNotification(
     { details: envelope },
@@ -273,7 +268,7 @@ test("formatPeerMessage and renderMessageNotification format collapsible peer me
   assert.ok(collapsed && expanded);
   const collapsedLines = collapsed.render(80);
   assert.equal(collapsedLines.length, 3);
-  assert.ok((collapsedLines[1] ?? "").includes("✉ subagent 550e8400 · direct · **Need port"));
+  assert.ok((collapsedLines[1] ?? "").includes("✉ subagent 550e8400 · **Need port"));
   assert.ok(visibleWidth(collapsedLines[1] ?? "") <= 80);
 
   const expandedRaw = expanded.render(120).join("\n");
@@ -282,7 +277,7 @@ test("formatPeerMessage and renderMessageNotification format collapsible peer me
     .split("\n")
     .map((line) => line.trimEnd())
     .join("\n");
-  assert.match(expandedText, new RegExp(`${CHILD_ID} → main · direct`, "u"));
+  assert.match(expandedText, new RegExp(`${CHILD_ID} → main$`, "mu"));
   assert.match(expandedText, /Need port confirmation/u);
   assert.match(expandedText, /Defaulting to 8080/u);
   assert.doesNotMatch(expandedText, /\*\*Need port confirmation\*\*/u);

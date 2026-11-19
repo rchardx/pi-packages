@@ -204,6 +204,8 @@ test("parseConfig rejects invalid input", () => {
     ["subagent"],
     ["+subagent"],
     ["+subagent_cancel"],
+    ["subagent_list"],
+    ["+subagent_list"],
   ]) {
     assert.throws(
       () => parseConfig({ roles: { explorer: { tools: badTools } } }),
@@ -211,6 +213,10 @@ test("parseConfig rejects invalid input", () => {
       `expected rejection for tools ${JSON.stringify(badTools)}`,
     );
   }
+  assert.throws(
+    () => parseConfig({ roles: { explorer: { tools: ["read", "subagent_list"] } } }),
+    /cannot enable root-session tools \(subagent, subagent_cancel, subagent_list\)/u,
+  );
   assert.throws(
     () => parseConfig({ roles: { explorer: { maxRequests: 0 } } }),
     /maxRequests must be a positive integer/u,

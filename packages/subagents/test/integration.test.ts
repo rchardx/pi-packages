@@ -494,9 +494,7 @@ export default function (pi) {
     id,
     from: "main",
     to: "child",
-    broadcast: false,
     message,
-    sentAt: Date.now(),
   });
   delay(300);
   const execution = startChild({
@@ -1210,7 +1208,7 @@ test("package discovery and tool execution reject nonpersistent host modes", {
   for (const [name, args] of [
     ["subagent", { task: "do work" }],
     ["subagent_list", {}],
-    ["subagent_send", { to: "*", message: "ping" }],
+    ["subagent_send", { to: "child", message: "ping" }],
     ["subagent_wait", { timeoutSeconds: 1 }],
   ] as const) {
     const registered = session.agent.state.tools.find((entry) => entry.name === name);
@@ -1377,6 +1375,7 @@ async function communicationFixture(t: TestContext) {
   let lastMain = "";
   let failMain = false;
   let nextMainHeld: Promise<void> | undefined;
+  const askerRequests: { tools: unknown; transcript: string }[] = [];
   let notes = 0;
   let noteAccepted: () => void = () => {};
   const noteSent = new Promise<void>((resolve) => {
@@ -1453,6 +1452,7 @@ async function communicationFixture(t: TestContext) {
     };
 
     if (transcript.includes("Delegated task:\\n\\nASK_MAIN_FOR_PORT")) {
+      askerRequests.push({ tools: parsed.tools, transcript });
       if (transcript.includes("PORT_IS_9090")) {
         if (toolMessages.some((entry) => JSON.stringify(entry).includes("port.txt"))) {
           respondText("Configured port 9090.");
@@ -1466,75 +1466,10 @@ async function communicationFixture(t: TestContext) {
           {
             id: "ask-main",
             name: "subagent_send",
-            args: { to: "main", message: "NEED_PORT_DECISION" },
+            args: { message: "NEED_PORT_DECISION" },
           },
           { id: "wait-main", name: "subagent_wait", args: { timeoutSeconds: 10 } },
         ]);
-      }
-      return;
-    }
-
-    if (transcript.includes("Delegated task:\\n\\nROLE_RECEIVER")) {
-      if (transcript.includes("DIRECT_SECRET_77")) {
-        respondText("Receiver confirmed DIRECT_SECRET_77.");
-      } else {
-        respondToolCalls([
-          { id: "wait-peer", name: "subagent_wait", args: { timeoutSeconds: 10 } },
-        ]);
-      }
-      return;
-    }
-
-    if (transcript.includes("Delegated task:\\n\\nROLE_SENDER")) {
-      if (toolMessages.length === 0) {
-        respondToolCalls([{ id: "discover", name: "subagent_list", args: {} }]);
-      } else if (toolMessages.length === 1) {
-        const listing = JSON.stringify(toolMessages[0]?.content ?? "");
-        const peerMatch = /- ([0-9a-f-]{36}) ·/u.exec(listing);
-        assert.ok(peerMatch?.[1], `Expected live sibling UUID in listing: ${listing}`);
-        respondToolCalls([
-          {
-            id: "send-direct",
-            name: "subagent_send",
-            args: { to: peerMatch[1], message: "DIRECT_SECRET_77" },
-          },
-          {
-            id: "send-broadcast",
-            name: "subagent_send",
-            args: { to: "*", message: "BROADCAST_PING" },
-          },
-        ]);
-      } else {
-        respondText("Sender notified peers.");
-      }
-      return;
-    }
-
-    if (transcript.includes("Delegated task:\\n\\nROLE_SILENT")) {
-      // Leaves without answering the question it received.
-      if (transcript.includes("QUESTION_FOR_SILENT")) respondText("Silent peer leaves.");
-      else respondToolCalls([{ id: "wait", name: "subagent_wait", args: { timeoutSeconds: 10 } }]);
-      return;
-    }
-
-    if (transcript.includes("Delegated task:\\n\\nROLE_ASKER")) {
-      if (toolMessages.length === 0) {
-        respondToolCalls([{ id: "discover", name: "subagent_list", args: {} }]);
-      } else if (toolMessages.length === 1) {
-        const listing = JSON.stringify(toolMessages[0]?.content ?? "");
-        const peerMatch = /- ([0-9a-f-]{36}) ·/u.exec(listing);
-        assert.ok(peerMatch?.[1], `Expected live sibling UUID in listing: ${listing}`);
-        respondToolCalls([
-          {
-            id: "ask",
-            name: "subagent_send",
-            args: { to: peerMatch[1], message: "QUESTION_FOR_SILENT" },
-          },
-        ]);
-      } else if (toolMessages.length === 2) {
-        respondToolCalls([{ id: "wait", name: "subagent_wait", args: { timeoutSeconds: 20 } }]);
-      } else {
-        respondText(`Asker stopped waiting: ${String(toolMessages[2]?.content)}`);
       }
       return;
     }
@@ -1552,7 +1487,7 @@ async function communicationFixture(t: TestContext) {
       else await childHeld;
       respondToolCalls(
         toolMessages.length === 0
-          ? [{ id: "notify", name: "subagent_send", args: { to: "main", message: "NOTE_1" } }]
+          ? [{ id: "notify", name: "subagent_send", args: { message: "NOTE_1" } }]
           : [{ id: "stay", name: "subagent_wait", args: { timeoutSeconds: 30 } }],
       );
       return;
@@ -1625,6 +1560,7 @@ async function communicationFixture(t: TestContext) {
     noteSent,
     mainRequests: () => mainRequests,
     notes: () => notes,
+    askerRequests,
     lastMain: () => lastMain,
     holdNextMain: () => {
       let release: () => void = () => {};
@@ -1754,7 +1690,7 @@ test("subagent_wait with all holds completions until every child has finished", 
   for (;;) {
     const listed = await listTool.execute("list", {});
     const agents = (listed.details as { agents: { id: string }[] }).agents;
-    if (agents.length === 2 && agents.some((agent) => agent.id === heldId)) break;
+    if (agents.length === 1 && agents[0]?.id === heldId) break;
     assert.ok(Date.now() < deadline, "Timed out waiting for the quick child to finish");
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
@@ -1913,7 +1849,7 @@ export default function (pi) {
   // Pi reports idle here, yet a run requested now starts only after these handlers.
   assert.equal(session.isIdle, true);
   releaseChild();
-  await until(() => notes() === 2, "both peer messages");
+  await until(() => notes() === 2, "both subagent messages");
   assert.equal(updates.seen.length, 0, "both updates arrived before the requested run began");
 
   await run;
@@ -2042,7 +1978,7 @@ test("an update arriving while an idle root compacts joins the next run's first 
 test("live child and main exchange messages and completed children reject later messages", {
   timeout: 30_000,
 }, async (t) => {
-  const { dir } = await communicationFixture(t);
+  const { dir, askerRequests } = await communicationFixture(t);
   const { session, tool } = await parentSession(
     t,
     dir,
@@ -2075,129 +2011,83 @@ test("live child and main exchange messages and completed children reject later 
     };
   });
 
+  // Only running subagents are listed; the root session is not an entry.
+  assert.deepEqual((await listTool.execute("list-idle", {})).details, { agents: [] });
   const started = await tool.execute("start-worker", { task: "ASK_MAIN_FOR_PORT" });
   const childId = (started.details as { id?: string }).id;
   assert.ok(childId);
 
   const listed = await listTool.execute("list-live", {});
-  assert.match(JSON.stringify(listed), new RegExp(childId, "u"));
+  assert.deepEqual(
+    (listed.details as { agents: { id: string; task: string }[] }).agents.map(({ id, task }) => ({
+      id,
+      task,
+    })),
+    [{ id: childId, task: "ASK_MAIN_FOR_PORT" }],
+  );
 
   const question = await childQuestion;
   assert.match(String(question.content), /NEED_PORT_DECISION/u);
   assert.ok(record(question.details));
-  assert.equal(question.details.from, childId);
+  assert.equal(question.content, `Message from subagent ${childId}:\n\nNEED_PORT_DECISION`);
+  assert.deepEqual(question.details, {
+    id: question.details.id,
+    from: childId,
+    to: "main",
+    message: "NEED_PORT_DECISION",
+  });
+
+  // The root session addresses running children only: neither itself nor all of them.
+  for (const to of ["main", "*"]) {
+    await assert.rejects(
+      sendTool.execute(`send-${to}`, { to, message: "PORT_IS_1" }),
+      /Unknown subagent ID/u,
+    );
+  }
 
   await sendTool.execute("reply-port", { to: childId, message: "PORT_IS_9090" });
   await childCompleted;
   await session.waitForIdle();
+
+  // A child can message and await its parent, and nothing else in the session.
+  const firstRequest = askerRequests[0];
+  assert.ok(firstRequest && Array.isArray(firstRequest.tools));
+  const childTools = new Map(
+    firstRequest.tools
+      .filter(record)
+      .flatMap((entry) =>
+        record(entry.function) && typeof entry.function.name === "string"
+          ? [[entry.function.name, entry.function.parameters] as const]
+          : [],
+      ),
+  );
+  assert.deepEqual(
+    [...childTools.keys()].filter((name) => name.startsWith("subagent")),
+    ["subagent_send", "subagent_wait"],
+  );
+  const sendParameters = childTools.get("subagent_send");
+  assert.ok(record(sendParameters) && record(sendParameters.properties));
+  assert.deepEqual(Object.keys(sendParameters.properties), ["message"]);
+  assert.match(
+    firstRequest.transcript,
+    /You can message the parent session \(\\"main\\"\) with subagent_send\. Messages from main supplement or correct your task\./u,
+  );
+  assert.doesNotMatch(firstRequest.transcript, /subagent_list|broadcast|peer/u);
+  assert.ok(askerRequests.at(-1)?.transcript.includes("Message from main:\\n\\nPORT_IS_9090"));
 
   assert.equal(await readFile(join(dir, "port.txt"), "utf8"), "9090");
   assert.ok(finalReport && record(finalReport.details));
   assert.equal(finalReport.details.status, "completed");
   assert.match(String(finalReport.content), /Configured port 9090\./u);
 
+  assert.deepEqual((await listTool.execute("list-done", {})).content, [
+    { type: "text", text: "No subagents running." },
+  ]);
+
   // Autonomously completed subagents never receive further messages.
   await assert.rejects(
     sendTool.execute("late-send", { to: childId, message: "PORT_CHANGED" }),
     /already finished \(completed\) and cannot receive messages/u,
-  );
-});
-
-test("sibling subagents discover peers and exchange direct and broadcast messages", {
-  timeout: 30_000,
-}, async (t) => {
-  const { dir } = await communicationFixture(t);
-  const { session, tool } = await parentSession(
-    t,
-    dir,
-    false,
-    [],
-    ["subagent_list", "subagent_send", "subagent_wait"],
-  );
-
-  const broadcasts: Record<string, unknown>[] = [];
-  const results = new Map<string, Record<string, unknown>>();
-  const bothDone = new Promise<void>((resolve) => {
-    const original = session.sendCustomMessage.bind(session);
-    session.sendCustomMessage = async (message, options) => {
-      if (message.customType === "subagent:message" && record(message.details)) {
-        broadcasts.push(message.details);
-      }
-      if (
-        message.customType === "subagent:result" &&
-        record(message.details) &&
-        typeof message.details.id === "string"
-      ) {
-        results.set(message.details.id, message.details);
-        if (results.size === 2) resolve();
-      }
-      return original(message, options);
-    };
-  });
-
-  const receiver = await tool.execute("start-receiver", { task: "ROLE_RECEIVER" });
-  const receiverId = (receiver.details as { id?: string }).id;
-  assert.ok(receiverId);
-
-  const sender = await tool.execute("start-sender", { task: "ROLE_SENDER" });
-  const senderId = (sender.details as { id?: string }).id;
-  assert.ok(senderId);
-
-  await bothDone;
-  await session.waitForIdle();
-
-  assert.equal(results.get(receiverId)?.status, "completed");
-  assert.match(String(results.get(receiverId)?.report), /Receiver confirmed DIRECT_SECRET_77\./u);
-  assert.equal(results.get(senderId)?.status, "completed");
-  assert.equal(broadcasts.length, 1);
-  assert.equal(broadcasts[0]?.from, senderId);
-  assert.equal(broadcasts[0]?.broadcast, true);
-  assert.equal(broadcasts[0]?.message, "BROADCAST_PING");
-});
-
-test("a child waiting on a peer's reply is woken when that peer finishes without replying", {
-  timeout: 30_000,
-}, async (t) => {
-  const { dir } = await communicationFixture(t);
-  const { session, tool } = await parentSession(
-    t,
-    dir,
-    false,
-    [],
-    ["subagent_list", "subagent_send", "subagent_wait"],
-  );
-  const results = new Map<string, Record<string, unknown>>();
-  const bothDone = new Promise<void>((resolve) => {
-    const original = session.sendCustomMessage.bind(session);
-    session.sendCustomMessage = async (message, options) => {
-      if (
-        message.customType === "subagent:result" &&
-        record(message.details) &&
-        typeof message.details.id === "string"
-      ) {
-        results.set(message.details.id, message.details);
-        if (results.size === 2) resolve();
-      }
-      return original(message, options);
-    };
-  });
-
-  const silent = await tool.execute("start-silent", { task: "ROLE_SILENT" });
-  const silentId = (silent.details as { id?: string }).id;
-  assert.ok(silentId);
-  const asker = await tool.execute("start-asker", { task: "ROLE_ASKER" });
-  const askerId = (asker.details as { id?: string }).id;
-  assert.ok(askerId);
-
-  await bothDone;
-  await session.waitForIdle();
-
-  assert.equal(results.get(silentId)?.report, "Silent peer leaves.");
-  assert.equal(results.get(askerId)?.status, "completed");
-  // The 20-second wait ended on the peer's exit, not on its timeout.
-  assert.equal(
-    results.get(askerId)?.report,
-    `Asker stopped waiting: Subagent ${silentId} finished (completed) without replying and can no longer send or receive messages.`,
   );
 });
 
@@ -2556,7 +2446,7 @@ test("roles configure child model, instructions, tool selection, limits, and par
   for (const expected of ["read", "grep", "find", "ls", "docs_lookup", "subagent_send"]) {
     assert.ok(librarianTools.includes(expected), `librarian missing ${expected}`);
   }
-  for (const forbidden of ["edit", "write", "bash", "powershell", "subagent"]) {
+  for (const forbidden of ["edit", "write", "bash", "powershell", "subagent", "subagent_list"]) {
     assert.ok(!librarianTools.includes(forbidden), `librarian leaked ${forbidden}`);
   }
 

@@ -49,7 +49,7 @@ export function sanitizeDisplayText(value: string): string {
     );
 }
 
-/** Single-line, length-capped summary for collapsed cards and peer listings. */
+/** Single-line, length-capped summary for collapsed cards and subagent listings. */
 export function oneLine(text: string, max = TASK_DISPLAY_CHARS): string {
   const flat = sanitizeDisplayText(text).trim().split("\n").join(" ⏎ ");
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
@@ -151,10 +151,9 @@ export function buildNotification(
   };
 }
 
-export function formatPeerMessage(envelope: MessageEnvelope): string {
+export function formatMessage(envelope: MessageEnvelope): string {
   const sender = envelope.from === MAIN_AGENT_ID ? MAIN_AGENT_ID : `subagent ${envelope.from}`;
-  const mode = envelope.broadcast ? "broadcast" : "direct";
-  return `Peer message from ${sender} (${mode}):\n\n${envelope.message}`;
+  return `Message from ${sender}:\n\n${envelope.message}`;
 }
 
 /** Collapsed one-line card; expanded view adds full ID, usage counts, and report. */
@@ -189,7 +188,7 @@ export function renderNotification(
   return box;
 }
 
-/** Collapsed one-line peer message card; expanded view reveals full endpoints and Markdown body. */
+/** Collapsed one-line message card; expanded view reveals full endpoints and Markdown body. */
 export function renderMessageNotification(
   message: { details?: unknown },
   options: { expanded: boolean; outputPad: number },
@@ -199,15 +198,12 @@ export function renderMessageNotification(
   if (!isMessageEnvelope(details)) return undefined;
   const senderLabel =
     details.from === MAIN_AGENT_ID ? MAIN_AGENT_ID : `subagent ${details.from.slice(0, 8)}`;
-  const mode = details.broadcast ? "broadcast" : "direct";
-  const preview = oneLine(details.message);
-  const headline = options.expanded
-    ? `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)} · ${mode}`
-    : `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)} · ${mode} · ${preview}`;
+  const sender = `${theme.fg("accent", "✉")} ${theme.bold(senderLabel)}`;
+  const headline = options.expanded ? sender : `${sender} · ${oneLine(details.message)}`;
   const box = new Box(options.outputPad, 1, (text) => theme.bg("customMessageBg", text));
   box.addChild(options.expanded ? new Text(headline, 0, 0) : new TruncatedText(headline, 0, 0));
   if (options.expanded) {
-    box.addChild(new Text(theme.fg("dim", `${details.from} → ${details.to} · ${mode}`), 0, 0));
+    box.addChild(new Text(theme.fg("dim", `${details.from} → ${details.to}`), 0, 0));
     const body = sanitizeDisplayText(details.message).trim();
     if (body) {
       box.addChild(new Spacer(1));

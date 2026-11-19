@@ -8,13 +8,10 @@ import {
   CHILD_ENV,
   DEADLINE_MS,
   type DeliveryAck,
-  type DeliveryReceipt,
-  type FinishedPeer,
   formatIncompleteReport,
   isProgress,
   isResult,
   type Launch,
-  type LiveAgent,
   MAX_REQUESTS,
   type MessageEnvelope,
   type Progress,
@@ -30,14 +27,7 @@ export interface Execution {
   done: Promise<Result>;
   run(): void;
   deliver(envelope: MessageEnvelope): Promise<DeliveryAck>;
-  /** Tell the running child that another subagent of its session has ended. */
-  peerFinished(peer: FinishedPeer): void;
   cancel(): Promise<Result>;
-}
-
-export interface RunnerHandlers {
-  onList?: () => LiveAgent[];
-  onSend?: (to: string, message: string) => Promise<DeliveryReceipt>;
 }
 
 export interface RunnerOptions {
@@ -46,7 +36,8 @@ export interface RunnerOptions {
   startupMs?: number;
   deadlineMs?: number;
   graceMs?: number;
-  handlers?: RunnerHandlers;
+  /** Hands a child's message to the root session; throws when it cannot be accepted. */
+  onSend?: (message: string) => void;
 }
 
 export function startChild(launch: Launch, options: RunnerOptions = {}): Execution {
@@ -189,37 +180,20 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           }
         }
         break;
-      case "list":
-        if (typeof message.requestId === "string") {
-          const agents = options.handlers?.onList?.() ?? [];
-          send({ type: "list_result", requestId: message.requestId, agents });
-        }
-        break;
       case "send":
-        if (
-          typeof message.requestId === "string" &&
-          typeof message.to === "string" &&
-          typeof message.message === "string"
-        ) {
-          const requestId = message.requestId;
-          const onSend = options.handlers?.onSend;
-          if (!onSend) {
-            send({
-              type: "send_result",
-              requestId,
-              error: "Agent messaging is unavailable.",
-            });
-            break;
+        if (typeof message.requestId === "string" && typeof message.message === "string") {
+          let error: string | undefined;
+          try {
+            if (!options.onSend) throw new Error("Agent messaging is unavailable.");
+            options.onSend(message.message);
+          } catch (cause) {
+            error = cause instanceof Error ? cause.message : String(cause);
           }
-          void onSend(message.to, message.message).then(
-            (receipt) => send({ type: "send_result", requestId, receipt }),
-            (error: unknown) =>
-              send({
-                type: "send_result",
-                requestId,
-                error: error instanceof Error ? error.message : String(error),
-              }),
-          );
+          send({
+            type: "send_result",
+            requestId: message.requestId,
+            ...(error !== undefined ? { error } : {}),
+          });
         }
         break;
     }
@@ -302,9 +276,6 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           }
         });
       });
-    },
-    peerFinished(peer: FinishedPeer) {
-      if (started && !settled && !reason && !result) send({ type: "peer_finished", peer });
     },
     cancel() {
       stop("cancelled", "Cancelled; existing filesystem changes were not reverted.");

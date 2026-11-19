@@ -8,13 +8,7 @@ import {
 import { Container, Markdown, Spacer, Text, TruncatedText } from "@earendil-works/pi-tui";
 import type { WaitOutcome } from "./inbox.ts";
 import { formatDuration, oneLine, sanitizeDisplayText, statusPhrase } from "./notify.ts";
-import {
-  BROADCAST_TARGET,
-  type DeliveryReceipt,
-  type LiveAgent,
-  MAIN_AGENT_ID,
-  type Result,
-} from "./protocol.ts";
+import { MAIN_AGENT_ID, type Result, type RunningAgent } from "./protocol.ts";
 
 type RenderContext<TArgs = unknown> = KeybindingHints & {
   args: TArgs;
@@ -113,17 +107,16 @@ export function renderListCall(_args: unknown, theme: Theme) {
 }
 
 export function renderListResult(
-  result: AgentToolResult<{ agents: LiveAgent[] }>,
+  result: AgentToolResult<{ agents: RunningAgent[] }>,
   { expanded }: ToolRenderResultOptions,
   theme: Theme,
   context: RenderContext,
 ) {
   if (context.isError) return errorText(result, theme);
   const { agents } = result.details;
-  if (agents.length === 0) return new Text(theme.fg("dim", "No live agents"), 0, 0);
-  const countLabel = agents.length === 1 ? "1 live agent" : `${agents.length} live agents`;
+  if (agents.length === 0) return new Text(theme.fg("dim", "No subagents running"), 0, 0);
   const metadata = [
-    countLabel,
+    `${agents.length} running`,
     ...durationPart(context.durationMs),
     context.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand"),
   ];
@@ -132,10 +125,9 @@ export function renderListResult(
   if (expanded) {
     view.addChild(new Spacer(1));
     for (const agent of agents) {
-      const parts = [`- ${agent.id}${agent.self ? " (self)" : ""}`];
+      const parts = [`- ${agent.id}`];
       if (agent.role) parts.push(agent.role);
-      if (agent.elapsedMs !== undefined) parts.push(formatDuration(agent.elapsedMs));
-      if (agent.task) parts.push(oneLine(agent.task, 120));
+      parts.push(formatDuration(agent.elapsedMs), oneLine(agent.task, 120));
       view.addChild(new TruncatedText(theme.fg("muted", parts.join(" · ")), 0, 0));
     }
   }
@@ -146,8 +138,7 @@ export function renderSendCall(
   args: Partial<{ to: string; message: string }> | undefined,
   theme: Theme,
 ) {
-  const rawTo = typeof args?.to === "string" ? oneLine(args.to, 64) : "";
-  const target = rawTo === MAIN_AGENT_ID || rawTo === BROADCAST_TARGET ? rawTo : rawTo.slice(0, 8);
+  const target = typeof args?.to === "string" ? oneLine(args.to, 64).slice(0, 8) : "";
   const preview = typeof args?.message === "string" ? singleLine(args.message) : "";
   const title =
     theme.fg("toolTitle", theme.bold("subagent_send")) +
@@ -156,42 +147,21 @@ export function renderSendCall(
 }
 
 export function renderSendResult(
-  result: AgentToolResult<DeliveryReceipt>,
+  result: AgentToolResult<{ to: string }>,
   { expanded }: ToolRenderResultOptions,
   theme: Theme,
   context: RenderContext<{ to: string; message: string }>,
 ) {
   if (context.isError) return errorText(result, theme);
-  const { details } = result;
+  const { to } = result.details;
   const messageText = sanitizeDisplayText(context.args.message).trim();
-  const total = details.delivered.length + details.skipped.length;
-  const summary = !details.broadcast
-    ? expanded
-      ? `${details.from} → ${details.to} · queued`
-      : `Queued for ${details.to === MAIN_AGENT_ID ? MAIN_AGENT_ID : details.to.slice(0, 8)}`
-    : total === 0
-      ? "No live peers"
-      : `Broadcast ${details.delivered.length}/${total} peers`;
   const metadata = [
-    summary,
+    expanded ? `${MAIN_AGENT_ID} → ${to} · queued` : `Queued for ${to.slice(0, 8)}`,
     ...durationPart(context.durationMs),
     context.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand"),
   ];
   const view = new Container();
   view.addChild(new Text(theme.fg("dim", metadata.join(" · ")), 0, 0));
-  if (details.skipped.length > 0) {
-    if (!expanded) {
-      view.addChild(
-        new Text(theme.fg("warning", `Skipped ${details.skipped.length} peer(s).`), 0, 0),
-      );
-    } else {
-      for (const skipped of details.skipped) {
-        view.addChild(
-          new Text(theme.fg("warning", `- ${skipped.id}: skipped (${skipped.reason})`), 0, 0),
-        );
-      }
-    }
-  }
   if (expanded && messageText) {
     view.addChild(new Spacer(1));
     view.addChild(new Markdown(messageText, 0, 0, getMarkdownTheme()));
@@ -228,12 +198,8 @@ export function renderWaitResult(
       ? `Update queued · ${formatDuration(details.waitedMs)}`
       : details.outcome === "idle"
         ? "No running subagents"
-        : details.outcome === "peer_finished"
-          ? `${details.peers
-              .map((peer) => `${oneLine(peer.id, 64).slice(0, 8)} ${statusPhrase(peer.status)}`)
-              .join(", ")} without replying · ${formatDuration(details.waitedMs)}`
-          : "running" in details
-            ? `${details.running} still running after ${formatDuration(details.waitedMs)}`
-            : `No updates within ${formatDuration(details.waitedMs)}`;
+        : "running" in details
+          ? `${details.running} still running after ${formatDuration(details.waitedMs)}`
+          : `No updates within ${formatDuration(details.waitedMs)}`;
   return new Text(theme.fg("dim", phrase), 0, 0);
 }

@@ -128,10 +128,11 @@ Print and JSON modes remain foreground-only. See the
 Delegate well-scoped work to background child agents (up to 8 concurrent by
 default) with fresh context and a shared working directory. Children can edit
 files and run commands; completion reaches the parent automatically with a
-collapsible TUI card and without polling. Live agents in the same root session
-can discover peers (`subagent_list`), exchange direct or broadcast messages
-(`subagent_send`), and wait for replies (`subagent_wait`); finished children
-exit immediately and never receive further messages. Use `subagent_cancel` to
+collapsible TUI card and without polling. The parent can list running children
+(`subagent_list`), and the parent and each running child can exchange messages
+(`subagent_send`) and wait for replies (`subagent_wait`); children cannot
+message one another, and finished children exit immediately and never receive
+further messages. Use `subagent_cancel` to
 stop a child and `/subagents` to inspect running tasks. Tasks belong to the root
 session and do not survive its shutdown.
 See the [subagents usage guide](packages/subagents/README.md) for resource reloading,

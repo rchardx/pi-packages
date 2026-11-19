@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import { type TestContext, test } from "node:test";
-import {
-  AgentInbox,
-  formatAgentList,
-  formatDeliveryReceipt,
-  formatWaitOutcome,
-} from "../src/inbox.ts";
+import { AgentInbox, formatAgentList, formatWaitOutcome } from "../src/inbox.ts";
 import { Mailbox } from "../src/mailbox.ts";
 import { MAX_ROOT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "../src/protocol.ts";
 
@@ -19,56 +14,17 @@ function keepAlive(t: TestContext): void {
 test("AgentInbox bounds accepted messages until they are committed", () => {
   const inbox = new AgentInbox(2);
   assert.equal(inbox.hasQueued(), false);
-  assert.equal(inbox.acceptMessage("m1", "main"), true);
-  assert.equal(inbox.acceptMessage("m2", "main"), true);
-  assert.equal(inbox.acceptMessage("m3", "main"), false, "exceeding maxMessages must fail closed");
+  assert.equal(inbox.acceptMessage("m1"), true);
+  assert.equal(inbox.acceptMessage("m2"), true);
+  assert.equal(inbox.acceptMessage("m3"), false, "exceeding maxMessages must fail closed");
   inbox.markMessageCommitted("m1");
-  assert.equal(inbox.acceptMessage("m3", "main"), true);
+  assert.equal(inbox.acceptMessage("m3"), true);
   inbox.markMessageCommitted("m2");
   inbox.markMessageCommitted("m3");
   assert.equal(inbox.hasQueued(), false);
 });
 
-test("AgentInbox ends a wait when a messaged peer finishes without replying", async (t) => {
-  keepAlive(t);
-  const inbox = new AgentInbox();
-  inbox.expectReplies(["main", "peer-a", "peer-b", "peer-c"]);
-
-  // A subagent this child never messaged does not end the wait.
-  inbox.peerFinished({ id: "stranger", status: "completed" });
-  assert.equal(inbox.hasQueued(), false);
-
-  const waiting = inbox.waitForUpdate(5);
-  inbox.peerFinished({ id: "peer-a", status: "failed" });
-  const woken = await waiting;
-  assert.equal(woken.outcome, "peer_finished");
-  assert.deepEqual(woken.outcome === "peer_finished" && woken.peers, [
-    { id: "peer-a", status: "failed" },
-  ]);
-  assert.equal(inbox.hasQueued(), false, "a finished peer is reported once");
-
-  // A peer that already replied is no longer awaited.
-  assert.equal(inbox.acceptMessage("reply", "peer-b"), true);
-  inbox.peerFinished({ id: "peer-b", status: "completed" });
-  // A queued message is reported first; the finished peer is kept for the next wait.
-  inbox.peerFinished({ id: "peer-c", status: "timed_out" });
-  assert.deepEqual(await inbox.waitForUpdate(5), { outcome: "woke", waitedMs: 0 });
-  inbox.markMessageCommitted("reply");
-  assert.deepEqual(await inbox.waitForUpdate(5), {
-    outcome: "peer_finished",
-    waitedMs: 0,
-    peers: [{ id: "peer-c", status: "timed_out" }],
-  });
-
-  // The root session is never awaited, and clearing forgets everything.
-  inbox.peerFinished({ id: "main", status: "completed" });
-  inbox.expectReplies(["peer-d"]);
-  inbox.clear();
-  inbox.peerFinished({ id: "peer-d", status: "cancelled" });
-  assert.equal(inbox.hasQueued(), false);
-});
-
-test("Mailbox owns updates in arrival order and bounds only peer messages", async (t) => {
+test("Mailbox owns updates in arrival order and bounds only subagent messages", async (t) => {
   keepAlive(t);
   const update = (content: string) => ({ customType: "test", content, details: { content } });
   const mailbox = new Mailbox(2);
@@ -168,7 +124,7 @@ test("Mailbox.waitForUpdates reports queued completions and can hold them for al
 test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, timeouts, and aborts", async (t) => {
   keepAlive(t);
   const prequeued = new AgentInbox();
-  prequeued.acceptMessage("m-ready", "main");
+  prequeued.acceptMessage("m-ready");
   assert.deepEqual(await prequeued.wait(10), { outcome: "woke", waitedMs: 0 });
   prequeued.markMessageCommitted("m-ready");
 
@@ -179,7 +135,7 @@ test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, time
 
   const waking = new AgentInbox();
   setTimeout(() => {
-    waking.acceptMessage("m-live", "main");
+    waking.acceptMessage("m-live");
   }, 15);
   const woke = await waking.wait(5);
   assert.equal(woke.outcome, "woke");
@@ -204,50 +160,16 @@ test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, time
   await assert.rejects(new AgentInbox().wait(MAX_WAIT_SECONDS + 1), /timeoutSeconds/u);
 });
 
-test("formatting helpers produce concise agent listings, receipts, and wait outcomes", () => {
+test("formatting helpers produce concise subagent listings and wait outcomes", () => {
+  assert.equal(formatAgentList([]), "No subagents running.");
   assert.equal(
     formatAgentList([
-      { id: "main", self: false },
-      { id: "child-1", self: true, role: "explorer", elapsedMs: 12_000, task: "Inspect config" },
-      { id: "child-2", self: false, elapsedMs: 4_000, task: "Run checks" },
+      { id: "child-1", role: "explorer", elapsedMs: 12_000, task: "Inspect config" },
+      { id: "child-2", elapsedMs: 4_000, task: "Run checks" },
     ]),
-    "Live agents in this session (3):\n" +
-      "- main\n" +
-      "- child-1 (self) · explorer · 12s · Inspect config\n" +
+    "Running subagents (2):\n" +
+      "- child-1 · explorer · 12s · Inspect config\n" +
       "- child-2 · 4s · Run checks",
-  );
-  assert.match(
-    formatDeliveryReceipt({
-      id: "msg-1",
-      from: "main",
-      to: "child-1",
-      broadcast: false,
-      delivered: ["child-1"],
-      skipped: [],
-    }),
-    /Queued message for child-1/u,
-  );
-  assert.equal(
-    formatDeliveryReceipt({
-      id: "msg-2",
-      from: "main",
-      to: "*",
-      broadcast: true,
-      delivered: [],
-      skipped: [],
-    }),
-    "No live peers to broadcast to.",
-  );
-  assert.match(
-    formatDeliveryReceipt({
-      id: "msg-3",
-      from: "main",
-      to: "*",
-      broadcast: true,
-      delivered: ["child-1"],
-      skipped: [{ id: "child-2", reason: "completed" }],
-    }),
-    /Broadcast queued for 1 of 2 peer\(s\)\.\n- child-2: skipped \(completed\)/u,
   );
   assert.match(formatWaitOutcome({ outcome: "woke", waitedMs: 10 }), /Incoming update queued/u);
   assert.match(formatWaitOutcome({ outcome: "idle", waitedMs: 0 }), /No running subagents/u);
@@ -255,17 +177,5 @@ test("formatting helpers produce concise agent listings, receipts, and wait outc
   assert.equal(
     formatWaitOutcome({ outcome: "timeout", waitedMs: 600_000, running: 2 }),
     "2 subagent(s) still running after 10m0s.",
-  );
-  assert.equal(
-    formatWaitOutcome({
-      outcome: "peer_finished",
-      waitedMs: 5_000,
-      peers: [
-        { id: "peer-a", status: "timed_out" },
-        { id: "peer-b", status: "completed" },
-      ],
-    }),
-    "Subagent peer-a finished (timed out) without replying and can no longer send or receive messages.\n" +
-      "Subagent peer-b finished (completed) without replying and can no longer send or receive messages.",
   );
 });

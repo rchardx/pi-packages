@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { AgentInbox, registerCommunicationTools } from "./inbox.ts";
+import { Type } from "typebox";
+import { AgentInbox, formatWaitOutcome, waitTimeoutParameter } from "./inbox.ts";
 import {
   formatPartialProgress,
-  formatPeerMessage,
+  formatMessage,
   summarizeToolCall,
   type ToolActivityState,
 } from "./notify.ts";
@@ -12,22 +13,19 @@ import {
   CHILD_ENV,
   COMMUNICATION_TOOLS,
   childInstructions,
-  type DeliveryReceipt,
   formatIncompleteReport,
-  isDeliveryReceipt,
-  isFinishedPeer,
-  isLiveAgent,
   isMessageEnvelope,
   isRoleName,
-  type LiveAgent,
+  MAIN_AGENT_ID,
   MAX_ACTIVITY_ENTRIES,
+  MAX_MESSAGE_BYTES,
   MAX_PARTIAL_TEXT_BYTES,
   MAX_REQUESTS,
+  MAX_WAIT_SECONDS,
   MESSAGE_TYPE,
   type Progress,
   record,
   type Result,
-  validateSendInput,
 } from "./protocol.ts";
 
 /** Loaded only in the managed CLI process; IPC is separate from extension stdout. */
@@ -38,7 +36,7 @@ export default async function child(pi: ExtensionAPI) {
   const inbox = new AgentInbox();
   const pendingRequests = new Map<
     string,
-    { resolve: (message: Record<string, unknown>) => void; reject: (error: Error) => void }
+    { resolve: () => void; reject: (error: Error) => void }
   >();
 
   const rejectPendingRequests = (reason: string) => {
@@ -137,7 +135,7 @@ export default async function child(pi: ExtensionAPI) {
             });
             break;
           }
-          if (!inbox.acceptMessage(message.envelope.id, message.envelope.from)) {
+          if (!inbox.acceptMessage(message.envelope.id)) {
             send({
               type: "delivery_ack",
               deliveryId: message.deliveryId,
@@ -150,7 +148,7 @@ export default async function child(pi: ExtensionAPI) {
             pi.sendMessage(
               {
                 customType: MESSAGE_TYPE,
-                content: formatPeerMessage(message.envelope),
+                content: formatMessage(message.envelope),
                 display: true,
                 details: message.envelope,
               },
@@ -171,20 +169,13 @@ export default async function child(pi: ExtensionAPI) {
             });
           }
           break;
-        case "peer_finished":
-          if (isFinishedPeer(message.peer)) inbox.peerFinished(message.peer);
-          break;
-        case "list_result":
         case "send_result":
-          // Recorded here, in IPC order, so a recipient that finishes right after
-          // accepting the message is still known as awaited when that news arrives.
-          if (message.type === "send_result" && isDeliveryReceipt(message.receipt))
-            inbox.expectReplies(message.receipt.delivered);
           if (typeof message.requestId === "string") {
             const pending = pendingRequests.get(message.requestId);
             if (pending) {
               pendingRequests.delete(message.requestId);
-              pending.resolve(message);
+              if (typeof message.error === "string") pending.reject(new Error(message.error));
+              else pending.resolve();
             }
           }
           break;
@@ -193,25 +184,23 @@ export default async function child(pi: ExtensionAPI) {
     send({ type: "hello" });
   });
 
-  const requestParent = (
-    payload: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<Record<string, unknown>> => {
+  /** Resolves once the root session has accepted the message for its next turn. */
+  const sendToParent = (message: string, signal?: AbortSignal): Promise<void> => {
     if (signal?.aborted) return Promise.reject(new Error("Operation cancelled."));
     if (!process.connected || closing) {
       return Promise.reject(new Error("Parent IPC channel disconnected."));
     }
     const requestId = randomUUID();
-    return new Promise<Record<string, unknown>>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       const onAbort = () => {
         if (pendingRequests.delete(requestId)) {
           reject(new Error("Operation cancelled."));
         }
       };
       pendingRequests.set(requestId, {
-        resolve: (response) => {
+        resolve: () => {
           signal?.removeEventListener("abort", onAbort);
-          resolve(response);
+          resolve();
         },
         reject: (error) => {
           signal?.removeEventListener("abort", onAbort);
@@ -219,7 +208,7 @@ export default async function child(pi: ExtensionAPI) {
         },
       });
       signal?.addEventListener("abort", onAbort, { once: true });
-      process.send?.({ ...payload, requestId }, (error) => {
+      process.send?.({ type: "send", requestId, message }, (error) => {
         if (error && pendingRequests.delete(requestId)) {
           signal?.removeEventListener("abort", onAbort);
           reject(new Error("Child IPC request failed."));
@@ -228,33 +217,46 @@ export default async function child(pi: ExtensionAPI) {
     });
   };
 
-  registerCommunicationTools(
-    pi,
-    {
-      async list(signal): Promise<LiveAgent[]> {
-        const response = await requestParent({ type: "list" }, signal);
-        if (!Array.isArray(response.agents) || !response.agents.every(isLiveAgent)) {
-          throw new Error("Invalid agent list response from parent session.");
-        }
-        return response.agents;
-      },
-      async send(rawTo, rawMessage, signal): Promise<DeliveryReceipt> {
-        const { to, message } = validateSendInput(rawTo, rawMessage);
-        const response = await requestParent({ type: "send", to, message }, signal);
-        if (typeof response.error === "string") {
-          throw new Error(response.error);
-        }
-        if (!isDeliveryReceipt(response.receipt)) {
-          throw new Error("Invalid message delivery receipt from parent session.");
-        }
-        return response.receipt;
-      },
-      wait(timeoutSeconds, signal) {
-        return inbox.waitForUpdate(timeoutSeconds, signal);
-      },
+  // A child runs headless, so these tools carry no renderers.
+  pi.registerTool({
+    name: "subagent_send",
+    label: "subagent_send",
+    description:
+      "Send a message to the parent session that delegated this task. It is queued for the parent's next turn; this does not wait for a reply.",
+    parameters: Type.Object({
+      message: Type.String({
+        description: `Message text (at most ${MAX_MESSAGE_BYTES / 1024} KiB).`,
+      }),
+    }),
+    async execute(_callId, { message }, signal) {
+      await sendToParent(message, signal);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Queued message for ${MAIN_AGENT_ID} (accepted into recipient queue; not yet processed).`,
+          },
+        ],
+        details: { to: MAIN_AGENT_ID },
+      };
     },
-    { isChild: true },
-  );
+  });
+
+  pi.registerTool({
+    name: "subagent_wait",
+    label: "subagent_wait",
+    description:
+      "Wait without polling for a message from the parent session. " +
+      "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent.",
+    parameters: Type.Object({ timeoutSeconds: waitTimeoutParameter(MAX_WAIT_SECONDS) }),
+    async execute(_callId, { timeoutSeconds }, signal) {
+      const outcome = await inbox.wait(timeoutSeconds, signal);
+      return {
+        content: [{ type: "text", text: formatWaitOutcome(outcome) }],
+        details: outcome,
+      };
+    },
+  });
 
   // CLI --tools is also a registration whitelist. Restore model exposure only
   // after registration, before the first prompt and its extension hooks are built.

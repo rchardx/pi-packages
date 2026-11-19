@@ -22,8 +22,7 @@ import {
 } from "@earendil-works/pi-tui";
 
 const CHILD_ID = "ebb6911b-2339-4d69-9a4b-25270d2c1ebf";
-const PEER_B = "11111111-2222-4333-8444-555555555555";
-const PEER_C = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const OTHER_CHILD_ID = "11111111-2222-4333-8444-555555555555";
 
 const tools = new Map<string, ToolRenderers>();
 const terminal: Terminal = {
@@ -150,14 +149,7 @@ test("subagent_send, subagent_list, subagent_wait, and subagent_cancel render ex
   });
   sendCard.updateResult({
     content: [{ type: "text", text: "Queued." }],
-    details: {
-      id: "msg-1",
-      from: "main",
-      to: CHILD_ID,
-      broadcast: false,
-      delivered: [CHILD_ID],
-      skipped: [],
-    },
+    details: { to: CHILD_ID },
     isError: false,
     durationMs: 100,
   });
@@ -174,56 +166,31 @@ test("subagent_send, subagent_list, subagent_wait, and subagent_cancel render ex
     "Use port 9090.",
   ]);
 
-  const broadcastCard = card("subagent_send", { to: "*", message: "Ping **peers**" });
-  broadcastCard.updateResult({
-    content: [{ type: "text", text: "Broadcast." }],
-    details: {
-      id: "msg-2",
-      from: "main",
-      to: "*",
-      broadcast: true,
-      delivered: [CHILD_ID],
-      skipped: [
-        { id: PEER_B, reason: "queue full" },
-        { id: PEER_C, reason: "finished" },
-      ],
-    },
-    isError: false,
-    durationMs: 0,
-  });
-  assert.deepEqual(lines(broadcastCard), [
-    "subagent_send → *  Ping **peers**",
-    "Broadcast 1/3 peers · 0.0s · alt+o to expand",
-    "Skipped 2 peer(s).",
-  ]);
-  assert.deepEqual(lines(broadcastCard, true), [
-    "subagent_send → *  Ping **peers**",
-    "Broadcast 1/3 peers · 0.0s · alt+o to collapse",
-    `- ${PEER_B}: skipped (queue full)`,
-    `- ${PEER_C}: skipped (finished)`,
-    "",
-    "Ping peers",
-  ]);
-
   const listCard = card("subagent_list", {});
   listCard.updateResult({
-    content: [{ type: "text", text: "Live agents" }],
+    content: [{ type: "text", text: "Running subagents" }],
     details: {
       agents: [
-        { id: "main", self: true },
-        { id: CHILD_ID, self: false, role: "explorer", elapsedMs: 12_000, task: "Inspect repo" },
+        { id: CHILD_ID, role: "explorer", elapsedMs: 12_000, task: "Inspect repo" },
+        { id: OTHER_CHILD_ID, elapsedMs: 4_000, task: "Run checks" },
       ],
     },
     isError: false,
   });
-  assert.deepEqual(lines(listCard), ["subagent_list", "2 live agents · alt+o to expand"]);
+  assert.deepEqual(lines(listCard), ["subagent_list", "2 running · alt+o to expand"]);
   assert.deepEqual(lines(listCard, true), [
     "subagent_list",
-    "2 live agents · alt+o to collapse",
+    "2 running · alt+o to collapse",
     "",
-    "- main (self)",
     `- ${CHILD_ID} · explorer · 12s · Inspect repo`,
+    `- ${OTHER_CHILD_ID} · 4s · Run checks`,
   ]);
+  listCard.updateResult({
+    content: [{ type: "text", text: "No subagents running." }],
+    details: { agents: [] },
+    isError: false,
+  });
+  assert.deepEqual(lines(listCard), ["subagent_list", "No subagents running"]);
 
   const waitCard = card("subagent_wait", { timeoutSeconds: 120 });
   assert.deepEqual(lines(waitCard), ["subagent_wait  120s"]);
@@ -233,19 +200,6 @@ test("subagent_send, subagent_list, subagent_wait, and subagent_cancel render ex
     isError: false,
   });
   assert.deepEqual(lines(waitCard), ["subagent_wait  120s", "Update queued · 4s"]);
-  waitCard.updateResult({
-    content: [{ type: "text", text: "Subagent finished." }],
-    details: {
-      outcome: "peer_finished",
-      waitedMs: 4_000,
-      peers: [{ id: CHILD_ID, status: "timed_out" }],
-    },
-    isError: false,
-  });
-  assert.deepEqual(lines(waitCard), [
-    "subagent_wait  120s",
-    `${CHILD_ID.slice(0, 8)} timed out without replying · 4s`,
-  ]);
 
   const waitAllCard = card("subagent_wait", { all: true, timeoutSeconds: 600 });
   assert.deepEqual(lines(waitAllCard), ["subagent_wait  all · 600s"]);

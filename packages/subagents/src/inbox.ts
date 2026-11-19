@@ -1,36 +1,18 @@
-import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { formatDuration, statusPhrase } from "./notify.ts";
+import { formatDuration } from "./notify.ts";
 import {
   DEFAULT_WAIT_SECONDS,
-  type DeliveryReceipt,
-  type FinishedPeer,
-  type LiveAgent,
-  MAIN_AGENT_ID,
   MAX_INBOX_MESSAGES,
-  MAX_MESSAGE_BYTES,
-  MAX_ROOT_WAIT_SECONDS,
   MAX_WAIT_SECONDS,
+  type RunningAgent,
   validateWaitTimeout,
   WAIT_COALESCE_MS,
 } from "./protocol.ts";
-import {
-  renderListCall,
-  renderListResult,
-  renderSendCall,
-  renderSendResult,
-  renderWaitCall,
-  renderWaitResult,
-} from "./render.ts";
 
-export type QueueWaitOutcome =
+export type WaitOutcome =
   | { outcome: "woke" | "idle" | "timeout"; waitedMs: number }
   /** A wait for every subagent that ran out of time. */
   | { outcome: "timeout"; waitedMs: number; running: number };
-
-export type WaitOutcome =
-  | QueueWaitOutcome
-  | { outcome: "peer_finished"; waitedMs: number; peers: FinishedPeer[] };
 
 /** Event-driven waiting on updates that an agent has not yet been shown. */
 export abstract class Waitable {
@@ -57,7 +39,7 @@ export abstract class Waitable {
     if (canStillReceive && !canStillReceive()) return { outcome: "idle", waitedMs: 0 };
 
     const startedAt = Date.now();
-    return new Promise<QueueWaitOutcome>((resolve, reject) => {
+    return new Promise<WaitOutcome>((resolve, reject) => {
       let settled = false;
       let coalesceTimer: NodeJS.Timeout | undefined;
       const cleanup = () => {
@@ -68,7 +50,7 @@ export abstract class Waitable {
         this.waiters.delete(onWake);
         signal?.removeEventListener("abort", onAbort);
       };
-      const finish = (outcome: QueueWaitOutcome["outcome"]) => {
+      const finish = (outcome: WaitOutcome["outcome"]) => {
         if (settled) return;
         cleanup();
         resolve({ outcome, waitedMs: Math.max(0, Date.now() - startedAt) });
@@ -101,14 +83,9 @@ export abstract class Waitable {
  * Child-side record of steering messages accepted into the host queue and not yet
  * committed to the transcript. A child runs headless, where nothing clears that
  * queue, so every accepted message reaches a message_end.
- *
- * It also tracks the subagents this child has messaged and not heard from since. One of
- * them finishing ends a wait, because no reply can follow.
  */
 export class AgentInbox extends Waitable {
   private readonly queuedMessageIds = new Set<string>();
-  private readonly awaitedPeers = new Set<string>();
-  private readonly finishedPeers: FinishedPeer[] = [];
   private readonly maxMessages: number;
 
   constructor(maxMessages = MAX_INBOX_MESSAGES) {
@@ -116,23 +93,11 @@ export class AgentInbox extends Waitable {
     this.maxMessages = maxMessages;
   }
 
-  acceptMessage(id: string, from: string): boolean {
+  acceptMessage(id: string): boolean {
     if (this.queuedMessageIds.size >= this.maxMessages) return false;
     this.queuedMessageIds.add(id);
-    this.awaitedPeers.delete(from);
     this.wake();
     return true;
-  }
-
-  /** Recipients that accepted a message from this child. The root session never finishes. */
-  expectReplies(recipients: readonly string[]): void {
-    for (const id of recipients) if (id !== MAIN_AGENT_ID) this.awaitedPeers.add(id);
-  }
-
-  peerFinished(peer: FinishedPeer): void {
-    if (!this.awaitedPeers.delete(peer.id)) return;
-    this.finishedPeers.push(peer);
-    this.wake();
   }
 
   markMessageCommitted(id: string): void {
@@ -140,56 +105,24 @@ export class AgentInbox extends Waitable {
   }
 
   hasQueued(): boolean {
-    return this.queuedMessageIds.size > 0 || this.finishedPeers.length > 0;
-  }
-
-  /** A queued message is reported first; finished peers are kept for the next wait. */
-  async waitForUpdate(
-    timeoutSeconds: number | undefined,
-    signal?: AbortSignal,
-  ): Promise<WaitOutcome> {
-    const result = await this.wait(timeoutSeconds, signal);
-    if (
-      result.outcome !== "woke" ||
-      this.queuedMessageIds.size > 0 ||
-      this.finishedPeers.length === 0
-    )
-      return result;
-    const peers = this.finishedPeers.splice(0);
-    return { outcome: "peer_finished", waitedMs: result.waitedMs, peers };
+    return this.queuedMessageIds.size > 0;
   }
 
   clear(): void {
     this.queuedMessageIds.clear();
-    this.awaitedPeers.clear();
-    this.finishedPeers.length = 0;
     this.wake();
   }
 }
 
-export function formatAgentList(agents: readonly LiveAgent[]): string {
-  if (agents.length === 0) return "No live agents in this session.";
+export function formatAgentList(agents: readonly RunningAgent[]): string {
+  if (agents.length === 0) return "No subagents running.";
   const lines = agents.map((agent) => {
-    const selfTag = agent.self ? " (self)" : "";
-    const parts = [`- ${agent.id}${selfTag}`];
+    const parts = [`- ${agent.id}`];
     if (agent.role) parts.push(agent.role);
-    if (agent.elapsedMs !== undefined) parts.push(formatDuration(agent.elapsedMs));
-    if (agent.task) parts.push(agent.task);
+    parts.push(formatDuration(agent.elapsedMs), agent.task);
     return parts.join(" · ");
   });
-  return `Live agents in this session (${agents.length}):\n${lines.join("\n")}`;
-}
-
-export function formatDeliveryReceipt(receipt: DeliveryReceipt): string {
-  if (!receipt.broadcast) {
-    return `Queued message for ${receipt.to} (accepted into recipient queue; not yet processed).`;
-  }
-  const total = receipt.delivered.length + receipt.skipped.length;
-  if (total === 0) return "No live peers to broadcast to.";
-  const summary = `Broadcast queued for ${receipt.delivered.length} of ${total} peer(s).`;
-  if (receipt.skipped.length === 0) return summary;
-  const skippedLines = receipt.skipped.map((entry) => `- ${entry.id}: skipped (${entry.reason})`);
-  return `${summary}\n${skippedLines.join("\n")}`;
+  return `Running subagents (${agents.length}):\n${lines.join("\n")}`;
 }
 
 export function formatWaitOutcome(result: WaitOutcome): string {
@@ -202,120 +135,13 @@ export function formatWaitOutcome(result: WaitOutcome): string {
       return "running" in result
         ? `${result.running} subagent(s) still running after ${formatDuration(result.waitedMs)}.`
         : `No updates arrived within ${formatDuration(result.waitedMs)}.`;
-    case "peer_finished":
-      return result.peers
-        .map(
-          (peer) =>
-            `Subagent ${peer.id} finished (${statusPhrase(peer.status)}) without replying and can no longer send or receive messages.`,
-        )
-        .join("\n");
   }
 }
 
-export interface CommunicationTransport {
-  checkContext?(ctx: ExtensionToolContext): void;
-  list(signal?: AbortSignal, ctx?: ExtensionToolContext): Promise<LiveAgent[]>;
-  send(
-    to: string,
-    message: string,
-    signal?: AbortSignal,
-    ctx?: ExtensionToolContext,
-  ): Promise<DeliveryReceipt>;
-  wait(
-    timeoutSeconds: number | undefined,
-    signal?: AbortSignal,
-    ctx?: ExtensionToolContext,
-    /** Root session only: wait until every subagent has finished. */
-    all?: boolean,
-  ): Promise<WaitOutcome>;
-}
-
-const waitTimeout = (maxSeconds: number) =>
+/** The wait limit differs between the root session and a child. */
+export const waitTimeoutParameter = (maxSeconds: number) =>
   Type.Optional(
     Type.Number({
       description: `Maximum seconds to wait before returning (default ${DEFAULT_WAIT_SECONDS}, max ${maxSeconds}).`,
     }),
   );
-const childWaitParameters = Type.Object({ timeoutSeconds: waitTimeout(MAX_WAIT_SECONDS) });
-const rootWaitParameters = Type.Object({
-  timeoutSeconds: waitTimeout(MAX_ROOT_WAIT_SECONDS),
-  all: Type.Optional(
-    Type.Boolean({
-      description:
-        "Wait until every running subagent has finished instead of returning on the first completion.",
-    }),
-  ),
-});
-
-export function registerCommunicationTools(
-  pi: ExtensionAPI,
-  transport: CommunicationTransport,
-  options: { isChild: boolean },
-): void {
-  pi.registerTool({
-    name: "subagent_list",
-    label: "subagent_list",
-    description:
-      'List live agents in the current root session, including "main" and running subagents. Completed or cancelled subagents are omitted.',
-    parameters: Type.Object({}),
-    renderCall: renderListCall,
-    renderResult: renderListResult,
-    async execute(_callId, _params, signal, _update, ctx) {
-      transport.checkContext?.(ctx);
-      const agents = await transport.list(signal, ctx);
-      return {
-        content: [{ type: "text", text: formatAgentList(agents) }],
-        details: { agents },
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "subagent_send",
-    label: "subagent_send",
-    description:
-      "Send a message to a live agent in this root session. It is queued for the recipient's next turn; this does not wait for a reply.",
-    parameters: Type.Object({
-      to: Type.String({
-        description:
-          'Live subagent UUID, "main" for the root session, or "*" to broadcast to all live peers except yourself.',
-      }),
-      message: Type.String({
-        description: `Message text (at most ${MAX_MESSAGE_BYTES / 1024} KiB).`,
-      }),
-    }),
-    renderCall: renderSendCall,
-    renderResult: renderSendResult,
-    async execute(_callId, { to, message }, signal, _update, ctx) {
-      transport.checkContext?.(ctx);
-      const receipt = await transport.send(to, message, signal, ctx);
-      return {
-        content: [{ type: "text", text: formatDeliveryReceipt(receipt) }],
-        details: receipt,
-      };
-    },
-  });
-
-  pi.registerTool({
-    name: "subagent_wait",
-    label: "subagent_wait",
-    description: options.isChild
-      ? "Wait without polling for an incoming peer message. Returns early when a subagent you messaged finishes without replying. " +
-        "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent."
-      : "Wait without polling for an incoming subagent message or completion notification. " +
-        "Returns immediately when updates are already queued or no subagents are running. " +
-        "With all: true, completions are held until every subagent has finished; a message from a subagent still ends the wait.",
-    parameters: options.isChild ? childWaitParameters : rootWaitParameters,
-    renderCall: renderWaitCall,
-    renderResult: renderWaitResult,
-    async execute(_callId, params, signal, _update, ctx) {
-      transport.checkContext?.(ctx);
-      const all = "all" in params && params.all === true;
-      const outcome = await transport.wait(params.timeoutSeconds, signal, ctx, all);
-      return {
-        content: [{ type: "text", text: formatWaitOutcome(outcome) }],
-        details: outcome,
-      };
-    },
-  });
-}

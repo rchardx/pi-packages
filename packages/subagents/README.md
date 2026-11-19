@@ -28,9 +28,9 @@ subagent({
 })
 
 subagent_list({})
-subagent_send({ to: "<UUID | 'main' | '*'>", message: "Share an intermediate finding or answer a question." })
+subagent_send({ to: "<full UUID returned by subagent>", message: "Answer a question or correct the task." })
 subagent_wait({ timeoutSeconds: 120 })
-subagent_wait({ all: true, timeoutSeconds: 1800 }) // root session: wait for every child
+subagent_wait({ all: true, timeoutSeconds: 1800 }) // wait for every child
 
 subagent_cancel({ id: "<full UUID returned by subagent>" })
 ```
@@ -71,44 +71,53 @@ changing model-facing messages.
 
 ### Live session communication
 
-Live agents in the same root session (`"main"` and running children) can exchange
-messages without polling or monitoring a dashboard:
+The root session (`"main"`) and each running child can exchange messages without
+polling or monitoring a dashboard. Children cannot message one another, and no
+message is broadcast: the root session is the only route between them.
 
-- `subagent_list` lists live agents in the current root session, marking the
-  caller as `(self)`, showing any assigned `role`, and omitting finished or
-  cancelled children.
-- `subagent_send` delivers a message (at most 16 KiB UTF-8) to `"main"`, a live
-  child UUID, or `"*"` (broadcast to a snapshot of live peers excluding the
-  sender). Sender identity is stamped by the root session runtime and cannot be
-  forged or cross root-session boundaries. Delivery means the recipient accepted
-  the `subagent:message` for its next turn, not that the recipient has already
-  processed it.
-- `subagent_wait` suspends the current turn until an incoming message (or, in
-  `"main"`, a child completion notification) arrives, no running children remain,
-  `timeoutSeconds` elapses (default `120`; maximum `3600` in `"main"`, `300` in a
-  child), or the turn is aborted. In `"main"`, `all: true` holds completion
-  notifications until every child has finished, so one call covers a whole batch;
-  a message from a child still ends the wait, and a timeout reports how many
+In the root session:
+
+- `subagent_list` lists the running children with their role, elapsed time, and
+  a one-line task summary. Finished or cancelled children are omitted.
+- `subagent_send` delivers a message (at most 16 KiB UTF-8) to one running child
+  by UUID. The child treats it as a supplement or correction to its task.
+- `subagent_wait` suspends the current turn until a child message or completion
+  notification arrives, no running children remain, `timeoutSeconds` elapses
+  (default `120`, maximum `3600`), or the turn is aborted. With `all: true`,
+  completions are held until every child has finished and are then handed over
+  together; a message from a child still ends the wait, because that child may
+  need an answer. When such a wait times out, the result reports how many
   children are still running.
-  In a child it also returns when a subagent the child messaged finishes without
-  having replied, naming that subagent and its terminal status.
-- **Terminal finality:** ending a child turn without calling `subagent_wait` and
-  with no queued messages permanently completes the child and exits its process.
-  Autonomously completed (or failed, timed-out, limit-reached, or cancelled)
-  children never receive further messages: direct sends to finished IDs fail with
-  their terminal status, broadcast snapshots skip them, and late messages racing
-  final settlement are either processed before settlement or explicitly rejected
-  as undelivered rather than silently dropped. A child whose run is still active,
-  including a continuation requested by another extension at Pi's pre-settlement
-  boundary, remains reachable. Messages accepted by a child that is then
-  cancelled, times out, or hits its request limit are not processed.
+
+In a child:
+
+- `subagent_send` takes only a `message` and delivers it to the root session.
+  The runtime stamps the sender, so it cannot be forged.
+- `subagent_wait` suspends the turn until a message from the root session
+  arrives, `timeoutSeconds` elapses (default `120`, maximum `300`), or the turn
+  is aborted.
+- `subagent_list` is not available.
+
+Delivery means the recipient accepted the `subagent:message` for its next turn,
+not that the recipient has already processed it.
+
+**Terminal finality:** ending a child turn without calling `subagent_wait` and
+with no queued messages permanently completes the child and exits its process.
+Autonomously completed (or failed, timed-out, limit-reached, or cancelled)
+children never receive further messages: sends to finished IDs fail with their
+terminal status, and late messages racing final settlement are either processed
+before settlement or explicitly rejected as undelivered rather than silently
+dropped. A child whose run is still active, including a continuation requested
+by another extension at Pi's pre-settlement boundary, remains reachable.
+Messages accepted by a child that is then cancelled, times out, or hits its
+request limit are not processed.
 
 ### Delivery to the root session
 
-Completion reports and peer messages for `"main"` stay in the extension until Pi
+Completion reports and child messages for `"main"` stay in the extension until Pi
 can take them; they never wait in Pi's steering queue. Clearing that queue (RPC
 `clear_queue`, or restoring queued input in the TUI) therefore does not drop
-them, and the 32-message limit counts exactly the peer messages not yet handed
+them, and the 32-message limit counts exactly the child messages not yet handed
 over.
 
 - **Busy root:** updates are appended as session entries when the current turn
@@ -145,11 +154,12 @@ a child are steered into its active run and processed before it settles.
 - **No recursive delegation:** ordinary children do not register `subagent` or
   `subagent_cancel`. Children are instructed not to launch agent processes.
   Arbitrary shell access is not a sandbox that prevents every possible bypass.
-- **Session-bound live messaging, no resume:** live agents in the same root
-  session can communicate via `subagent_list`, `subagent_send`, and
-  `subagent_wait`, with peer messages framed as coordination input rather than
-  higher-priority instructions. Completed children exit immediately and cannot
-  receive messages or be resumed for further conversation.
+- **Session-bound live messaging, no resume:** the root session and its running
+  children communicate via `subagent_send` and `subagent_wait`. A child treats a
+  message from the root session as a supplement or correction to its task; the
+  root session treats child messages and reports as agent outputs, not user
+  instructions. Completed children exit immediately and cannot receive messages
+  or be resumed for further conversation.
 
 ## Child environment
 
@@ -255,7 +265,7 @@ background-shell extensions do not accidentally return before their commands fin
 | Task input | 32 KiB UTF-8, nonempty |
 | Role description | 512 bytes UTF-8, single-line nonempty when set |
 | Role instructions | 16 KiB UTF-8, nonempty when set |
-| Peer message input | 16 KiB UTF-8, nonempty |
+| Message input | 16 KiB UTF-8, nonempty |
 | Queued unprocessed messages per recipient | 32; excess sends fail without dropping accepted mail |
 | Wait timeout (`subagent_wait`) | 120 seconds default; 3600 seconds maximum in the root session, 300 in a child |
 | Startup deadline | 90 seconds |
@@ -273,7 +283,7 @@ file:
 - `explorer` — local codebase search and navigation with `["read", "grep", "find", "ls"]`.
 - `librarian` — find documentation and reference material and cite sources. Uses
   `["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"]`, keeping
-  enabled web, MCP, and peer tools while removing local edit and shell tools.
+  enabled web, MCP, and messaging tools while removing local edit and shell tools.
 
 Neither role overrides the parent's model or thinking level by default. Omit
 `role` for tasks that require writing code or running experiments. The librarian's
@@ -322,7 +332,7 @@ Each role object supports:
 | `description` | Optional single-line summary (at most 512 bytes) shown to the parent model. |
 | `provider`, `model` | Optional model override; must be specified together and have configured Pi authentication. |
 | `thinking` | Optional thinking level (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). |
-| `tools` | Optional tool list following Pi's `--tools` rules: plain names replace the selection (`[]` disables all tools; omit `subagent_list`/`subagent_send`/`subagent_wait` if peer tools are unwanted, or include them explicitly), whereas `+name`/`-name` entries modify the inherited selection in order. Plain names and modifiers cannot be mixed; `*` patterns and `subagent`/`subagent_cancel` are rejected. |
+| `tools` | Optional tool list following Pi's `--tools` rules: plain names replace the selection (`[]` disables all tools; omit `subagent_send`/`subagent_wait` if messaging the root session is unwanted, or include them explicitly), whereas `+name`/`-name` entries modify the inherited selection in order. Plain names and modifiers cannot be mixed; `*` patterns and the root-session tools `subagent`/`subagent_cancel`/`subagent_list` are rejected. |
 | `instructions` | Optional role instructions (at most 16 KiB UTF-8) appended to the child's system prompt separately from `task`. |
 | `maxRequests` | Optional per-child model-turn limit overriding top-level `maxRequests`. |
 | `deadlineSeconds` | Optional per-child execution deadline overriding top-level `deadlineSeconds`. |
@@ -349,4 +359,4 @@ They exercise actual child CLI startup, package discovery, tool execution,
 file changes, extension hooks, and parent completion delivery. Real-provider
 compatibility is not implied by those tests.
 
-See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible role-authorized nested spawning and broadcast filtering. These are not current features.
+See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible role-authorized nested spawning. This is not a current feature.

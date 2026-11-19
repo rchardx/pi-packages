@@ -145,7 +145,7 @@ function parseRoleTools(roleName: string, value: unknown): string[] {
     }
     if (!item.startsWith("-") && MANAGEMENT_TOOLS.has(target)) {
       throw new Error(
-        `Role "${roleName}" cannot enable management tools (subagent, subagent_cancel).`,
+        `Role "${roleName}" cannot enable root-session tools (subagent, subagent_cancel, subagent_list).`,
       );
     }
     entries.push(item);

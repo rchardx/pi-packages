@@ -4,7 +4,6 @@ import { setImmediate } from "node:timers/promises";
 import {
   bounded,
   type DeliveryAck,
-  type FinishedPeer,
   type Launch,
   MAX_CONCURRENT,
   MAX_MESSAGE_BYTES,
@@ -40,7 +39,6 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
   const ready = deferred<void>();
   const done = deferred<Result>();
   const received: MessageEnvelope[] = [];
-  const finishedPeers: FinishedPeer[] = [];
   let runs = 0;
   const execution: Execution = {
     ready: ready.promise,
@@ -53,9 +51,6 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
       received.push(envelope);
       return { accepted: true };
     },
-    peerFinished(peer) {
-      finishedPeers.push(peer);
-    },
     cancel() {
       ready.reject(new Error("cancelled"));
       done.resolve({ ...completed, status: "cancelled" });
@@ -63,7 +58,7 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
     },
   };
   void ready.promise.catch(() => {});
-  return { execution, ready, done, received, finishedPeers, runs: () => runs };
+  return { execution, ready, done, received, runs: () => runs };
 }
 
 test("background handoff returns a UUID, survives turn abort, and reports once", async () => {
@@ -180,50 +175,6 @@ test("a child-side abort still reports unless cancellation was explicitly reques
   await tasks.shutdown();
 });
 
-test("a finished subagent is announced to the peers still running", async () => {
-  const children = [fake(), fake(), fake(), fake()];
-  let next = 0;
-  const tasks = new Tasks(
-    () => {},
-    () => {
-      const child = children[next++];
-      assert.ok(child);
-      return child.execution;
-    },
-  );
-  const [first, second, third, startup] = children;
-  assert.ok(first && second && third && startup);
-  first.ready.resolve();
-  const firstId = await tasks.launch(launch);
-  second.ready.resolve();
-  const secondId = await tasks.launch(launch);
-  third.ready.resolve();
-  await tasks.launch(launch);
-  const starting = tasks.launch(launch);
-
-  // A child that ends during startup was never a peer.
-  startup.ready.reject(new Error("startup failed"));
-  await assert.rejects(starting, /startup failed/u);
-  assert.deepEqual(first.finishedPeers, []);
-
-  first.done.resolve({ ...completed, status: "failed" });
-  await setImmediate();
-  const firstFinished = [{ id: firstId, status: "failed" }];
-  assert.deepEqual(first.finishedPeers, [], "a subagent is not told about itself");
-  assert.deepEqual(second.finishedPeers, firstFinished);
-  assert.deepEqual(third.finishedPeers, firstFinished);
-
-  // A cancelled subagent is announced too, and is no longer told about others.
-  assert.equal((await tasks.cancel(secondId)).status, "cancelled");
-  await setImmediate();
-  assert.deepEqual(second.finishedPeers, firstFinished);
-  assert.deepEqual(third.finishedPeers, [...firstFinished, { id: secondId, status: "cancelled" }]);
-
-  // Shutdown ends every child at once and announces nothing.
-  await tasks.shutdown();
-  assert.equal(third.finishedPeers.length, 2);
-});
-
 test("UTF-8 reports are bounded with an explicit truncation marker", () => {
   const report = bounded("中文😀".repeat(200), 100);
   assert.ok(Buffer.byteLength(report) <= 100);
@@ -231,25 +182,28 @@ test("UTF-8 reports are bounded with an explicit truncation marker", () => {
   assert.ok(!report.includes("\uFFFD"));
 });
 
-test("peer routing supports direct and broadcast delivery and rejects completed subagents", async () => {
+test("messages route between the root session and its children only", async () => {
   const mainReceived: MessageEnvelope[] = [];
+  let mainAccepts = true;
   const childA = fake();
   const childB = fake();
   const closingChild = fake(() => ({ accepted: false, reason: "finished" }));
   const fullChild = fake(() => ({ accepted: false, reason: "queue_full" }));
   const queue = [childA, childB, closingChild, fullChild];
-  let idx = 0;
+  const sendToMain: ((message: string) => void)[] = [];
 
   const tasks = new Tasks(
     () => {},
-    () => {
-      const next = queue[idx++];
-      assert.ok(next);
+    (_launch, options) => {
+      const next = queue[sendToMain.length];
+      assert.ok(next && options?.onSend);
+      sendToMain.push(options.onSend);
       next.ready.resolve();
       return next.execution;
     },
     () => {},
     (envelope) => {
+      if (!mainAccepts) return { accepted: false, reason: "queue_full" };
       mainReceived.push(envelope);
       return { accepted: true };
     },
@@ -259,58 +213,55 @@ test("peer routing supports direct and broadcast delivery and rejects completed 
   const idB = await tasks.launch({ ...launch, task: "Task B" });
   const idClosing = await tasks.launch({ ...launch, task: "Closing task" });
   const idFull = await tasks.launch({ ...launch, task: "Full queue task" });
+  const [fromA, fromB] = sendToMain;
+  assert.ok(fromA && fromB);
 
-  const viewFromA = tasks.list(idA);
   assert.deepEqual(
-    viewFromA.map((entry) => ({ id: entry.id, self: entry.self, role: entry.role })),
+    tasks.list().map(({ elapsedMs: _elapsedMs, ...entry }) => entry),
     [
-      { id: "main", self: false, role: undefined },
-      { id: idA, self: true, role: "explorer" },
-      { id: idB, self: false, role: undefined },
-      { id: idClosing, self: false, role: undefined },
-      { id: idFull, self: false, role: undefined },
+      { id: idA, role: "explorer", task: "Task A" },
+      { id: idB, task: "Task B" },
+      { id: idClosing, task: "Closing task" },
+      { id: idFull, task: "Full queue task" },
     ],
   );
 
-  await assert.rejects(tasks.send("main", "main", "self"), /yourself/u);
-  await assert.rejects(tasks.send(idA, idA, "self"), /yourself/u);
-  await assert.rejects(tasks.send("main", idA, "   "), /nonempty/u);
-  await assert.rejects(tasks.send("main", idA, "x".repeat(MAX_MESSAGE_BYTES + 1)), /at most/u);
-  await assert.rejects(tasks.send("main", "nonexistent-id", "hi"), /Unknown subagent ID/u);
+  await assert.rejects(tasks.sendToChild(idA, "   "), /nonempty/u);
+  await assert.rejects(tasks.sendToChild(idA, "x".repeat(MAX_MESSAGE_BYTES + 1)), /at most/u);
+  await assert.rejects(tasks.sendToChild("nonexistent-id", "hi"), /Unknown subagent ID/u);
+  // The root session and broadcast are not recipients of a root message.
+  await assert.rejects(tasks.sendToChild("main", "hi"), /Unknown subagent ID/u);
+  await assert.rejects(tasks.sendToChild("*", "hi"), /Unknown subagent ID/u);
 
-  const aToB = await tasks.send(idA, idB, "hello sibling");
-  assert.deepEqual(aToB.delivered, [idB]);
-  assert.equal(childB.received[0]?.from, idA);
-  assert.equal(childB.received[0]?.broadcast, false);
+  assert.equal(await tasks.sendToChild(` ${idA} `, "correction"), idA);
+  assert.equal(childA.received.length, 1);
+  const toA = childA.received[0];
+  assert.deepEqual(toA, { id: toA?.id, from: "main", to: idA, message: "correction" });
 
-  const bToMain = await tasks.send(idB, "main", "status update");
-  assert.deepEqual(bToMain.delivered, ["main"]);
-  assert.equal(mainReceived[0]?.from, idB);
+  // A child's message carries the sender the runtime knows, and reaches only the root.
+  fromB("status update");
+  assert.equal(mainReceived.length, 1);
+  const toMain = mainReceived[0];
+  assert.deepEqual(toMain, { id: toMain?.id, from: idB, to: "main", message: "status update" });
+  assert.equal(childA.received.length, 1);
+  assert.equal(childB.received.length, 0);
+  assert.throws(() => fromA("   "), /nonempty/u);
+  mainAccepts = false;
+  assert.throws(() => fromA("overflow"), /Main session message queue is full/u);
 
-  await assert.rejects(tasks.send("main", idClosing, "too late"), /already finished/u);
-  await assert.rejects(tasks.send("main", idFull, "overflow"), /queue is full/u);
-
-  const broadcast = await tasks.send(idA, "*", "shared note");
-  assert.deepEqual(broadcast.delivered, ["main", idB]);
-  assert.deepEqual(broadcast.skipped, [
-    { id: idClosing, reason: "finished" },
-    { id: idFull, reason: "queue full" },
-  ]);
-  assert.equal(mainReceived[1]?.broadcast, true);
-  assert.equal(childB.received[1]?.broadcast, true);
-  assert.equal(childA.received.length, 0, "sender never receives its own broadcast");
+  await assert.rejects(tasks.sendToChild(idClosing, "too late"), /already finished/u);
+  await assert.rejects(tasks.sendToChild(idFull, "overflow"), /queue is full/u);
 
   childB.done.resolve(completed);
   await setImmediate();
-  assert.ok(!tasks.list("main").some((entry) => entry.id === idB));
+  assert.ok(!tasks.list().some((entry) => entry.id === idB));
   await assert.rejects(
-    tasks.send("main", idB, "post-completion message"),
-    /already finished \(completed\) and cannot receive messages/u,
-  );
-  await assert.rejects(
-    tasks.send(idA, idB, "sibling post-completion message"),
+    tasks.sendToChild(idB, "post-completion message"),
     /already finished \(completed\) and cannot receive messages/u,
   );
 
   await tasks.shutdown();
+  assert.deepEqual(tasks.list(), []);
+  await assert.rejects(tasks.sendToChild(idA, "late"), /owning session has ended/u);
+  assert.throws(() => fromA("late"), /owning session has ended/u);
 });
