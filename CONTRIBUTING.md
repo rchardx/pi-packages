@@ -173,8 +173,9 @@ eligible; do not suppress alerts or force runtime upgrades to resolve an update.
 
 Each package declares its own `pi` manifest and uses `index.ts` for its
 extension entrypoint, `src/` for supporting modules, and `test/*.test.ts` for
-tests. Add resource directories only when needed. Update the root package index
-and package README when adding or changing an installation entrypoint.
+tests. Add resource directories only when needed. Update the root package index,
+package README, and package options in `.github/ISSUE_TEMPLATE/*.yml` when
+adding or changing a package or installation entrypoint.
 
 The root [LICENSE](LICENSE) owns the MIT terms. Include a copy in each package,
 keep license metadata aligned, and preserve third-party notices separately.

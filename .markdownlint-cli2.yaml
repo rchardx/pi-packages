@@ -11,7 +11,3 @@ overrides:
       MD041: false
       # Commit messages require bullets immediately after Key changes.
       MD032: false
-  - filter: [.github/ISSUE_TEMPLATE/*.md]
-    combine: merge
-    config:
-      MD041: false

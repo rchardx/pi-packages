@@ -1,0 +1,50 @@
+name: Planned work or investigation
+description: Define a scoped engineering task, refactor, or investigation through contracts and acceptance criteria.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write in English (for example: `feat(web-access): ...` or `refactor(lsp): ...`).
+        See CONTRIBUTING.md and AGENTS.md for package boundaries and validation rules.
+  - type: dropdown
+    id: packages
+    attributes:
+      label: Affected package(s) or area
+      description: Select all packages or repository areas in scope.
+      multiple: true
+      options:
+        - ask
+        - background
+        - lsp
+        - statusline
+        - subagents
+        - web-access
+        - Repository / CI / Docs
+    validations:
+      required: true
+  - type: textarea
+    id: goal-scope
+    attributes:
+      label: Goal and scope
+      description: Describe the problem, intended outcome, and explicit non-goals.
+    validations:
+      required: true
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Contracts and ownership
+      description: Describe observable behavior, failure modes, and the authority for each rule.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Delivery and acceptance
+      description: List independently verifiable outcomes and required validation.
+    validations:
+      required: true
+  - type: textarea
+    id: background
+    attributes:
+      label: Background and evidence
+      description: Optional links to research, prior issues, or upstream docs. Do not include secrets or private paths.
