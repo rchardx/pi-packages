@@ -37,161 +37,111 @@ Install Pi to try packages interactively. Follow the
 [root README](README.md#packages-installation-and-usage) for package-specific
 installation and usage. Automated tests do not require model credentials.
 
-## Develop against an installed package
+## Install a nightly snapshot
 
-Use an installed tarball for the normal development loop when working on package
-loading, dependency resolution, or child processes. Loading source with `pi -e`
-is useful for quick edits, but a checkout's `node_modules` can hide missing
-runtime dependencies or incorrect resolution of Pi's host-provided peers.
+For normal day-to-day testing of `main` without a checkout, install from the
+rolling [Nightly prerelease](https://github.com/rchardx/pi-packages/releases/tag/nightly).
+Each successful run publishes one `pi-<capability>-nightly.tgz` per package
+under `packages/`. These snapshots are not stable releases or npm registry
+publications, and asset replacement is not atomic—avoid downloading while a run
+is publishing and keep your previous local installation for rollback.
 
-### Prepare an independent installation directory
-
-The default workflow registers installed copies in your normal Pi user settings.
-Starting `pi` then uses the development packages with your existing authentication
-and plugin configuration; no `-e` flags or separate agent directory are required.
-Use the default agent directory for these commands, without a
-`PI_CODING_AGENT_DIR` override. This changes the packages used by your daily Pi
-sessions; use the optional isolated workflow below when that is not desirable.
-
-Run these Bash commands from the repository root. Keep installation copies outside
-the checkout so they cannot resolve dependencies through workspace links:
+Download the desired tarballs into a fresh directory, install them into a new
+prefix outside any checkout, and register the resulting package directories:
 
 ```bash
-repo="$PWD"
+archives="/absolute/path/to/nightly-downloads"
 dev_root="$HOME/.local/share/pi-packages-dev"
 mkdir -p "$dev_root/installs"
-```
-
-### Pack and install each iteration
-
-After editing and running relevant checks, run this block from the same shell:
-
-```bash
 (
   set -e
-  cd "$repo"
-  install_dir=$(mktemp -d "$dev_root/installs/iteration.XXXXXX")
+  install_dir=$(mktemp -d "$dev_root/installs/nightly.XXXXXX")
+  npm install --prefix "$install_dir" --legacy-peer-deps \
+    --ignore-scripts --no-audit --no-fund \
+    "$archives"/pi-*-nightly.tgz
+  printf '\nInstalled nightly: %s\n' "$install_dir"
+)
+```
+
+Before switching registrations, stop running Pi sessions and background tasks,
+run `pi list` to record your previous sources for rollback, and remove old
+registrations of these packages with `pi remove <source>` (use
+`pi remove --local <source>` for project-scoped entries). Then register the new
+prefix (never pass `.tgz` files directly to `pi install`):
+
+```bash
+install_dir="$dev_root/installs/nightly.REPLACE_ME"
+for pkg in "$install_dir"/node_modules/@rchardx/pi-*; do
+  pi install "$pkg"
+done
+pi list
+```
+
+Restart `pi` after switching; `/reload` does not update already-running child
+processes. Always use a fresh prefix on updates. To roll back, stop Pi, remove
+the new registrations, re-register the recorded old sources, and restart.
+
+## Local debugging before merging
+
+Only pack or load locally when you need on-the-spot debugging of uncommitted
+changes:
+
+- **Quick iteration:** `pi -e ./packages/<capability>` loads source directly
+  (fast, but shares the checkout's `node_modules`).
+- **Packaging, peer resolution, or child-process debugging:** pack your working
+  tree into an isolated prefix outside the checkout using the same install and
+  registration flow as a nightly snapshot:
+
+```bash
+dev_root="$HOME/.local/share/pi-packages-dev"
+mkdir -p "$dev_root/installs"
+(
+  set -e
+  install_dir=$(mktemp -d "$dev_root/installs/local.XXXXXX")
   mkdir "$install_dir/archives"
   npm pack --workspaces --pack-destination "$install_dir/archives"
   npm install --prefix "$install_dir" --legacy-peer-deps \
     --ignore-scripts --no-audit --no-fund "$install_dir"/archives/*.tgz
-  printf '\nInstalled iteration: %s\n' "$install_dir"
+  printf '\nInstalled local build: %s\n' "$install_dir"
 )
 ```
 
-Inspect the pack output: each package must contain its entrypoint, supporting
-modules, README, and license, without tests, credentials, or local configuration.
-Packages stay `private: true`; `npm pack` does not publish them. npm installs the
-tarballs as real files, not workspace links. `--legacy-peer-deps` leaves Pi's
-host-provided peers to Pi rather than installing duplicate host libraries.
-`--ignore-scripts` is appropriate for the current packages, which need no install
-scripts; reassess it if runtime dependencies later require build steps.
-
-Each iteration uses a fresh prefix, even when package versions have not changed.
-This avoids stale files and same-version reinstall ambiguity without deleting a
-working installation. If packing or installation fails, do not launch that
-iteration; the previous one remains available. Do not use `npm link` or install
-workspace directories as a substitute for tarballs.
-
-### Register the iteration in your normal Pi environment
-
-After installation succeeds, stop Pi sessions and their background tasks before
-switching registrations. Run `pi list` and record the old sources for rollback.
-Remove each existing registration of these workspace packages with `pi remove <source>`;
-use the source shown by `pi list` or its resolved absolute local path. Skip removal
-for packages that are not installed. This removes registrations, not the local
-installation directories. Leave unrelated packages alone.
-
-Also check the target project's `.pi/settings.json` and any explicit extension
-configuration for other copies. Project-scoped package registrations need removal
-with `pi remove --local <source>` from that project. Different iteration directories
-are different local sources: installing a new path does not replace the old one.
-Do not combine these registered packages with source-directory `-e` arguments.
-
-Set `install_dir` to the successful iteration path printed above, then register:
-
-```bash
-install_dir="$dev_root/installs/iteration.REPLACE_ME"
-(
-  set -e
-  for name in ask background lsp subagents statusline web-access; do
-    pi install "$install_dir/node_modules/@rchardx/pi-$name"
-  done
-  pi list
-)
-```
-
-Confirm that only the intended copy of each package is registered. Installation
-updates the normal user settings in `~/.pi/agent/settings.json`; authentication
-and plugin configuration are retained. No credentials need copying. The commands
-are not an atomic switch: if registration fails partway through, inspect `pi list`
-and either finish registering the new iteration or remove its registrations and
-restore the recorded old sources before starting Pi.
-
-### Launch, verify, and roll back
-
-From your usual project directory, start Pi normally:
-
-```bash
-pi
-```
-
-Check startup diagnostics and exercise the behavior you changed through the real
-Pi CLI. For subagents, include actual child delegation, not just extension loading.
-For web-access, existing explicit provider opt-in still applies; missing or invalid
-configuration is not repaired by reinstalling. Live provider calls can incur
-charges. Automated tests must continue to use boundary substitutes, not credentials.
-
-Restart Pi after switching iterations; `/reload` is not proof that existing child
-processes use updated code. To roll back, stop the affected sessions and tasks,
-remove the new iteration's registrations, reinstall the recorded old sources with
-`pi install`, and restart. Keep the previous installation until the new one is
-verified. Remove unused iteration directories only after their registrations,
-sessions, and tasks are gone. The currently registered installation directory must
-remain available, but the source checkout is not needed to run it. Source edits
-do not affect an installed copy until you pack, install, and register it again.
-
-### Optional: verify with isolated Pi configuration
-
-To investigate configuration effects or test without changing your daily Pi
-registrations, skip the registration step and launch installed copies temporarily:
+To test without changing your normal Pi registrations, launch with an isolated
+agent directory (note: `PI_CODING_AGENT_DIR` isolates settings and sessions, not
+environment variables or filesystem permissions):
 
 ```bash
 mkdir -p "$dev_root/agent" "$dev_root/work"
 (
   cd "$dev_root/work" || exit
-  PI_CODING_AGENT_DIR="$dev_root/agent" pi \
-    -e "$install_dir/node_modules/@rchardx/pi-ask" \
-    -e "$install_dir/node_modules/@rchardx/pi-background" \
-    -e "$install_dir/node_modules/@rchardx/pi-lsp" \
-    -e "$install_dir/node_modules/@rchardx/pi-subagents" \
-    -e "$install_dir/node_modules/@rchardx/pi-statusline" \
-    -e "$install_dir/node_modules/@rchardx/pi-web-access"
+  args=()
+  for pkg in "$install_dir"/node_modules/@rchardx/pi-*; do
+    args+=(-e "$pkg")
+  done
+  PI_CODING_AGENT_DIR="$dev_root/agent" pi "${args[@]}"
 )
 ```
 
-Set `install_dir` to a successful iteration first. These `-e` paths load installed
-copies for that invocation without persistent registration. Keep this agent
-configuration and scratch directory free of other copies and project `.pi`
-configuration. Inspect project package declarations before granting trust if you
-switch to a real project.
+Both nightly and local tarball installs remain **local Pi sources**, not managed
+`npm:` registry installs; do not claim npm registry coverage from them.
 
-`PI_CODING_AGENT_DIR` isolates Pi settings, authentication, sessions, and these
-packages' configuration files. It is not a security sandbox: environment API keys
-and normal filesystem permissions still apply. Configure development credentials
-and provider opt-in explicitly if needed; do not copy personal credentials by
-default. Restart with the new installed paths when testing another iteration.
+## Nightly publishing and recovery
 
-### Know what this validates
+[`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) runs daily at
+00:00 UTC and supports main-only manual dispatch with an optional `force`
+boolean (default `false`). One `main` SHA is fixed across all jobs. If that SHA
+already has a published `nightly` prerelease, validation and publishing are
+skipped unless `force` is `true`.
 
-This loop validates packaged files and dependency isolation without publishing to
-npm. Pi still sees the installed directories as **local sources**, not managed
-`npm:` sources. It does not prove managed npm discovery, startup labels, registry
-authentication, or update behavior. For changes to those contracts, also test a
-real `pi install npm:<package>@<version>` in an isolated Pi environment against an
-authorized registry, or use the relevant managed-layout regression tests for the
-specific behavior. Layout tests alone do not validate registry installation.
-Do not claim npm installation coverage from source loading or this tarball loop.
+Before publishing, both the minimum and development Node runtimes run checks,
+tests, tarball packing (`<base>-nightly.<run_number>.g<full SHA>`, leaving
+source versions unchanged and `private: true`), and isolated installed-tarball
+smoke tests. Only the `publish` job requests `contents: write` (using the
+built-in `GITHUB_TOKEN`). It replaces each package's `pi-<capability>-nightly.tgz`
+asset in place, updates the release notes, publishes the draft on first run, and
+advances the lightweight `nightly` tag last. If publication fails partway
+through, rerun the workflow (or dispatch with `force: true` for a same-SHA
+failure) to repair the release.
 
 ## Make and validate a change
 
