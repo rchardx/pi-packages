@@ -195,6 +195,7 @@ test("the log seed keeps more than the notification tail but is bounded", async 
   assert.equal(await session.openLog(huge), true);
   assert.equal(huge.seed.bytes, 0);
   assert.equal(huge.seed.raw().length, 0);
+  assert.equal(huge.tail.bytes, 16 * 1024, "openLog promotes the seed tail into job.tail");
   assert.equal(huge.logBytes, 256 * 1024, "the header is outside the raw-output budget");
   assert.equal(await session.openLog(huge), true); // Reopening must not duplicate the header.
   session.writeOutput(huge, Buffer.from("later output"));
@@ -313,6 +314,8 @@ test("pruneOldLogs removes old logs and empty dirs but keeps recent files", asyn
   const newDir = join(root, "new-session");
   await mkdir(oldDir, { recursive: true });
   await mkdir(newDir, { recursive: true });
+  const activeDir = join(root, "active-session");
+  await mkdir(activeDir, { recursive: true });
   const now = Date.now();
   const oldFile = join(oldDir, "bg_old.log");
   await writeFile(oldFile, "old");
@@ -322,13 +325,12 @@ test("pruneOldLogs removes old logs and empty dirs but keeps recent files", asyn
   const newFile = join(newDir, "bg_new.log");
   await writeFile(newFile, "new");
 
-  await pruneOldLogs(root, 24 * 60 * 60 * 1000, now);
+  await pruneOldLogs(root, 24 * 60 * 60 * 1000, now, "active-session");
   await assert.rejects(readFile(oldFile), /ENOENT/u);
   assert.equal(await readFile(newFile, "utf8"), "new");
-  await assert.rejects(readFile(join(oldDir, ".keep")), /ENOENT/u);
-  // The empty old session directory is removed; the non-empty one stays.
-  await assert.rejects(readFile(join(oldDir, "bg_old.log")), /ENOENT/u);
-  assert.equal(await readFile(newFile, "utf8"), "new");
+  const { stat } = await import("node:fs/promises");
+  assert.equal((await stat(activeDir)).isDirectory(), true, "excluded session dir is preserved");
+  await assert.rejects(stat(oldDir), /ENOENT/u, "empty old session dir is removed");
 
   // A missing root directory is not an error.
   await pruneOldLogs(join(root, "does-not-exist"));

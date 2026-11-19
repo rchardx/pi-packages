@@ -263,8 +263,8 @@ test("footer counts fall on success and failure without changing other status en
   assert.equal(statuses.get("other-extension"), "unchanged");
 });
 
-test("early failure and cancellation leave no background footer status", async (t) => {
-  const { session, tool, statuses } = await loadSession(t);
+test("early failure and cancellation leave no background footer status or log files", async (t) => {
+  const { session, directory, tool, statuses } = await loadSession(t);
   await assert.rejects(
     tool.execute("bad-timeout", {
       command: "true",
@@ -289,6 +289,7 @@ test("early failure and cancellation leave no background footer status", async (
   );
   assert.equal(statuses.has("background"), false);
   assert.equal(notificationMessages(session).length, 0);
+  await assert.rejects(fsPromises.stat(join(directory, "bash-jobs")), { code: "ENOENT" });
 });
 
 test("foreground commands behave like the built-in bash tool and leave no logs", async (t) => {
@@ -634,4 +635,38 @@ test("invalid background configuration fails before a command runs", async (t) =
     /Invalid background configuration/u,
   );
   await assert.rejects(readFile(join(directory, "should-not-exist")), { code: "ENOENT" });
+});
+
+test("foreground fast-path skips background config for explicit timeout and non-interactive modes", async (t) => {
+  const { directory, tool } = await loadSession(t, "tui");
+  await writeFile(join(directory, "background.json"), "{");
+  const bounded = await tool.execute("fg-timeout", {
+    command: nodeScript('console.log("bounded")'),
+    timeout: 5,
+  });
+  assert.equal(textOf(bounded), "bounded\n");
+
+  const { directory: printDir, tool: printTool } = await loadSession(t, "print");
+  await writeFile(join(printDir, "background.json"), "{");
+  const printed = await printTool.execute("fg-print", {
+    command: nodeScript('console.log("printed")'),
+  });
+  assert.equal(textOf(printed), "printed\n");
+});
+
+test("auto-backgrounding with an unwritable log dir preserves foreground and post-background tail", async (t) => {
+  const { session, directory, tool } = await loadSession(t);
+  await writeFile(join(directory, "background.json"), JSON.stringify({ thresholdSeconds: 0.2 }));
+  await writeFile(join(directory, "bash-jobs"), "not a directory");
+  const moved = await tool.execute("auto-no-log", {
+    command: nodeScript(
+      'console.log("early-line"); setTimeout(() => console.log("late-line"), 500)',
+    ),
+  });
+  const movedText = textOf(moved);
+  assert.match(movedText, /Log unavailable/u);
+  assert.match(movedText, /Output so far:\nearly-line/u);
+  const notification = await waitFor(() => notificationMessages(session)[0]);
+  assert.match(notification.content, /early-line/u);
+  assert.match(notification.content, /late-line/u);
 });

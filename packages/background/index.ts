@@ -1,6 +1,6 @@
-import { rm } from "node:fs/promises";
 import {
   createBashToolDefinition,
+  createLocalBashOperations,
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
   type ExtensionAPI,
@@ -84,9 +84,10 @@ export default function background(pi: ExtensionAPI) {
     return state;
   }
 
-  pi.on("session_start", async (_event, ctx) => {
-    updateStatus(ctx, sessionJobs(ctx));
-    await pruneOldLogs();
+  pi.on("session_start", (_event, ctx) => {
+    const session = sessionJobs(ctx);
+    updateStatus(ctx, session);
+    void pruneOldLogs(undefined, undefined, undefined, session.sessionId).catch(() => {});
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
@@ -149,8 +150,6 @@ export default function background(pi: ExtensionAPI) {
     ...(builtin.renderCall ? { renderCall: builtin.renderCall } : {}),
     ...(builtin.renderResult ? { renderResult: builtin.renderResult } : {}),
     async execute(toolCallId, { command, timeout, background }, signal, onUpdate, ctx) {
-      const config = await loadConfig();
-      const session = sessionJobs(ctx);
       if (background === true && !backgroundAllowed(ctx)) {
         throw new Error(
           `Background execution is unavailable in ${ctx.mode} mode: the session ` +
@@ -158,6 +157,38 @@ export default function background(pi: ExtensionAPI) {
             "foreground; use timeout to bound it.",
         );
       }
+
+      // Match the built-in tool's settings: custom shell and command prefix
+      // (used for example for shell aliases) apply to every command.
+      const runForeground = () => {
+        const settings = pi.getSettings();
+        const definition = createBashToolDefinition(ctx.cwd, {
+          ...(settings.shellPath
+            ? { operations: createLocalBashOperations({ shellPath: settings.shellPath }) }
+            : {}),
+          ...(settings.shellCommandPrefix ? { commandPrefix: settings.shellCommandPrefix } : {}),
+        });
+        return definition.execute(
+          toolCallId,
+          { command, ...(timeout === undefined ? {} : { timeout }) },
+          signal,
+          onUpdate,
+          ctx,
+        );
+      };
+
+      // Commands with an explicit timeout or outside interactive sessions can
+      // never move to the background: delegate straight to the built-in tool.
+      if (background !== true && (timeout !== undefined || !backgroundAllowed(ctx))) {
+        return await runForeground();
+      }
+
+      const config = await loadConfig();
+      if (background !== true && config.thresholdSeconds === 0) {
+        return await runForeground();
+      }
+
+      const session = sessionJobs(ctx);
       if (background === true && session.runningCount() >= config.maxJobs) {
         throw new Error(
           `${session.runningCount()} background jobs are already running (max ${config.maxJobs}). ` +
@@ -165,8 +196,6 @@ export default function background(pi: ExtensionAPI) {
         );
       }
       const cwd = ctx.cwd;
-      // Match the built-in tool's settings: custom shell and command prefix
-      // (used for example for shell aliases) apply to every command.
       const settings = pi.getSettings();
       const job: JobRecord = {
         id: session.newJobId(),
@@ -182,12 +211,10 @@ export default function background(pi: ExtensionAPI) {
       };
       // Explicit background jobs register before the first suspension point
       // after the maxJobs check, so parallel calls in one turn are counted.
-      // Logs are created lazily at backgrounding time; commands that can
-      // never background (explicit timeout, print/json mode) never touch disk.
+      // Logs are created lazily only if the command actually backgrounds.
       if (background === true) {
         session.jobs.set(job.id, job);
         updateStatus(ctx, session);
-        await session.openLog(job);
       }
 
       // Forward turn aborts (Esc) only while the call is in its foreground
@@ -199,11 +226,14 @@ export default function background(pi: ExtensionAPI) {
       }
       const stopForwardingToTurn = () => signal?.removeEventListener("abort", forwardAbort);
 
+      // Buffer only into seed during the foreground window; openLog promotes
+      // its tail to job.tail when the command actually backgrounds.
+      let bufferingSeed = true;
       const tee = createTeeOperations(
         (data) => {
           if (job.state === "running") {
-            job.tail.append(data);
-            if (!job.log) job.seed.append(data);
+            if (bufferingSeed) job.seed.append(data);
+            else job.tail.append(data);
           }
           session.writeOutput(job, data);
         },
@@ -226,25 +256,16 @@ export default function background(pi: ExtensionAPI) {
         ctx,
       );
 
-      const thresholdMs =
-        background === true
-          ? 0
-          : timeout === undefined && backgroundAllowed(ctx) && config.thresholdSeconds > 0
-            ? config.thresholdSeconds * 1000
-            : undefined;
-      const timer = thresholdMs === undefined ? undefined : sleep(Math.max(thresholdMs, 0));
+      const thresholdMs = background === true ? 0 : config.thresholdSeconds * 1000;
+      const timer = sleep(Math.max(thresholdMs, 0));
       const outcome = await Promise.race([
         execPromise.then(
           () => "finished" as const,
           () => "finished" as const,
         ),
-        // An explicit timeout, disabled auto-backgrounding, or no background
-        // support: the built-in deadline semantics apply and this arm never
-        // wins. Handlers attached after a promise settles still fire, so no
-        // completion can be lost regardless of when the command exits.
-        (timer?.promise ?? new Promise<void>(() => {})).then(() => "backgrounded" as const),
+        timer.promise.then(() => "backgrounded" as const),
       ]);
-      timer?.cancel();
+      timer.cancel();
       stopForwardingToTurn();
       uiForwarding = false;
 
@@ -253,9 +274,6 @@ export default function background(pi: ExtensionAPI) {
           session.jobs.delete(job.id);
           updateStatus(ctx, session);
         }
-        await session.closeLog(job);
-        // Foreground commands keep no log: their output is the tool result.
-        if (job.logPath) await rm(job.logPath, { force: true }).catch(() => {});
         return await execPromise;
       }
 
@@ -266,7 +284,12 @@ export default function background(pi: ExtensionAPI) {
       }
       // Initialize before finalizing: execution can settle during mkdir, and
       // attaching handlers afterwards still observes that settlement.
-      if (!job.log) await session.openLog(job);
+      await session.openLog(job);
+      if (job.seed.bytes > 0) {
+        job.tail.append(job.seed.raw());
+        job.seed.clear();
+      }
+      bufferingSeed = false;
       execPromise.then(
         () =>
           void finalizeJob(

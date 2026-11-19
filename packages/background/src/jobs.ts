@@ -170,7 +170,11 @@ export function createSessionJobs(
       job.logPath = logPath;
       job.log = log;
       if (job.seed.truncated) log.write("[pi-background] earlier output omitted\n");
-      if (job.seed.bytes > 0) state.writeOutput(job, job.seed.raw());
+      if (job.seed.bytes > 0) {
+        const seeded = job.seed.raw();
+        state.writeOutput(job, seeded);
+        if (job.tail.bytes === 0) job.tail.append(seeded);
+      }
       job.seed.clear();
       return true;
     },
@@ -225,6 +229,7 @@ export async function pruneOldLogs(
   rootDir = join(getAgentDir(), "bash-jobs"),
   maxAgeMs = LOG_RETENTION_MS,
   now = Date.now(),
+  excludeSessionId?: string,
 ): Promise<void> {
   let sessionDirs: string[];
   try {
@@ -233,6 +238,7 @@ export async function pruneOldLogs(
     return; // No jobs directory yet.
   }
   for (const sessionDir of sessionDirs) {
+    if (sessionDir === excludeSessionId) continue;
     const dirPath = join(rootDir, sessionDir);
     let files: string[];
     try {
