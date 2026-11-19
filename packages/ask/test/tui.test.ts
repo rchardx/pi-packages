@@ -308,3 +308,70 @@ test("TUI component fits narrow Unicode widths and refreshes across theme change
   comp.dispose();
   tui.stop();
 });
+
+test("TUI component settles at most once across concurrent input and AbortSignal", () => {
+  const questions: AskQuestion[] = [
+    {
+      id: "auth",
+      header: "Auth",
+      question: "Which auth flow?",
+      options: [{ label: "Device code" }, { label: "Localhost callback" }],
+      multiSelect: false,
+    },
+  ];
+
+  // Confirm first, then abort and send extra keys -> done called once with answer
+  const tui1 = createStubTui();
+  const controller1 = new AbortController();
+  const outcomes1: AskDetails[] = [];
+  const comp1 = createAskComponent(
+    questions,
+    tui1,
+    activeTheme,
+    keybindings,
+    (res) => {
+      outcomes1.push(res);
+    },
+    controller1.signal,
+  );
+  comp1.handleInput(KEY.enter);
+  controller1.abort();
+  comp1.handleInput(KEY.escape);
+  comp1.handleInput(KEY.enter);
+  assert.equal(outcomes1.length, 1);
+  assert.deepEqual(outcomes1[0], {
+    cancelled: false,
+    answers: [
+      {
+        id: "auth",
+        header: "Auth",
+        question: "Which auth flow?",
+        selected: ["Device code"],
+      },
+    ],
+  });
+  comp1.dispose();
+  tui1.stop();
+
+  // Abort first, then send confirm/cancel keys -> done called once with cancellation
+  const tui2 = createStubTui();
+  const controller2 = new AbortController();
+  const outcomes2: AskDetails[] = [];
+  const comp2 = createAskComponent(
+    questions,
+    tui2,
+    activeTheme,
+    keybindings,
+    (res) => {
+      outcomes2.push(res);
+    },
+    controller2.signal,
+  );
+  controller2.abort();
+  comp2.handleInput(KEY.enter);
+  comp2.handleInput(KEY.escape);
+  assert.equal(outcomes2.length, 1);
+  assert.deepEqual(outcomes2[0], { cancelled: true, answers: [] });
+  comp2.dispose();
+  tui2.stop();
+});
