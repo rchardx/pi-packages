@@ -1325,8 +1325,14 @@ test("/subagents snapshot, status updates, and subagents.json limits work end-to
   );
   assert.deepEqual(session.messages, initialMessages);
 
-  const cancelled = await cancelTool.execute("cancel-first", { id: firstId });
-  assert.match(JSON.stringify(cancelled), /cancelled/u);
+  // The tool reports the recorded ID, not the padded one it was given.
+  const cancelled = await cancelTool.execute("cancel-first", { id: ` ${firstId}\n` });
+  assert.ok(record(cancelled.details));
+  assert.equal(cancelled.details.id, firstId);
+  assert.equal(cancelled.details.status, "cancelled");
+  const [cancelledText] = cancelled.content;
+  assert.ok(cancelledText?.type === "text");
+  assert.ok(cancelledText.text.startsWith(`Subagent ${firstId}: cancelled. `));
   assert.equal(statuses.has("subagents"), false);
   assert.equal(statuses.get("other-extension"), "unchanged");
 
@@ -2041,7 +2047,11 @@ test("live child and main exchange messages and completed children reject later 
   for (const to of ["main", "*"]) {
     await assert.rejects(
       sendTool.execute(`send-${to}`, { to, message: "PORT_IS_1" }),
-      /Unknown subagent ID/u,
+      (error: unknown) =>
+        error instanceof Error &&
+        error.message.startsWith(
+          `No subagent "${to}" in this session. Pass the full UUID returned by subagent`,
+        ),
     );
   }
 

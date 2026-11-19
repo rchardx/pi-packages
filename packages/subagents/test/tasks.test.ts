@@ -80,7 +80,7 @@ test("background handoff returns a UUID, survives turn abort, and reports once",
   f.done.resolve(completed);
   await setImmediate();
   assert.deepEqual(results, [completed]);
-  assert.deepEqual(await tasks.cancel(id), completed);
+  assert.deepEqual(await tasks.cancel(id), { id, ...completed });
   await tasks.shutdown();
 });
 
@@ -152,9 +152,12 @@ test("explicit cancellation is quiet and IDs cannot cross owners", async () => {
   f.ready.resolve();
   const id = await tasks.launch(launch);
   const other = new Tasks(() => {});
-  await assert.rejects(other.cancel(id), /Unknown/u);
-  assert.equal((await tasks.cancel(id)).status, "cancelled");
-  assert.equal((await tasks.cancel(id)).status, "cancelled");
+  await assert.rejects(other.cancel(id), {
+    message: `No subagent "${id}" in this session. Pass the full UUID returned by subagent; subagent_list shows those still running, and old terminal records expire.`,
+  });
+  // Padding around a known ID is ignored, as it is for a message recipient.
+  assert.deepEqual(await tasks.cancel(` ${id}\n`), { id, ...completed, status: "cancelled" });
+  assert.deepEqual(await tasks.cancel(id), { id, ...completed, status: "cancelled" });
   await tasks.shutdown();
   await assert.rejects(tasks.launch(launch), /ended/u);
 });
@@ -228,10 +231,20 @@ test("messages route between the root session and its children only", async () =
 
   await assert.rejects(tasks.sendToChild(idA, "   "), /nonempty/u);
   await assert.rejects(tasks.sendToChild(idA, "x".repeat(MAX_MESSAGE_BYTES + 1)), /at most/u);
-  await assert.rejects(tasks.sendToChild("nonexistent-id", "hi"), /Unknown subagent ID/u);
+  await assert.rejects(tasks.sendToChild(idA.slice(0, 8), "hi"), {
+    message: `No subagent "${idA.slice(0, 8)}" in this session. Pass the full UUID returned by subagent; subagent_list shows those still running, and old terminal records expire.`,
+  });
+  // The echoed ID is model input: bounded and stripped of terminal sequences.
+  await assert.rejects(
+    tasks.sendToChild(`\x1b[2J${"x".repeat(200)}`, "hi"),
+    /^Error: No subagent "x{63}…" in this session\./u,
+  );
   // The root session and broadcast are not recipients of a root message.
-  await assert.rejects(tasks.sendToChild("main", "hi"), /Unknown subagent ID/u);
-  await assert.rejects(tasks.sendToChild("*", "hi"), /Unknown subagent ID/u);
+  await assert.rejects(
+    tasks.sendToChild("main", "hi"),
+    /Error: No subagent "main" in this session\./u,
+  );
+  await assert.rejects(tasks.sendToChild("*", "hi"), /Error: No subagent "\*" in this session\./u);
 
   assert.equal(await tasks.sendToChild(` ${idA} `, "correction"), idA);
   assert.equal(childA.received.length, 1);
