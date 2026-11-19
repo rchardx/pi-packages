@@ -6,8 +6,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Write in English. Discuss new packages, major runtime dependencies, and
-        runtime support changes here before implementing them.
+        Write in English. Follow the feature proposal principles in CONTRIBUTING.md:
+        solve a concrete workflow gap with the smallest complete scope, and state
+        explicit non-goals and observable acceptance criteria.
   - type: dropdown
     id: package
     attributes:

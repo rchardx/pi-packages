@@ -15,7 +15,7 @@ pi install ./packages/subagents
 ```
 
 For a checkout-free development snapshot, follow the
-[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+[nightly tarball installation guide](../../docs/installation.md#install-a-nightly-snapshot).
 Nightlies are rolling prereleases, not npm registry publications.
 
 Ask Pi to delegate a concrete task, for example:
@@ -362,5 +362,3 @@ Automated integration tests use a local mock model endpoint, not real credential
 They exercise actual child CLI startup, package discovery, tool execution,
 file changes, extension hooks, and parent completion delivery. Real-provider
 compatibility is not implied by those tests.
-
-See [ROADMAP.md](https://github.com/rchardx/pi-packages/blob/main/packages/subagents/ROADMAP.md) in the repository for possible role-authorized nested spawning. This is not a current feature.

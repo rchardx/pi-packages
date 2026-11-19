@@ -187,7 +187,7 @@ export async function runNightly(
     ...packages.map((pkg) => `| ${pkg.name} | ${nightlyVersion(pkg.version, runNumber, sha)} |`),
     "",
     "Install downloaded archives into a fresh prefix with `npm install --prefix <fresh-prefix> --legacy-peer-deps --ignore-scripts <downloaded.tgz>`, then register each installed package directory with `pi install <fresh-prefix>/node_modules/@rchardx/pi-<name>`.",
-    `See [nightly installation instructions](${GITHUB_ORIGIN}/${repository}/blob/${sha}/CONTRIBUTING.md#install-a-nightly-snapshot).`,
+    `See [nightly installation instructions](${GITHUB_ORIGIN}/${repository}/blob/${sha}/docs/installation.md#install-a-nightly-snapshot).`,
   ].join("\n");
 
   // A rerun can reach publish with archives verified for a previous main tip.

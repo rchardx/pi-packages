@@ -40,7 +40,7 @@ pi install ./packages/statusline
 ```
 
 For a checkout-free development snapshot, follow the
-[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+[nightly tarball installation guide](../../docs/installation.md#install-a-nightly-snapshot).
 Nightlies are rolling prereleases, not npm registry publications.
 
 Combine with `@rchardx/pi-subagents` and `@rchardx/pi-background` so their
