@@ -122,8 +122,8 @@ Defaults are lightweight models fixed in each package release; they do not
 follow the active Pi model or newer provider releases. Tests check that each
 default exists in the model catalog of the Pi version used for development. Set
 `"model"` to choose another model, for example when a provider retires a
-default. If the provider reports the model as not found (HTTP 404), the error
-names the requested model and the setting to change.
+default. When the provider returns HTTP 404, the error reports that the
+requested model or endpoint was not found and names the model and its setting.
 
 ### Authentication and origin boundaries
 

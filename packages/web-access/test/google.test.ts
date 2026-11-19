@@ -125,7 +125,7 @@ test("Google Fetch requires a successful url_context retrieval and returns the m
     [400, "Google Fetch HTTP 400: Invalid request or Gemini API key."],
     [
       404,
-      'Google Fetch HTTP 404: Requested model "gemini-3.8-flash" was not found; set fetch.providers.google.model in web-access.json to an available model.',
+      'Google Fetch HTTP 404: Requested model "gemini-3.8-flash" or endpoint was not found; if the model is unavailable, set fetch.providers.google.model in web-access.json.',
     ],
     [
       429,

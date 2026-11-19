@@ -2,7 +2,7 @@ import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import { ANTHROPIC_API_ORIGIN, type AnthropicRequestAuth } from "../auth.ts";
 import { formatGroundedSearch, formatModelFetch, SourceCollector } from "../grounded.ts";
-import { modelNotFoundReason, postJson, type WebToolKind, withDeadline } from "../request.ts";
+import { notFoundReason, postJson, type WebToolKind, withDeadline } from "../request.ts";
 import { normalizeFetchUrl } from "../url.ts";
 import {
   DEFAULT_SEARCH_COUNT,
@@ -33,7 +33,7 @@ function anthropicErrorOptions(tool: WebToolKind, model: string) {
         tool === "fetch"
           ? "Anthropic web_fetch access denied; verify organization and credential permissions."
           : "Anthropic web_search access denied; verify organization and credential permissions.",
-      404: modelNotFoundReason(tool, "anthropic", model),
+      404: notFoundReason(tool, "anthropic", model),
     },
   };
 }

@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { GOOGLE_API_ORIGIN } from "../auth.ts";
 import { formatModelFetch } from "../grounded.ts";
-import { modelNotFoundReason, postJson, withDeadline } from "../request.ts";
+import { notFoundReason, postJson, withDeadline } from "../request.ts";
 import { normalizeFetchUrl, normalizeSourceUrl } from "../url.ts";
 import { FETCH_TIMEOUT_MS, MAX_RESPONSE_BYTES } from "./deepseek.ts";
 
@@ -52,7 +52,7 @@ function googleErrorOptions(model: string) {
     reasons: {
       400: "Invalid request or Gemini API key.",
       403: "Gemini API access denied; verify the API key and project permissions.",
-      404: modelNotFoundReason("fetch", "google", model),
+      404: notFoundReason("fetch", "google", model),
     },
   } as const;
 }

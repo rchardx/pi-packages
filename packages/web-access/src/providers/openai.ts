@@ -2,7 +2,7 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { OPENAI_API_ORIGIN, OPENAI_CODEX_ORIGIN } from "../auth.ts";
 import { formatGroundedSearch, SourceCollector } from "../grounded.ts";
-import { modelNotFoundReason, postSse, withDeadline } from "../request.ts";
+import { notFoundReason, postSse, withDeadline } from "../request.ts";
 import {
   DEFAULT_SEARCH_COUNT,
   MAX_RESPONSE_BYTES,
@@ -178,7 +178,7 @@ export async function searchOpenAI(
         label,
         providerLabel: backend.providerLabel,
         tool: "search",
-        reasons: { 404: modelNotFoundReason("search", provider, model) },
+        reasons: { 404: notFoundReason("search", provider, model) },
       },
     });
 

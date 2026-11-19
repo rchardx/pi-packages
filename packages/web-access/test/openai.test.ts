@@ -346,7 +346,7 @@ test("OpenAI Search validates stream framing, encoding, status, and size without
       {
         message:
           `${provider === "openai" ? "OpenAI Search" : "OpenAI Codex Search"} HTTP 404: ` +
-          `Requested model "${model ?? "gpt-6-luna"}" was not found; set search.providers.${provider}.model in web-access.json to an available model.`,
+          `Requested model "${model ?? "gpt-6-luna"}" or endpoint was not found; if the model is unavailable, set search.providers.${provider}.model in web-access.json.`,
       },
     );
   }

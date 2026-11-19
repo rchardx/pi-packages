@@ -234,7 +234,7 @@ test("Anthropic Search rejects ungrounded completions, refusals, paused turns, s
     ),
     {
       message:
-        'Anthropic Search HTTP 404: Requested model "retired-model" was not found; set search.providers.anthropic.model in web-access.json to an available model.',
+        'Anthropic Search HTTP 404: Requested model "retired-model" or endpoint was not found; if the model is unavailable, set search.providers.anthropic.model in web-access.json.',
     },
   );
 
@@ -638,7 +638,7 @@ test("Anthropic Fetch rejects ungrounded completions, refusals, paused turns, se
     ],
     [
       404,
-      'Anthropic Fetch HTTP 404: Requested model "claude-haiku-5-5" was not found; set fetch.providers.anthropic.model in web-access.json to an available model.',
+      'Anthropic Fetch HTTP 404: Requested model "claude-haiku-5-5" or endpoint was not found; if the model is unavailable, set fetch.providers.anthropic.model in web-access.json.',
     ],
     [
       529,
