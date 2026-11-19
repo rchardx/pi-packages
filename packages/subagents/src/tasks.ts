@@ -252,6 +252,10 @@ export class Tasks {
       delete task.execution;
       if (wasRunning && !this.closed) this.onChange();
       if (task.handedOff && !this.closed && !task.cancelRequested) this.notify(task, result);
+      // A peer waiting on this subagent's reply would otherwise wait out its timeout.
+      if (task.handedOff)
+        for (const peer of this.runningTasks())
+          peer.execution?.peerFinished({ id: task.id, status: result.status });
       this.prune();
     });
     try {

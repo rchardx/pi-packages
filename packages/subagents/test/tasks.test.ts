@@ -4,6 +4,7 @@ import { setImmediate } from "node:timers/promises";
 import {
   bounded,
   type DeliveryAck,
+  type FinishedPeer,
   type Launch,
   MAX_CONCURRENT,
   MAX_MESSAGE_BYTES,
@@ -39,6 +40,7 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
   const ready = deferred<void>();
   const done = deferred<Result>();
   const received: MessageEnvelope[] = [];
+  const finishedPeers: FinishedPeer[] = [];
   let runs = 0;
   const execution: Execution = {
     ready: ready.promise,
@@ -51,6 +53,9 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
       received.push(envelope);
       return { accepted: true };
     },
+    peerFinished(peer) {
+      finishedPeers.push(peer);
+    },
     cancel() {
       ready.reject(new Error("cancelled"));
       done.resolve({ ...completed, status: "cancelled" });
@@ -58,7 +63,7 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
     },
   };
   void ready.promise.catch(() => {});
-  return { execution, ready, done, received, runs: () => runs };
+  return { execution, ready, done, received, finishedPeers, runs: () => runs };
 }
 
 test("background handoff returns a UUID, survives turn abort, and reports once", async () => {
@@ -173,6 +178,50 @@ test("a child-side abort still reports unless cancellation was explicitly reques
   await setImmediate();
   assert.equal(results[0]?.status, "cancelled");
   await tasks.shutdown();
+});
+
+test("a finished subagent is announced to the peers still running", async () => {
+  const children = [fake(), fake(), fake(), fake()];
+  let next = 0;
+  const tasks = new Tasks(
+    () => {},
+    () => {
+      const child = children[next++];
+      assert.ok(child);
+      return child.execution;
+    },
+  );
+  const [first, second, third, startup] = children;
+  assert.ok(first && second && third && startup);
+  first.ready.resolve();
+  const firstId = await tasks.launch(launch);
+  second.ready.resolve();
+  const secondId = await tasks.launch(launch);
+  third.ready.resolve();
+  await tasks.launch(launch);
+  const starting = tasks.launch(launch);
+
+  // A child that ends during startup was never a peer.
+  startup.ready.reject(new Error("startup failed"));
+  await assert.rejects(starting, /startup failed/u);
+  assert.deepEqual(first.finishedPeers, []);
+
+  first.done.resolve({ ...completed, status: "failed" });
+  await setImmediate();
+  const firstFinished = [{ id: firstId, status: "failed" }];
+  assert.deepEqual(first.finishedPeers, [], "a subagent is not told about itself");
+  assert.deepEqual(second.finishedPeers, firstFinished);
+  assert.deepEqual(third.finishedPeers, firstFinished);
+
+  // A cancelled subagent is announced too, and is no longer told about others.
+  assert.equal((await tasks.cancel(secondId)).status, "cancelled");
+  await setImmediate();
+  assert.deepEqual(second.finishedPeers, firstFinished);
+  assert.deepEqual(third.finishedPeers, [...firstFinished, { id: secondId, status: "cancelled" }]);
+
+  // Shutdown ends every child at once and announces nothing.
+  await tasks.shutdown();
+  assert.equal(third.finishedPeers.length, 2);
 });
 
 test("UTF-8 reports are bounded with an explicit truncation marker", () => {

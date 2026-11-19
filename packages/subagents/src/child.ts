@@ -15,6 +15,7 @@ import {
   type DeliveryReceipt,
   formatIncompleteReport,
   isDeliveryReceipt,
+  isFinishedPeer,
   isLiveAgent,
   isMessageEnvelope,
   isRoleName,
@@ -136,7 +137,7 @@ export default async function child(pi: ExtensionAPI) {
             });
             break;
           }
-          if (!inbox.acceptMessage(message.envelope.id)) {
+          if (!inbox.acceptMessage(message.envelope.id, message.envelope.from)) {
             send({
               type: "delivery_ack",
               deliveryId: message.deliveryId,
@@ -170,8 +171,15 @@ export default async function child(pi: ExtensionAPI) {
             });
           }
           break;
+        case "peer_finished":
+          if (isFinishedPeer(message.peer)) inbox.peerFinished(message.peer);
+          break;
         case "list_result":
         case "send_result":
+          // Recorded here, in IPC order, so a recipient that finishes right after
+          // accepting the message is still known as awaited when that news arrives.
+          if (message.type === "send_result" && isDeliveryReceipt(message.receipt))
+            inbox.expectReplies(message.receipt.delivered);
           if (typeof message.requestId === "string") {
             const pending = pendingRequests.get(message.requestId);
             if (pending) {
@@ -242,7 +250,7 @@ export default async function child(pi: ExtensionAPI) {
         return response.receipt;
       },
       wait(timeoutSeconds, signal) {
-        return inbox.wait(timeoutSeconds, signal);
+        return inbox.waitForUpdate(timeoutSeconds, signal);
       },
     },
     { isChild: true },

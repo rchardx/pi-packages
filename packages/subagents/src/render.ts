@@ -219,12 +219,16 @@ export function renderWaitResult(
   context: RenderContext,
 ) {
   if (context.isError) return errorText(result, theme);
-  const { outcome, waitedMs } = result.details;
+  const { details } = result;
   const phrase =
-    outcome === "woke"
-      ? `Update queued · ${formatDuration(waitedMs)}`
-      : outcome === "idle"
+    details.outcome === "woke"
+      ? `Update queued · ${formatDuration(details.waitedMs)}`
+      : details.outcome === "idle"
         ? "No running subagents"
-        : `No updates within ${formatDuration(waitedMs)}`;
+        : details.outcome === "peer_finished"
+          ? `${details.peers
+              .map((peer) => `${oneLine(peer.id, 64).slice(0, 8)} ${statusPhrase(peer.status)}`)
+              .join(", ")} without replying · ${formatDuration(details.waitedMs)}`
+          : `No updates within ${formatDuration(details.waitedMs)}`;
   return new Text(theme.fg("dim", phrase), 0, 0);
 }

@@ -30,7 +30,14 @@ export const MAX_WAIT_SECONDS = 300;
 export const WAIT_COALESCE_MS = 25;
 export const MAX_TERMINAL_RECORDS = 256;
 
-export type Status = "completed" | "failed" | "cancelled" | "timed_out" | "limit_reached";
+const STATUSES = ["completed", "failed", "cancelled", "timed_out", "limit_reached"] as const;
+export type Status = (typeof STATUSES)[number];
+
+/** A subagent that ended while another agent was still waiting on its reply. */
+export interface FinishedPeer {
+  id: string;
+  status: Status;
+}
 
 export interface Result {
   status: Status;
@@ -107,12 +114,19 @@ export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function isFinishedPeer(value: unknown): value is FinishedPeer {
+  return (
+    record(value) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    STATUSES.some((status) => status === value.status)
+  );
+}
+
 export function isResult(value: unknown): value is Result {
   return (
     record(value) &&
-    ["completed", "failed", "cancelled", "timed_out", "limit_reached"].includes(
-      String(value.status),
-    ) &&
+    STATUSES.some((status) => status === value.status) &&
     typeof value.report === "string" &&
     Buffer.byteLength(value.report) <= MAX_REPORT_BYTES &&
     typeof value.requests === "number" &&
