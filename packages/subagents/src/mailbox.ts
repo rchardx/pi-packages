@@ -1,4 +1,4 @@
-import { type QueueWaitOutcome, Waitable } from "./inbox.ts";
+import { type WaitOutcome, Waitable } from "./inbox.ts";
 import { MAX_INBOX_MESSAGES, MAX_ROOT_WAIT_SECONDS } from "./protocol.ts";
 
 /** A session message the root agent has not been shown yet. */
@@ -23,7 +23,7 @@ export class Mailbox extends Waitable {
     this.maxMessages = maxMessages;
   }
 
-  /** Peer messages are bounded; a full mailbox rejects instead of dropping. */
+  /** Messages from subagents are bounded; a full mailbox rejects instead of dropping. */
   offerMessage(update: Update): boolean {
     if (this.updates.filter((entry) => entry.bounded).length >= this.maxMessages) return false;
     this.updates.push({ update, bounded: true });
@@ -31,7 +31,7 @@ export class Mailbox extends Waitable {
     return true;
   }
 
-  /** Completion results are limited by the concurrency limit, not the peer bound. */
+  /** Completion results are limited by the concurrency limit, not the message bound. */
   addResult(update: Update): void {
     this.updates.push({ update, bounded: false });
     this.wake();
@@ -43,15 +43,15 @@ export class Mailbox extends Waitable {
 
   /**
    * Wait for an update, or with `all` until no subagent is running. Completion results
-   * then stay queued; a peer message still ends the wait, because its sender may be
-   * waiting on an answer.
+   * then stay queued; a message from a subagent still ends the wait, because its sender
+   * may be waiting on an answer.
    */
   async waitForUpdates(
     timeoutSeconds: number | undefined,
     signal: AbortSignal | undefined,
     running: () => number,
     all: boolean,
-  ): Promise<QueueWaitOutcome> {
+  ): Promise<WaitOutcome> {
     const result = await this.wait(
       timeoutSeconds,
       signal,

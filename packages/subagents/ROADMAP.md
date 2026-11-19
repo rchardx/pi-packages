@@ -3,15 +3,14 @@
 Possible extensions to the task-delegation and live-messaging primitives. These
 are directions for future discussion, not shipped features or release
 commitments. See [README.md](README.md) for current behavior and limits,
-including live peer-to-peer and broadcast communication.
+including live messaging between the root session and its children.
 
 ## Role-authorized spawning and routing
 
 Built-in `explorer` and `librarian` roles and user-defined roles in
 `~/.pi/agent/subagents.json` currently configure child instructions, model,
 thinking level, tools, and per-child turn/deadline limits. Project-scoped role
-discovery, role/group broadcast filtering, and role-enabled child spawning
-remain future discussion topics.
+discovery and role-enabled child spawning remain future discussion topics.
 
 Ordinary children remain unable to spawn. A future role option may explicitly opt in,
 including creating another instance of itself. Each child's spawn capability
@@ -49,6 +48,8 @@ Do not expand this package into:
   survive the root session.
 - A workflow DSL or harness-owned automatic task decomposition.
 - Delivering messages to or resuming completed children for further conversations.
+- Messaging between children or broadcasting to every agent. The root session
+  is the only route between children.
 
 Keep the implementation small. Add configuration and lifecycle mechanisms when
 those features are implemented, not placeholder registries or storage layers in

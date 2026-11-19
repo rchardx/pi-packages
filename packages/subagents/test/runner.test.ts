@@ -71,19 +71,14 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
          if (m.type === 'run') {
            process.send({type:'progress', progress:{requests:2, tokens:45, partial:'Recent tool activity:\\n- bash (interrupted)'}});
            process.send({type:'progress', progress:{requests:-1, tokens:0}});
-           process.send({type:'list', requestId:'after-progress'});
+           process.send({type:'send', requestId:'after-progress', message:'sync'});
          }
        });
        setInterval(()=>{},1000)`,
     ),
     graceMs: 30,
-    handlers: {
-      // IPC messages arrive in order, so this request follows both progress updates.
-      onList: () => {
-        progressReceived();
-        return [];
-      },
-    },
+    // IPC messages arrive in order, so this request follows both progress updates.
+    onSend: () => progressReceived(),
   });
   await execution.ready;
   execution.run();
@@ -168,28 +163,8 @@ test("startup errors, invalid results, and spawn failures are explicit", async (
   assert.equal((await missing.done).status, "failed");
 });
 
-test("a finished peer is announced only to a child that has been handed off", async () => {
-  const execution = startChild(launch, {
-    args: script(
-      `process.send({type:'ready'});
-       process.on('message', m => {
-         if (m.type === 'peer_finished') {
-           const report = m.peer.id + ':' + m.peer.status;
-           process.send({type:'result', result:{status:'completed', report, requests:1, tokens:1}}, () => process.exit(0));
-         }
-       });`,
-    ),
-  });
-  await execution.ready;
-  execution.peerFinished({ id: "before-handoff", status: "completed" });
-  execution.run();
-  execution.peerFinished({ id: "peer", status: "timed_out" });
-  assert.equal((await execution.done).report, "peer:timed_out");
-  // A settled child is not written to.
-  execution.peerFinished({ id: "late", status: "completed" });
-});
-
-test("IPC messaging handles delivery acks, list/send requests, and exit during delivery", async () => {
+test("IPC messaging handles delivery acks, child sends, and exit during delivery", async () => {
+  const received: string[] = [];
   const execution = startChild(
     { ...launch, id: "child-uuid" },
     {
@@ -202,29 +177,19 @@ test("IPC messaging handles delivery acks, list/send requests, and exit during d
              else process.exit(0);
            }
            if (m.type === 'run') {
-             process.send({type:'list', requestId:'r1'});
+             process.send({type:'send', requestId:'r1', message:'question'});
            }
-           if (m.type === 'list_result' && m.requestId === 'r1') {
-             process.send({type:'send', requestId:'r2', to:'main', message: String(m.agents.length)});
+           if (m.type === 'send_result' && m.requestId === 'r1') {
+             process.send({type:'send', requestId:'r2', message: 'error' in m ? 'unexpected' : 'overflow'});
            }
            if (m.type === 'send_result' && m.requestId === 'r2') {
-             process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+             process.send({type:'result', result:{status:'completed', report:String(m.error), requests:1, tokens:10}}, () => process.exit(0));
            }
          });`,
       ),
-      handlers: {
-        onList: () => [
-          { id: "main", self: false },
-          { id: "child-uuid", self: true },
-        ],
-        onSend: async (to, message) => ({
-          id: "m1",
-          from: "child-uuid",
-          to,
-          broadcast: false,
-          delivered: [to],
-          skipped: message === "2" ? [] : [{ id: "bad", reason: "unexpected" }],
-        }),
+      onSend: (message) => {
+        received.push(message);
+        if (message === "overflow") throw new Error("Main session message queue is full.");
       },
     },
   );
@@ -234,9 +199,7 @@ test("IPC messaging handles delivery acks, list/send requests, and exit during d
       id: "e1",
       from: "main",
       to: "child-uuid",
-      broadcast: false,
       message: "accept",
-      sentAt: 1,
     }),
     { accepted: true },
   );
@@ -245,14 +208,32 @@ test("IPC messaging handles delivery acks, list/send requests, and exit during d
       id: "e2",
       from: "main",
       to: "child-uuid",
-      broadcast: false,
       message: "full",
-      sentAt: 2,
     }),
     { accepted: false, reason: "queue_full" },
   );
   execution.run();
-  assert.deepEqual(await execution.done, success);
+  assert.deepEqual(await execution.done, {
+    ...success,
+    report: "Main session message queue is full.",
+  });
+  assert.deepEqual(received, ["question", "overflow"]);
+
+  // A child's message has nowhere to go without a handler, and says so.
+  const unrouted = startChild(launch, {
+    args: script(
+      `process.send({type:'ready'});
+       process.on('message', m => {
+         if (m.type === 'run') process.send({type:'send', requestId:'r1', message:'question'});
+         if (m.type === 'send_result') {
+           process.send({type:'result', result:{status:'completed', report:String(m.error), requests:1, tokens:10}}, () => process.exit(0));
+         }
+       });`,
+    ),
+  });
+  await unrouted.ready;
+  unrouted.run();
+  assert.equal((await unrouted.done).report, "Agent messaging is unavailable.");
 
   // Delivery to an exiting child resolves cleanly as finished without hanging.
   const exiting = startChild(launch, {
@@ -266,9 +247,7 @@ test("IPC messaging handles delivery acks, list/send requests, and exit during d
       id: "e3",
       from: "main",
       to: "child",
-      broadcast: false,
       message: "exit",
-      sentAt: 3,
     }),
     { accepted: false, reason: "finished" },
   );
