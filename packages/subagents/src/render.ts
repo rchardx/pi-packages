@@ -200,13 +200,16 @@ export function renderSendResult(
 }
 
 export function renderWaitCall(
-  args: Partial<{ timeoutSeconds: number }> | undefined,
+  args: Partial<{ timeoutSeconds: number; all: boolean }> | undefined,
   theme: Theme,
 ) {
-  const timeout = typeof args?.timeoutSeconds === "number" ? `${args.timeoutSeconds}s` : "";
+  const summary = [
+    ...(args?.all === true ? ["all"] : []),
+    ...(typeof args?.timeoutSeconds === "number" ? [`${args.timeoutSeconds}s`] : []),
+  ].join(" · ");
   return new TruncatedText(
     theme.fg("toolTitle", theme.bold("subagent_wait")) +
-      (timeout ? `  ${theme.fg("muted", timeout)}` : ""),
+      (summary ? `  ${theme.fg("muted", summary)}` : ""),
     0,
     0,
   );
@@ -229,6 +232,8 @@ export function renderWaitResult(
           ? `${details.peers
               .map((peer) => `${oneLine(peer.id, 64).slice(0, 8)} ${statusPhrase(peer.status)}`)
               .join(", ")} without replying · ${formatDuration(details.waitedMs)}`
-          : `No updates within ${formatDuration(details.waitedMs)}`;
+          : "running" in details
+            ? `${details.running} still running after ${formatDuration(details.waitedMs)}`
+            : `No updates within ${formatDuration(details.waitedMs)}`;
   return new Text(theme.fg("dim", phrase), 0, 0);
 }

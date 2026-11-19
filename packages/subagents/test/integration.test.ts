@@ -1539,6 +1539,12 @@ async function communicationFixture(t: TestContext) {
       return;
     }
 
+    if (transcript.includes("Delegated task:\\n\\nHELD_THEN_DONE")) {
+      await childHeld;
+      respondText("Held child done.");
+      return;
+    }
+
     if (transcript.includes("Delegated task:\\n\\nNOTIFY_MAIN_THEN_STAY")) {
       // The child asks again only after its send was accepted by the root session.
       if (toolMessages.length === 1) notes++;
@@ -1679,6 +1685,93 @@ test("updates for a busy root survive the host clearing its steering queue", {
     const waited = await waitTool.execute(call, { timeoutSeconds: 5 });
     assert.deepEqual(waited.details, { outcome: "idle", waitedMs: 0 });
   }
+});
+
+test("subagent_wait reports the last running child's completion as an update", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, releaseMain, holdChild, releaseChild } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const waitTool = session.agent.state.tools.find((entry) => entry.name === "subagent_wait");
+  assert.ok(waitTool);
+
+  const busy = session.prompt("HOLD_MAIN");
+  holdChild();
+  await tool.execute("start-held", { task: "HELD_THEN_DONE" });
+  const waiting = waitTool.execute("wait", { timeoutSeconds: 20 });
+  releaseChild();
+  // Nothing is running any more, but the completion is queued for the root.
+  assert.equal((await waiting).details.outcome, "woke");
+
+  releaseMain();
+  await busy;
+  await session.waitForIdle();
+  assert.match(JSON.stringify(session.messages), /Held child done\./u);
+});
+
+test("subagent_wait with all holds completions until every child has finished", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, releaseMain, holdChild, releaseChild } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const find = (name: string) => {
+    const found = session.agent.state.tools.find((entry) => entry.name === name);
+    assert.ok(found);
+    return found;
+  };
+  const waitTool = find("subagent_wait");
+  const listTool = find("subagent_list");
+  const updates = deliveredUpdates(session);
+
+  // A busy root keeps completions in the extension, as during a real wait.
+  const busy = session.prompt("HOLD_MAIN");
+  holdChild();
+  const held = await tool.execute("start-held", { task: "HELD_THEN_DONE" });
+  const heldId = (held.details as { id?: string }).id;
+  assert.ok(heldId);
+  await tool.execute("start-quick", { task: "QUICK_CHILD" });
+
+  const waitingForAll = waitTool.execute("all", { all: true, timeoutSeconds: 20 });
+  let allFinished = false;
+  void waitingForAll.then(() => {
+    allFinished = true;
+  });
+
+  // The quick child finishes first; only the held one stays listed.
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const listed = await listTool.execute("list", {});
+    const agents = (listed.details as { agents: { id: string }[] }).agents;
+    if (agents.length === 2 && agents.some((agent) => agent.id === heldId)) break;
+    assert.ok(Date.now() < deadline, "Timed out waiting for the quick child to finish");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const first = await waitTool.execute("any", { timeoutSeconds: 5 });
+  assert.deepEqual(first.details, { outcome: "woke", waitedMs: 0 }, "one completion is queued");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(allFinished, false, "the wait for all outlasts the first completion");
+
+  releaseChild();
+  assert.equal((await waitingForAll).details.outcome, "woke");
+  assert.equal(updates.seen.length, 0, "completions are still held by the extension");
+
+  releaseMain();
+  await busy;
+  await session.waitForIdle();
+  assert.equal(updates.seen.length, 2);
+  assert.match(JSON.stringify(session.messages), /Held child done\./u);
 });
 
 test("an aborted root run records pending updates without starting another run", {
