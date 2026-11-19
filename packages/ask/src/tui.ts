@@ -94,6 +94,7 @@ export function createAskComponent(
   let cursorIndex = 0;
   let editingCustom = false;
   let componentFocused = false;
+  let finished = false;
   let cachedWidth: number | undefined;
   let cachedLines: string[] | undefined;
 
@@ -118,7 +119,14 @@ export function createAskComponent(
     tui.requestRender();
   }
 
+  function onSignalAbort(): void {
+    finish(true);
+  }
+
   function finish(cancelled: boolean): void {
+    if (finished) return;
+    finished = true;
+    signal?.removeEventListener("abort", onSignalAbort);
     if (cancelled) {
       done({ cancelled: true, answers: [] });
       return;
@@ -126,9 +134,6 @@ export function createAskComponent(
     done({ cancelled: false, answers: states.map(materializeAnswer) });
   }
 
-  const onSignalAbort = () => {
-    finish(true);
-  };
   signal?.addEventListener("abort", onSignalAbort, { once: true });
 
   function allQuestionsAnswered(): boolean {
@@ -211,6 +216,7 @@ export function createAskComponent(
   }
 
   function handleInput(data: string): void {
+    if (finished) return;
     if (editingCustom) {
       if (keybindings.matches(data, "tui.select.cancel")) {
         input.onEscape?.();
