@@ -11,14 +11,14 @@ is not an installable Pi bundle.
 
 ## Packages
 
-| Package | Surface | Summary | Try for one session | Install for your Pi user |
-| --- | --- | --- | --- | --- |
-| [ask](packages/ask/README.md) | `ask` | Structured 1–4 question multiple-choice user clarification in TUI and RPC sessions | `pi -e ./packages/ask` | `pi install ./packages/ask` |
-| [lsp](packages/lsp/README.md) | `lsp`, `/lsp`, post-edit diagnostics | Post-edit and single-file `diagnostics` plus single-symbol `definition`, `references`, and `hover` queries | `pi -e ./packages/lsp` | `pi install ./packages/lsp` |
-| [web-access](packages/web-access/README.md) | `web_fetch`, `web_search` | Opt-in hosted web search and page fetching across user-authorized providers | `pi -e ./packages/web-access` | `pi install ./packages/web-access` |
-| [background](packages/background/README.md) | `bash` (override), `/background` | Background execution for long `bash` commands with bounded logs and completion notifications | `pi -e ./packages/background` | `pi install ./packages/background` |
-| [subagents](packages/subagents/README.md) | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | Session-owned child Pi agents with fresh context, role presets, and live parent-child messaging | `pi -e ./packages/subagents` | `pi install ./packages/subagents` |
-| [statusline](packages/statusline/README.md) | Interactive TUI footer | Fixed two-line TUI footer with inline `subagents` and `background` statuses above token, cost, and model stats | `pi -e ./packages/statusline` | `pi install ./packages/statusline` |
+| Package | Surface | Summary |
+| --- | --- | --- |
+| [ask](packages/ask/README.md) | `ask` | Structured 1–4 question multiple-choice user clarification in TUI and RPC sessions |
+| [lsp](packages/lsp/README.md) | `lsp`, `/lsp`, post-edit diagnostics | Post-edit and single-file `diagnostics` plus single-symbol `definition`, `references`, and `hover` queries |
+| [web-access](packages/web-access/README.md) | `web_fetch`, `web_search` | Opt-in hosted web search and page fetching across user-authorized providers |
+| [background](packages/background/README.md) | `bash` (override), `/background` | Background execution for long `bash` commands with bounded logs and completion notifications |
+| [subagents](packages/subagents/README.md) | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | Session-owned child Pi agents with fresh context, role presets, and live parent-child messaging |
+| [statusline](packages/statusline/README.md) | Interactive TUI footer | Fixed two-line TUI footer with inline `subagents` and `background` statuses above token, cost, and model stats |
 
 See [`packages/README.md`](packages/README.md) for package overviews and
 configuration files, and each package's `README.md` for full behavior, limits,
