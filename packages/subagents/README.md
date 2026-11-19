@@ -323,9 +323,11 @@ Each role object supports:
 There is no hidden task queue or whole-task automatic retry. Pi may retry provider
 requests according to its settings. States distinguish `completed`, `failed`,
 `cancelled`, `timed_out`, and `limit_reached`; empty final answers and incomplete
-responses are not successful task results. A `completed` report is not proof that
-implementation or validation claims are correct. Completion delivery is attempted
-once, not persisted for replay.
+responses are not successful task results. Incomplete runs retain accumulated
+request/token counts and append bounded in-memory partial progress (the latest
+nonempty assistant message and recent tool activity) when available. A `completed`
+report is not proof that implementation or validation claims are correct.
+Completion delivery is attempted once, not persisted for replay.
 
 ## Compatibility
 

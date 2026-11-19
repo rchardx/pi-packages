@@ -58,16 +58,96 @@ test("startup timeout and execution deadline are bounded", async () => {
   assert.equal((await running.done).status, "timed_out");
 });
 
-test("cancel escalates when a child ignores SIGTERM", async () => {
+test("cancel escalates when a child ignores SIGTERM and retains prior progress", async () => {
+  let progressReceived: () => void = () => {};
+  const afterProgress = new Promise<void>((resolve) => {
+    progressReceived = resolve;
+  });
   const execution = startChild(launch, {
     args: script(
-      "process.on('SIGTERM',()=>{});process.send({type:'ready'});setInterval(()=>{},1000)",
+      `process.on('SIGTERM',()=>{});
+       process.send({type:'ready'});
+       process.on('message', m => {
+         if (m.type === 'run') {
+           process.send({type:'progress', progress:{requests:2, tokens:45, partial:'Recent tool activity:\\n- bash (interrupted)'}});
+           process.send({type:'progress', progress:{requests:-1, tokens:0}});
+           process.send({type:'list', requestId:'after-progress'});
+         }
+       });
+       setInterval(()=>{},1000)`,
     ),
     graceMs: 30,
+    handlers: {
+      // IPC messages arrive in order, so this request follows both progress updates.
+      onList: () => {
+        progressReceived();
+        return [];
+      },
+    },
   });
   await execution.ready;
-  assert.equal((await execution.cancel()).status, "cancelled");
-  assert.equal((await execution.cancel()).status, "cancelled");
+  execution.run();
+  await afterProgress;
+  const cancelled = await execution.cancel();
+  assert.deepEqual(cancelled, {
+    status: "cancelled",
+    report:
+      "Cancelled; existing filesystem changes were not reverted.\n\nRecent tool activity:\n- bash (interrupted)",
+    requests: 2,
+    tokens: 45,
+  });
+  assert.deepEqual(await execution.cancel(), cancelled);
+});
+
+test("deadline timeout preserves child progress and SIGTERM flush", async () => {
+  const timedOut = startChild(launch, {
+    args: script(
+      `process.send({type:'ready'});
+       process.on('SIGTERM', () => {
+         process.send(
+           {type:'progress', progress:{requests:3, tokens:90, partial:'Last assistant message:\\nHalfway done.'}},
+           () => process.send({type:'result', result:{status:'cancelled', report:'aborted', requests:3, tokens:95}}, () => process.exit(143))
+         );
+       });
+       setInterval(()=>{},1000);`,
+    ),
+    // The deadline counts from spawn; leave room for a slow child to report ready first.
+    deadlineMs: 1_000,
+    graceMs: 500,
+  });
+  await timedOut.ready;
+  timedOut.run();
+  assert.deepEqual(await timedOut.done, {
+    status: "timed_out",
+    report: "Child execution deadline exceeded.\n\nLast assistant message:\nHalfway done.",
+    requests: 3,
+    tokens: 95,
+  });
+});
+
+test("unexpected crash preserves prior child progress and stderr", async () => {
+  const crashed = startChild(launch, {
+    args: script(
+      `process.send({type:'ready'});
+       process.on('message', m => {
+         if (m.type === 'run') {
+           process.send({type:'progress', progress:{requests:1, tokens:12, partial:'Recent tool activity:\\n- write out.txt'}}, () => {
+             process.stderr.write('boom\\n');
+             process.exit(2);
+           });
+         }
+       });`,
+    ),
+  });
+  await crashed.ready;
+  crashed.run();
+  assert.deepEqual(await crashed.done, {
+    status: "failed",
+    report:
+      "Child exited without successful teardown (exit 2).\nboom\n\nRecent tool activity:\n- write out.txt",
+    requests: 1,
+    tokens: 12,
+  });
 });
 
 test("startup errors, invalid results, and spawn failures are explicit", async () => {

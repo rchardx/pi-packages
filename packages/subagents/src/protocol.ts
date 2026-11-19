@@ -10,6 +10,11 @@ const RESERVED_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 
 export const MAX_TASK_BYTES = 32 * 1024;
 export const MAX_REPORT_BYTES = 32 * 1024;
+export const MAX_PARTIAL_TEXT_BYTES = 8 * 1024;
+/** Room for the last assistant message plus the recent tool activity lines. */
+export const MAX_PROGRESS_BYTES = 16 * 1024;
+export const MAX_HEADLINE_BYTES = 8 * 1024;
+export const MAX_ACTIVITY_ENTRIES = 8;
 export const MAX_MESSAGE_BYTES = 16 * 1024;
 export const MAX_ROLE_DESCRIPTION_BYTES = 512;
 export const MAX_ROLE_INSTRUCTIONS_BYTES = 16 * 1024;
@@ -32,6 +37,12 @@ export interface Result {
   report: string;
   requests: number;
   tokens: number;
+}
+
+export interface Progress {
+  requests: number;
+  tokens: number;
+  partial?: string;
 }
 
 export interface Launch {
@@ -110,6 +121,22 @@ export function isResult(value: unknown): value is Result {
     typeof value.tokens === "number" &&
     Number.isFinite(value.tokens) &&
     value.tokens >= 0
+  );
+}
+
+export function isProgress(value: unknown): value is Progress {
+  return (
+    record(value) &&
+    typeof value.requests === "number" &&
+    Number.isFinite(value.requests) &&
+    value.requests >= 0 &&
+    typeof value.tokens === "number" &&
+    Number.isFinite(value.tokens) &&
+    value.tokens >= 0 &&
+    (value.partial === undefined ||
+      (typeof value.partial === "string" &&
+        value.partial.trim().length > 0 &&
+        Buffer.byteLength(value.partial) <= MAX_PROGRESS_BYTES))
   );
 }
 
@@ -196,6 +223,12 @@ export function bounded(text: string, bytes = MAX_REPORT_BYTES): string {
   let end = bytes - Buffer.byteLength(suffix);
   while (end > 0 && ((buffer[end] ?? 0) & 0xc0) === 0x80) end--;
   return buffer.subarray(0, end).toString("utf8") + suffix;
+}
+
+/** With progress, each part has its own allowance, so a long error cannot crowd it out. */
+export function formatIncompleteReport(headline: string, partial?: string): string {
+  if (!partial) return bounded(headline);
+  return `${bounded(headline, MAX_HEADLINE_BYTES)}\n\n${bounded(partial, MAX_PROGRESS_BYTES)}`;
 }
 
 export const CHILD_INSTRUCTIONS = `You are a child agent executing a delegated task with fresh conversation context.
