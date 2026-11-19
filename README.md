@@ -35,6 +35,7 @@ alone does not validate packaged dependency resolution.
 | Package | Surface | Try for one session | Install for your Pi user | Usage guide |
 | --- | --- | --- | --- | --- |
 | ask | `ask` | `pi -e ./packages/ask` | `pi install ./packages/ask` | [Usage, limits, and compatibility](packages/ask/README.md) |
+| lsp | `lsp`, `/lsp`, post-edit diagnostics | `pi -e ./packages/lsp` | `pi install ./packages/lsp` | [Usage, limits, and compatibility](packages/lsp/README.md) |
 | web-access | `web_fetch`, `web_search` | `pi -e ./packages/web-access` | `pi install ./packages/web-access` | [Usage, limits, and compatibility](packages/web-access/README.md) |
 | background | `bash` (override), `/background` | `pi -e ./packages/background` | `pi install ./packages/background` | [Usage, limits, and compatibility](packages/background/README.md) |
 | subagents | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `pi -e ./packages/subagents` | `pi install ./packages/subagents` | [Usage, limits, and compatibility](packages/subagents/README.md) |
@@ -51,6 +52,21 @@ support; `rpc` sessions fall back to `select` and `input` dialogs; `print` and
 `prepareLoadout` without removing it from persisted session tool selections, and
 fail closed if invoked directly. See the [ask usage guide](packages/ask/README.md)
 for schema and mode details.
+
+### lsp
+
+Append a file's errors and warnings to successful `edit` and `write` results,
+and provide a read-only `lsp` tool for one file or symbol at a time
+(`diagnostics`, `definition`, `references`, `hover`) across interactive, RPC,
+print, and subagent sessions. Language servers are not bundled: one starts in a
+trusted project when a matching executable is installed (a project-local
+TypeScript 7 `tsc`, `typescript-language-server`, `basedpyright-langserver` /
+`pyright-langserver` / `pylsp`, `rust-analyzer`, `gopls`, `clangd`, or custom
+`~/.pi/agent/lsp.json` entries; see the
+[installation guide](packages/lsp/README.md#installing-language-servers)).
+Edits wait at most 0.8s; a server that has not answered is never reported as a
+clean file. See the [lsp usage guide](packages/lsp/README.md) for actions,
+configuration, and limits.
 
 ### web-access
 
