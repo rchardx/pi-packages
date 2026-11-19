@@ -9,11 +9,14 @@ import {
   DEADLINE_MS,
   type DeliveryAck,
   type DeliveryReceipt,
+  formatIncompleteReport,
+  isProgress,
   isResult,
   type Launch,
   type LiveAgent,
   MAX_REQUESTS,
   type MessageEnvelope,
+  type Progress,
   record,
   type Result,
   STARTUP_MS,
@@ -83,6 +86,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     doneResolve = resolve;
   });
   let result: Result | undefined;
+  let progress: Progress | undefined;
   let reason: { status: Status; report: string } | undefined;
   let stderr = "";
   let settled = false;
@@ -129,7 +133,18 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     });
   };
   child.on("message", (message: unknown) => {
-    if (!record(message) || settled || reason) return;
+    if (!record(message) || settled) return;
+    if (message.type === "progress") {
+      if (isProgress(message.progress)) progress = message.progress;
+      return;
+    }
+    if (message.type === "result") {
+      failPendingDeliveries();
+      if (isResult(message.result)) result = message.result;
+      else if (!reason) stop("failed", "Invalid child result.");
+      return;
+    }
+    if (reason) return;
     switch (message.type) {
       case "hello":
         send({
@@ -204,11 +219,6 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           );
         }
         break;
-      case "result":
-        failPendingDeliveries();
-        if (isResult(message.result)) result = message.result;
-        else stop("failed", "Invalid child result.");
-        break;
     }
   });
   child.on("disconnect", failPendingDeliveries);
@@ -238,16 +248,29 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           ),
       ),
     );
+    const requests = result?.requests ?? progress?.requests ?? 0;
+    const tokens = result?.tokens ?? progress?.tokens ?? 0;
     if (reason)
-      doneResolve({ ...reason, requests: result?.requests ?? 0, tokens: result?.tokens ?? 0 });
+      // A result sent during the grace window supplies the final counts only: its report
+      // carries the child's own headline, which would duplicate this one.
+      doneResolve({
+        status: reason.status,
+        report: formatIncompleteReport(reason.report, progress?.partial),
+        requests,
+        tokens,
+      });
     else if (code === 0 && result) doneResolve(result);
-    else
+    else {
+      const crashHeadline = detail
+        ? `Child exited without successful teardown (exit ${code}).\n${detail}`
+        : `Child exited without successful teardown (exit ${code}).`;
       doneResolve({
         status: "failed",
-        report: bounded(`Child exited without successful teardown (exit ${code}).\n${stderr}`),
-        requests: result?.requests ?? 0,
-        tokens: result?.tokens ?? 0,
+        report: formatIncompleteReport(crashHeadline, progress?.partial),
+        requests,
+        tokens,
       });
+    }
   });
   child.stdin?.end(`Delegated task:\n\n${launch.task}`);
   return {

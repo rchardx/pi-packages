@@ -179,15 +179,278 @@ for (const behavior of ["empty", "loop", "sleep"]) {
         }
       }
       assert.ok(pid);
-      assert.equal((await execution.cancel()).status, "cancelled");
+      const cancelled = await execution.cancel();
+      assert.equal(cancelled.status, "cancelled");
+      assert.equal(cancelled.requests, 1);
+      assert.equal(cancelled.tokens, 15);
+      assert.equal(requests.length, 1);
+      assert.match(
+        cancelled.report,
+        /^Cancelled; existing filesystem changes were not reverted\.\n\nRecent tool activity:\n- bash echo \$\$ > shell\.pid\.tmp && mv shell\.pid\.tmp shell\.pid && sleep 60 \(error\)$/u,
+      );
       assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
     } else {
       const result = await execution.done;
       assert.equal(result.status, behavior === "empty" ? "failed" : "limit_reached", result.report);
-      if (behavior === "loop") assert.equal(requests.length, 64);
+      if (behavior === "empty") {
+        assert.equal(result.requests, 1);
+        assert.equal(result.tokens, 15);
+        assert.equal(result.report, "No final answer (stop reason: stop).");
+      } else {
+        assert.equal(requests.length, 64);
+        assert.equal(result.requests, 64);
+        assert.equal(result.tokens, 64 * 15);
+        assert.match(
+          result.report,
+          /^Model request limit reached\.\n\nRecent tool activity \(last 8 of 64\):\n(?:- bash printf checked > checked\.txt\n?){8}$/u,
+        );
+        assert.doesNotMatch(result.report, /No final answer/u);
+      }
     }
   });
 }
+
+test("real child preserves assistant summary, tool activity, and usage across incomplete runs", {
+  timeout: 30_000,
+}, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-subagents-progress-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldOffline = process.env.PI_OFFLINE;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  process.env.PI_OFFLINE = "1";
+  t.after(() => {
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldOffline === undefined) delete process.env.PI_OFFLINE;
+    else process.env.PI_OFFLINE = oldOffline;
+  });
+
+  let notifyTurnTwoStreaming: (() => void) | undefined;
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const parsed: unknown = JSON.parse(body);
+    assert.ok(record(parsed));
+    const messages = Array.isArray(parsed.messages) ? parsed.messages.filter(record) : [];
+    const toolCount = messages.filter((message) => message.role === "tool").length;
+
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    if (toolCount === 0) {
+      res.write(
+        `data: ${JSON.stringify({
+          id: "turn-0",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                content: "Patched module.txt; running checks next.",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-0",
+                    type: "function",
+                    function: {
+                      name: "write",
+                      arguments: JSON.stringify({ path: "module.txt", content: "v2" }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+      );
+      res.write(
+        `data: ${JSON.stringify({
+          id: "turn-0",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 },
+        })}\n\n`,
+      );
+      res.end("data: [DONE]\n\n");
+      return;
+    }
+
+    if (toolCount === 1) {
+      // Empty assistant text on a tool-calling turn must not clobber Turn 0's summary.
+      res.write(
+        `data: ${JSON.stringify({
+          id: "turn-1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call-1",
+                    type: "function",
+                    function: {
+                      name: "bash",
+                      arguments: JSON.stringify({ command: "printf ok > check.txt" }),
+                    },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n`,
+      );
+      res.write(
+        `data: ${JSON.stringify({
+          id: "turn-1",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+          usage: { prompt_tokens: 18, completion_tokens: 12, total_tokens: 30 },
+        })}\n\n`,
+      );
+      res.end("data: [DONE]\n\n");
+      return;
+    }
+
+    if (!notifyTurnTwoStreaming) {
+      // Only the request-limit run is active, and it must never ask for a third turn.
+      // Finish the run so its assertions fail instead of the test timing out.
+      res.write(
+        `data: ${JSON.stringify({
+          id: "turn-2",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "test-model",
+          choices: [
+            {
+              index: 0,
+              delta: { role: "assistant", content: "Unexpected third request." },
+              finish_reason: "stop",
+            },
+          ],
+        })}\n\n`,
+      );
+      res.end("data: [DONE]\n\n");
+      return;
+    }
+
+    // Turn 2 streams an incomplete fragment and stalls until the child is cancelled.
+    res.write(
+      `data: ${JSON.stringify({
+        id: "turn-2",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: "test-model",
+        choices: [{ index: 0, delta: { role: "assistant", content: "Let" }, finish_reason: null }],
+      })}\n\n`,
+    );
+    notifyTurnTwoStreaming?.();
+    await new Promise<void>((resolve) => req.once("close", resolve));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        // This hook runs before the ones that cancel the children, so a child still
+        // holding the stalled request open would keep the server from closing.
+        server.closeAllConnections();
+      }),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeFile(
+    join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        mock: {
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          api: "openai-completions",
+          apiKey: "test-only",
+          models: [
+            {
+              id: "test-model",
+              name: "Test",
+              reasoning: false,
+              input: ["text"],
+              contextWindow: 32000,
+              maxTokens: 1000,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
+      },
+    }),
+  );
+
+  const baseLaunch = {
+    cwd: dir,
+    provider: "mock",
+    model: "test-model",
+    thinking: "off",
+    trusted: false,
+    extensions: [],
+    activeTools: ["read", "write", "bash"],
+    requiredTools: ["read", "write", "bash"],
+    mcpTools: [],
+    cliFlags: ["--no-mcp"],
+    task: "Update module.txt and verify.",
+  };
+
+  // 1. maxRequests limit after an empty-text tool turn preserves Turn 0's assistant summary.
+  const limited = startChild({ ...baseLaunch, maxRequests: 2 });
+  t.after(() => limited.cancel());
+  await limited.ready;
+  limited.run();
+  const limitedResult = await limited.done;
+  assert.equal(limitedResult.status, "limit_reached");
+  assert.equal(limitedResult.requests, 2);
+  assert.equal(limitedResult.tokens, 50);
+  assert.equal(
+    limitedResult.report,
+    "Model request limit reached.\n\n" +
+      "Last assistant message:\n" +
+      "Patched module.txt; running checks next.\n\n" +
+      "Recent tool activity:\n" +
+      "- write module.txt\n" +
+      "- bash printf ok > check.txt",
+  );
+
+  // 2. Cancelling during Turn 2 keeps Turn 0's completed summary over Turn 2's aborted fragment.
+  const turnTwoStreaming = new Promise<void>((resolve) => {
+    notifyTurnTwoStreaming = resolve;
+  });
+  const interrupted = startChild(baseLaunch);
+  t.after(() => interrupted.cancel());
+  await interrupted.ready;
+  interrupted.run();
+  await turnTwoStreaming;
+  const interruptedResult = await interrupted.cancel();
+  assert.equal(interruptedResult.status, "cancelled");
+  assert.equal(interruptedResult.requests, 3);
+  assert.ok(interruptedResult.tokens >= 50);
+  assert.equal(
+    interruptedResult.report,
+    "Cancelled; existing filesystem changes were not reverted.\n\n" +
+      "Last assistant message:\n" +
+      "Patched module.txt; running checks next.\n\n" +
+      "Recent tool activity:\n" +
+      "- write module.txt\n" +
+      "- bash printf ok > check.txt",
+  );
+});
 
 test("a continuing child stays reachable until its run actually settles", {
   timeout: 30_000,

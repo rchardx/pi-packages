@@ -55,6 +55,53 @@ export function oneLine(text: string, max = TASK_DISPLAY_CHARS): string {
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
+export type ToolActivityState = "running" | "ok" | "error";
+
+const PATH_TOOLS = new Set(["read", "write", "edit", "ls"]);
+const SEARCH_TOOLS = new Set(["grep", "find"]);
+
+/**
+ * Single-line summary of a tool call, kept short for the parent: the path or search
+ * pattern of a file tool and the first line of a shell command. Other tools are named only.
+ */
+export function summarizeToolCall(toolName: string, args: unknown): string {
+  const name = oneLine(toolName, 64);
+  if (!record(args)) return name;
+  const path = typeof args.path === "string" && args.path.trim() ? oneLine(args.path, 120) : "";
+  if (PATH_TOOLS.has(toolName)) return path ? `${name} ${path}` : name;
+  if (SEARCH_TOOLS.has(toolName) && typeof args.pattern === "string" && args.pattern.trim()) {
+    return `${name} ${oneLine(args.pattern, 60)}${path ? ` in ${path}` : ""}`;
+  }
+  if (toolName === "bash" && typeof args.command === "string" && args.command.trim()) {
+    return `${name} ${oneLine(args.command.trim().split("\n", 1)[0] ?? "", 80)}`;
+  }
+  return name;
+}
+
+export function formatPartialProgress(
+  lastAssistantText: string | undefined,
+  activity: readonly { summary: string; state: ToolActivityState }[],
+  totalToolCalls: number,
+): string | undefined {
+  const sections: string[] = [];
+  if (lastAssistantText) {
+    sections.push(`Last assistant message:\n${lastAssistantText}`);
+  }
+  if (activity.length > 0) {
+    const heading =
+      totalToolCalls > activity.length
+        ? `Recent tool activity (last ${activity.length} of ${totalToolCalls}):`
+        : "Recent tool activity:";
+    const lines = activity.map((entry) => {
+      const suffix =
+        entry.state === "error" ? " (error)" : entry.state === "running" ? " (interrupted)" : "";
+      return `- ${entry.summary}${suffix}`;
+    });
+    sections.push(`${heading}\n${lines.join("\n")}`);
+  }
+  return sections.length > 0 ? sections.join("\n\n") : undefined;
+}
+
 export function statusPhrase(status: Status): string {
   switch (status) {
     case "timed_out":

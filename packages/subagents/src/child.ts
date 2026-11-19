@@ -1,20 +1,29 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AgentInbox, registerCommunicationTools } from "./inbox.ts";
-import { formatPeerMessage } from "./notify.ts";
+import {
+  formatPartialProgress,
+  formatPeerMessage,
+  summarizeToolCall,
+  type ToolActivityState,
+} from "./notify.ts";
 import {
   bounded,
   CHILD_ENV,
   COMMUNICATION_TOOLS,
   childInstructions,
   type DeliveryReceipt,
+  formatIncompleteReport,
   isDeliveryReceipt,
   isLiveAgent,
   isMessageEnvelope,
   isRoleName,
   type LiveAgent,
+  MAX_ACTIVITY_ENTRIES,
+  MAX_PARTIAL_TEXT_BYTES,
   MAX_REQUESTS,
   MESSAGE_TYPE,
+  type Progress,
   record,
   type Result,
   validateSendInput,
@@ -255,11 +264,22 @@ export default async function child(pi: ExtensionAPI) {
   let requests = 0;
   let tokens = 0;
   let limited = false;
-  let final: Result = {
-    status: "failed",
-    report: "No final assistant response.",
-    requests: 0,
-    tokens: 0,
+  let lastAssistantText: string | undefined;
+  let totalToolCalls = 0;
+  const activity: { id: string; summary: string; state: ToolActivityState }[] = [];
+  let lastOutcome:
+    | { status: "completed"; report: string }
+    | { status: "limit_reached"; headline: string }
+    | { status: "failed"; headline: string }
+    | undefined;
+
+  const currentProgress = (): Progress => {
+    const partial = formatPartialProgress(lastAssistantText, activity, totalToolCalls);
+    return partial ? { requests, tokens, partial } : { requests, tokens };
+  };
+
+  const sendProgress = () => {
+    send({ type: "progress", progress: currentProgress() });
   };
 
   pi.on("before_agent_start", async (event, ctx) => {
@@ -304,13 +324,39 @@ export default async function child(pi: ExtensionAPI) {
   });
 
   pi.on("turn_start", (_event, ctx) => {
+    // Pi still announces the turn that follows a tool interrupted by an abort; that turn
+    // never reaches the model.
+    if (ctx.signal?.aborted) return;
     if (requests >= config.maxRequests) {
       limited = true;
       closing = true;
       ctx.abort();
     } else {
       requests++;
+      sendProgress();
     }
+  });
+
+  pi.on("tool_execution_start", (event) => {
+    totalToolCalls++;
+    activity.push({
+      id: event.toolCallId,
+      summary: summarizeToolCall(event.toolName, event.args),
+      state: "running",
+    });
+    if (activity.length > MAX_ACTIVITY_ENTRIES) activity.shift();
+    sendProgress();
+  });
+
+  pi.on("tool_execution_end", (event) => {
+    for (let index = activity.length - 1; index >= 0; index--) {
+      const entry = activity[index];
+      if (entry?.id === event.toolCallId) {
+        entry.state = event.isError ? "error" : "ok";
+        break;
+      }
+    }
+    sendProgress();
   });
 
   pi.on("message_end", (event) => {
@@ -330,35 +376,63 @@ export default async function child(pi: ExtensionAPI) {
       .filter((part) => part.type === "text")
       .map((part) => part.text)
       .join("\n");
-    const completed = message.stopReason === "stop" && text.trim().length > 0;
-    final = {
-      status: completed
-        ? "completed"
-        : message.stopReason === "length"
-          ? "limit_reached"
-          : "failed",
-      report: bounded(
-        text || message.errorMessage || `No final answer (stop reason: ${message.stopReason}).`,
-      ),
-      requests,
-      tokens,
-    };
+    const trimmedText = text.trim();
+    if (trimmedText && (message.stopReason !== "aborted" || lastAssistantText === undefined)) {
+      lastAssistantText = bounded(trimmedText, MAX_PARTIAL_TEXT_BYTES);
+    }
+    if (message.stopReason === "stop" && trimmedText.length > 0) {
+      lastOutcome = { status: "completed", report: bounded(text) };
+    } else if (message.stopReason === "length") {
+      lastOutcome = {
+        status: "limit_reached",
+        headline: "Response token limit reached (stop reason: length).",
+      };
+    } else {
+      lastOutcome = {
+        status: "failed",
+        headline: message.errorMessage || `No final answer (stop reason: ${message.stopReason}).`,
+      };
+    }
+    sendProgress();
   });
 
   pi.on("agent_settled", (event) => {
     closing = true;
     inbox.clear();
-    send({
-      type: "result",
-      result: {
-        ...final,
-        status: limited ? "limit_reached" : event.aborted ? "cancelled" : final.status,
-        report: limited
-          ? bounded(`Model request limit reached. Partial result:\n${final.report}`)
-          : final.report,
+    const partial = formatPartialProgress(lastAssistantText, activity, totalToolCalls);
+    let result: Result;
+    if (limited) {
+      result = {
+        status: "limit_reached",
+        report: formatIncompleteReport("Model request limit reached.", partial),
         requests,
         tokens,
-      },
-    });
+      };
+    } else if (event.aborted) {
+      result = {
+        status: "cancelled",
+        report: formatIncompleteReport("Child run aborted.", partial),
+        requests,
+        tokens,
+      };
+    } else if (lastOutcome?.status === "completed") {
+      result = {
+        status: "completed",
+        report: lastOutcome.report,
+        requests,
+        tokens,
+      };
+    } else {
+      result = {
+        status: lastOutcome?.status ?? "failed",
+        report: formatIncompleteReport(
+          lastOutcome?.headline ?? "No final assistant response.",
+          partial,
+        ),
+        requests,
+        tokens,
+      };
+    }
+    send({ type: "result", result });
   });
 }

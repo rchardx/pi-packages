@@ -6,13 +6,23 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   buildNotification,
   formatDuration,
+  formatPartialProgress,
   formatPeerMessage,
   oneLine,
   renderMessageNotification,
   renderNotification,
   sanitizeDisplayText,
+  summarizeToolCall,
 } from "../src/notify.ts";
-import type { MessageEnvelope, Result } from "../src/protocol.ts";
+import {
+  formatIncompleteReport,
+  isProgress,
+  MAX_HEADLINE_BYTES,
+  MAX_PROGRESS_BYTES,
+  MAX_REPORT_BYTES,
+  type MessageEnvelope,
+  type Result,
+} from "../src/protocol.ts";
 
 const ESC = "\u001B";
 const CHILD_ID = "550e8400-e29b-41d4-a716-446655440000";
@@ -38,6 +48,81 @@ test("oneLine and sanitizeDisplayText strip terminal sequences and cap length", 
   assert.equal(sanitizeDisplayText(`${ESC}[31mred${ESC}[0m\r\nnext\u0007`), "red\nnext");
   assert.equal(oneLine("Implement validation\nRun tests"), "Implement validation ⏎ Run tests");
   assert.equal(oneLine(`x${"y".repeat(200)}`).length, 80);
+});
+
+test("summarizeToolCall, formatPartialProgress, and formatIncompleteReport bound partial state", () => {
+  assert.equal(
+    summarizeToolCall("write", { path: "src/auth.ts", content: "file-body" }),
+    "write src/auth.ts",
+  );
+  assert.equal(summarizeToolCall("read", { path: `${ESC}[31msrc/a.ts${ESC}[0m` }), "read src/a.ts");
+  assert.equal(summarizeToolCall("grep", { pattern: "TODO", path: "src" }), "grep TODO in src");
+  assert.equal(summarizeToolCall("find", { pattern: "*.ts" }), "find *.ts");
+  assert.equal(summarizeToolCall("bash", { command: "npm test" }), "bash npm test");
+  // Only the first line of a command is shown, so a heredoc body stays out.
+  assert.equal(
+    summarizeToolCall("bash", { command: "cat > notes.txt <<'EOF'\nfile-body\nEOF" }),
+    "bash cat > notes.txt <<'EOF'",
+  );
+  assert.equal(summarizeToolCall("bash", { command: `echo ${"x".repeat(200)}` }).length, 85);
+  // Other tools are named without arguments.
+  assert.equal(
+    summarizeToolCall("mcp__db__execute", {
+      query: "INSERT INTO users VALUES ('row')",
+      path: "db",
+    }),
+    "mcp__db__execute",
+  );
+  assert.equal(
+    summarizeToolCall("subagent_send", { to: "main", message: "body" }),
+    "subagent_send",
+  );
+
+  assert.equal(formatPartialProgress(undefined, [], 0), undefined);
+  assert.equal(
+    formatIncompleteReport("Child execution deadline exceeded.", undefined),
+    "Child execution deadline exceeded.",
+  );
+
+  const partial = formatPartialProgress(
+    "Updated src/auth.ts; running tests next.",
+    [
+      { summary: "edit src/auth.ts", state: "ok" },
+      { summary: "bash npm run lint", state: "error" },
+      { summary: "bash npm test", state: "running" },
+    ],
+    10,
+  );
+  assert.equal(
+    partial,
+    "Last assistant message:\n" +
+      "Updated src/auth.ts; running tests next.\n\n" +
+      "Recent tool activity (last 3 of 10):\n" +
+      "- edit src/auth.ts\n" +
+      "- bash npm run lint (error)\n" +
+      "- bash npm test (interrupted)",
+  );
+  const report = formatIncompleteReport("Child execution deadline exceeded.", partial);
+  assert.ok(report.startsWith("Child execution deadline exceeded.\n\nLast assistant message:\n"));
+
+  // A long error headline is truncated within its own allowance and the progress is kept.
+  const longHeadline = formatIncompleteReport("e".repeat(MAX_REPORT_BYTES), partial);
+  assert.ok(longHeadline.endsWith(`\n[truncated]\n\n${partial}`));
+  assert.equal(
+    Buffer.byteLength(longHeadline),
+    MAX_HEADLINE_BYTES + Buffer.byteLength(`\n\n${partial}`),
+  );
+  // Without progress a long error keeps the whole report.
+  assert.equal(
+    Buffer.byteLength(formatIncompleteReport("e".repeat(MAX_REPORT_BYTES * 2))),
+    MAX_REPORT_BYTES,
+  );
+  assert.ok(MAX_HEADLINE_BYTES + 2 + MAX_PROGRESS_BYTES <= MAX_REPORT_BYTES);
+  assert.equal(isProgress({ requests: 1, tokens: 2, partial }), true);
+  assert.equal(
+    isProgress({ requests: 1, tokens: 2, partial: "x".repeat(MAX_PROGRESS_BYTES + 1) }),
+    false,
+  );
 });
 
 test("buildNotification preserves model-facing content and populates card details", () => {
