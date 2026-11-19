@@ -247,6 +247,18 @@ test("subagent_send, subagent_list, subagent_wait, and subagent_cancel render ex
     `${CHILD_ID.slice(0, 8)} timed out without replying · 4s`,
   ]);
 
+  const waitAllCard = card("subagent_wait", { all: true, timeoutSeconds: 600 });
+  assert.deepEqual(lines(waitAllCard), ["subagent_wait  all · 600s"]);
+  waitAllCard.updateResult({
+    content: [{ type: "text", text: "Still running." }],
+    details: { outcome: "timeout", waitedMs: 600_000, running: 2 },
+    isError: false,
+  });
+  assert.deepEqual(lines(waitAllCard), [
+    "subagent_wait  all · 600s",
+    "2 still running after 10m0s",
+  ]);
+
   const cancelCard = card("subagent_cancel", { id: CHILD_ID });
   cancelCard.updateResult({
     content: [{ type: "text", text: "Cancelled." }],

@@ -9,6 +9,7 @@ import {
   MAIN_AGENT_ID,
   MAX_INBOX_MESSAGES,
   MAX_MESSAGE_BYTES,
+  MAX_ROOT_WAIT_SECONDS,
   MAX_WAIT_SECONDS,
   validateWaitTimeout,
   WAIT_COALESCE_MS,
@@ -22,7 +23,10 @@ import {
   renderWaitResult,
 } from "./render.ts";
 
-type QueueWaitOutcome = { outcome: "woke" | "idle" | "timeout"; waitedMs: number };
+export type QueueWaitOutcome =
+  | { outcome: "woke" | "idle" | "timeout"; waitedMs: number }
+  /** A wait for every subagent that ran out of time. */
+  | { outcome: "timeout"; waitedMs: number; running: number };
 
 export type WaitOutcome =
   | QueueWaitOutcome
@@ -31,6 +35,8 @@ export type WaitOutcome =
 /** Event-driven waiting on updates that an agent has not yet been shown. */
 export abstract class Waitable {
   private readonly waiters = new Set<() => void>();
+
+  protected readonly maxWaitSeconds: number = MAX_WAIT_SECONDS;
 
   abstract hasQueued(): boolean;
 
@@ -42,10 +48,12 @@ export abstract class Waitable {
     timeoutSeconds: number | undefined,
     signal?: AbortSignal,
     canStillReceive?: () => boolean,
-  ): Promise<QueueWaitOutcome> {
-    const seconds = validateWaitTimeout(timeoutSeconds);
+    /** What ends the wait as "woke"; by default, any queued update. */
+    ready: () => boolean = () => this.hasQueued(),
+  ): Promise<{ outcome: "woke" | "idle" | "timeout"; waitedMs: number }> {
+    const seconds = validateWaitTimeout(timeoutSeconds, this.maxWaitSeconds);
     if (signal?.aborted) throw new Error("Wait cancelled.");
-    if (this.hasQueued()) return { outcome: "woke", waitedMs: 0 };
+    if (ready()) return { outcome: "woke", waitedMs: 0 };
     if (canStillReceive && !canStillReceive()) return { outcome: "idle", waitedMs: 0 };
 
     const startedAt = Date.now();
@@ -72,11 +80,11 @@ export abstract class Waitable {
       };
       const onWake = () => {
         if (settled) return;
-        if (!this.hasQueued() && canStillReceive && !canStillReceive()) {
+        if (!ready() && canStillReceive && !canStillReceive()) {
           finish("idle");
           return;
         }
-        if (!this.hasQueued() && (!canStillReceive || canStillReceive())) return;
+        if (!ready()) return;
         if (coalesceTimer) return;
         coalesceTimer = setTimeout(() => finish("woke"), WAIT_COALESCE_MS);
         coalesceTimer.unref();
@@ -191,7 +199,9 @@ export function formatWaitOutcome(result: WaitOutcome): string {
     case "idle":
       return "No running subagents or queued updates remain.";
     case "timeout":
-      return `No updates arrived within ${formatDuration(result.waitedMs)}.`;
+      return "running" in result
+        ? `${result.running} subagent(s) still running after ${formatDuration(result.waitedMs)}.`
+        : `No updates arrived within ${formatDuration(result.waitedMs)}.`;
     case "peer_finished":
       return result.peers
         .map(
@@ -215,8 +225,27 @@ export interface CommunicationTransport {
     timeoutSeconds: number | undefined,
     signal?: AbortSignal,
     ctx?: ExtensionToolContext,
+    /** Root session only: wait until every subagent has finished. */
+    all?: boolean,
   ): Promise<WaitOutcome>;
 }
+
+const waitTimeout = (maxSeconds: number) =>
+  Type.Optional(
+    Type.Number({
+      description: `Maximum seconds to wait before returning (default ${DEFAULT_WAIT_SECONDS}, max ${maxSeconds}).`,
+    }),
+  );
+const childWaitParameters = Type.Object({ timeoutSeconds: waitTimeout(MAX_WAIT_SECONDS) });
+const rootWaitParameters = Type.Object({
+  timeoutSeconds: waitTimeout(MAX_ROOT_WAIT_SECONDS),
+  all: Type.Optional(
+    Type.Boolean({
+      description:
+        "Wait until every running subagent has finished instead of returning on the first completion.",
+    }),
+  ),
+});
 
 export function registerCommunicationTools(
   pi: ExtensionAPI,
@@ -274,19 +303,15 @@ export function registerCommunicationTools(
       ? "Wait without polling for an incoming peer message. Returns early when a subagent you messaged finishes without replying. " +
         "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent."
       : "Wait without polling for an incoming subagent message or completion notification. " +
-        "Returns immediately when updates are already queued or no subagents are running.",
-    parameters: Type.Object({
-      timeoutSeconds: Type.Optional(
-        Type.Number({
-          description: `Maximum seconds to wait before returning (default ${DEFAULT_WAIT_SECONDS}, max ${MAX_WAIT_SECONDS}).`,
-        }),
-      ),
-    }),
+        "Returns immediately when updates are already queued or no subagents are running. " +
+        "With all: true, completions are held until every subagent has finished; a message from a subagent still ends the wait.",
+    parameters: options.isChild ? childWaitParameters : rootWaitParameters,
     renderCall: renderWaitCall,
     renderResult: renderWaitResult,
-    async execute(_callId, { timeoutSeconds }, signal, _update, ctx) {
+    async execute(_callId, params, signal, _update, ctx) {
       transport.checkContext?.(ctx);
-      const outcome = await transport.wait(timeoutSeconds, signal, ctx);
+      const all = "all" in params && params.all === true;
+      const outcome = await transport.wait(params.timeoutSeconds, signal, ctx, all);
       return {
         content: [{ type: "text", text: formatWaitOutcome(outcome) }],
         details: outcome,

@@ -30,6 +30,7 @@ subagent({
 subagent_list({})
 subagent_send({ to: "<UUID | 'main' | '*'>", message: "Share an intermediate finding or answer a question." })
 subagent_wait({ timeoutSeconds: 120 })
+subagent_wait({ all: true, timeoutSeconds: 1800 }) // root session: wait for every child
 
 subagent_cancel({ id: "<full UUID returned by subagent>" })
 ```
@@ -84,7 +85,11 @@ messages without polling or monitoring a dashboard:
   processed it.
 - `subagent_wait` suspends the current turn until an incoming message (or, in
   `"main"`, a child completion notification) arrives, no running children remain,
-  `timeoutSeconds` elapses (default `120`, maximum `300`), or the turn is aborted.
+  `timeoutSeconds` elapses (default `120`; maximum `3600` in `"main"`, `300` in a
+  child), or the turn is aborted. In `"main"`, `all: true` holds completion
+  notifications until every child has finished, so one call covers a whole batch;
+  a message from a child still ends the wait, and a timeout reports how many
+  children are still running.
   In a child it also returns when a subagent the child messaged finishes without
   having replied, naming that subagent and its terminal status.
 - **Terminal finality:** ending a child turn without calling `subagent_wait` and
@@ -252,7 +257,7 @@ background-shell extensions do not accidentally return before their commands fin
 | Role instructions | 16 KiB UTF-8, nonempty when set |
 | Peer message input | 16 KiB UTF-8, nonempty |
 | Queued unprocessed messages per recipient | 32; excess sends fail without dropping accepted mail |
-| Wait timeout (`subagent_wait`) | 120 seconds default, 300 seconds maximum |
+| Wait timeout (`subagent_wait`) | 120 seconds default; 3600 seconds maximum in the root session, 300 in a child |
 | Startup deadline | 90 seconds |
 | Total execution deadline, including startup | 30 minutes (`1800` seconds) |
 | Model turns | At most 64 admitted turns; recovery/compaction requests are governed by Pi |

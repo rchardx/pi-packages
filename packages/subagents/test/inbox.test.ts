@@ -7,7 +7,7 @@ import {
   formatWaitOutcome,
 } from "../src/inbox.ts";
 import { Mailbox } from "../src/mailbox.ts";
-import { MAX_WAIT_SECONDS } from "../src/protocol.ts";
+import { MAX_ROOT_WAIT_SECONDS, MAX_WAIT_SECONDS } from "../src/protocol.ts";
 
 // Wait timers are unreferenced so they never keep a host process alive; hold the
 // event loop open so a test awaiting only such a timer can finish.
@@ -90,6 +90,79 @@ test("Mailbox owns updates in arrival order and bounds only peer messages", asyn
   assert.equal(mailbox.hasQueued(), false);
   assert.equal(mailbox.take(), undefined);
   assert.deepEqual(await mailbox.wait(5, undefined, () => false), { outcome: "idle", waitedMs: 0 });
+});
+
+test("Mailbox.waitForUpdates reports queued completions and can hold them for all", async (t) => {
+  keepAlive(t);
+  const update = (content: string) => ({ customType: "test", content, details: { content } });
+  const settled = async (promise: Promise<unknown>) => {
+    let done = false;
+    void promise.then(() => {
+      done = true;
+    });
+    // Longer than the wake coalescing window.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return done;
+  };
+
+  // The last subagent ending wakes the wait just before its result is queued.
+  let running = 1;
+  const single = new Mailbox();
+  const last = single.waitForUpdates(5, undefined, () => running, false);
+  running = 0;
+  single.wake();
+  single.addResult(update("only result"));
+  assert.equal((await last).outcome, "woke");
+  single.drain();
+  assert.deepEqual(
+    await single.waitForUpdates(5, undefined, () => running, false),
+    { outcome: "idle", waitedMs: 0 },
+    "idle means nothing is running and nothing is queued",
+  );
+
+  running = 2;
+  const mailbox = new Mailbox();
+  const waiting = mailbox.waitForUpdates(5, undefined, () => running, true);
+  running = 1;
+  mailbox.addResult(update("first result"));
+  assert.equal(await settled(waiting), false, "a completion does not end a wait for all");
+  assert.deepEqual(await mailbox.waitForUpdates(5, undefined, () => running, false), {
+    outcome: "woke",
+    waitedMs: 0,
+  });
+  running = 0;
+  mailbox.wake();
+  mailbox.addResult(update("second result"));
+  assert.equal((await waiting).outcome, "woke");
+  assert.deepEqual(
+    await mailbox.waitForUpdates(5, undefined, () => running, true),
+    { outcome: "woke", waitedMs: 0 },
+    "held completions are reported once nothing is running",
+  );
+  mailbox.drain();
+  assert.deepEqual(await mailbox.waitForUpdates(5, undefined, () => running, true), {
+    outcome: "idle",
+    waitedMs: 0,
+  });
+
+  // A peer message ends a wait for all: its sender may need an answer.
+  running = 1;
+  const interrupted = mailbox.waitForUpdates(5, undefined, () => running, true);
+  assert.equal(mailbox.offerMessage(update("question")), true);
+  assert.equal((await interrupted).outcome, "woke");
+
+  // Only a wait for all reports how many subagents are still running.
+  const plainTimeout = await new Mailbox().waitForUpdates(0.04, undefined, () => 3, false);
+  assert.deepEqual(Object.keys(plainTimeout).sort(), ["outcome", "waitedMs"]);
+  const timedOut = await new Mailbox().waitForUpdates(0.04, undefined, () => 3, true);
+  assert.equal(timedOut.outcome, "timeout");
+  assert.equal("running" in timedOut && timedOut.running, 3);
+
+  // The root session may wait longer than a child.
+  const aborted = AbortSignal.abort();
+  await assert.rejects(new Mailbox().wait(MAX_ROOT_WAIT_SECONDS, aborted), /Wait cancelled/u);
+  await assert.rejects(new Mailbox().wait(MAX_ROOT_WAIT_SECONDS + 1), /at most 3600/u);
+  await assert.rejects(new AgentInbox().wait(MAX_WAIT_SECONDS + 1), /at most 300/u);
 });
 
 test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, timeouts, and aborts", async (t) => {
@@ -179,6 +252,10 @@ test("formatting helpers produce concise agent listings, receipts, and wait outc
   assert.match(formatWaitOutcome({ outcome: "woke", waitedMs: 10 }), /Incoming update queued/u);
   assert.match(formatWaitOutcome({ outcome: "idle", waitedMs: 0 }), /No running subagents/u);
   assert.match(formatWaitOutcome({ outcome: "timeout", waitedMs: 5_000 }), /within 5s/u);
+  assert.equal(
+    formatWaitOutcome({ outcome: "timeout", waitedMs: 600_000, running: 2 }),
+    "2 subagent(s) still running after 10m0s.",
+  );
   assert.equal(
     formatWaitOutcome({
       outcome: "peer_finished",

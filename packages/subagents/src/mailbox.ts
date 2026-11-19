@@ -1,5 +1,5 @@
-import { Waitable } from "./inbox.ts";
-import { MAX_INBOX_MESSAGES } from "./protocol.ts";
+import { type QueueWaitOutcome, Waitable } from "./inbox.ts";
+import { MAX_INBOX_MESSAGES, MAX_ROOT_WAIT_SECONDS } from "./protocol.ts";
 
 /** A session message the root agent has not been shown yet. */
 export interface Update {
@@ -16,6 +16,7 @@ export interface Update {
 export class Mailbox extends Waitable {
   private readonly updates: { update: Update; bounded: boolean }[] = [];
   private readonly maxMessages: number;
+  protected override readonly maxWaitSeconds = MAX_ROOT_WAIT_SECONDS;
 
   constructor(maxMessages = MAX_INBOX_MESSAGES) {
     super();
@@ -38,6 +39,29 @@ export class Mailbox extends Waitable {
 
   hasQueued(): boolean {
     return this.updates.length > 0;
+  }
+
+  /**
+   * Wait for an update, or with `all` until no subagent is running. Completion results
+   * then stay queued; a peer message still ends the wait, because its sender may be
+   * waiting on an answer.
+   */
+  async waitForUpdates(
+    timeoutSeconds: number | undefined,
+    signal: AbortSignal | undefined,
+    running: () => number,
+    all: boolean,
+  ): Promise<QueueWaitOutcome> {
+    const result = await this.wait(
+      timeoutSeconds,
+      signal,
+      () => running() > 0,
+      all ? () => this.updates.some((entry) => entry.bounded) : undefined,
+    );
+    // The last subagent's result is queued just after the wake for nothing running.
+    if (result.outcome === "idle" && this.hasQueued())
+      return { outcome: "woke", waitedMs: result.waitedMs };
+    return all && result.outcome === "timeout" ? { ...result, running: running() } : result;
   }
 
   take(): Update | undefined {

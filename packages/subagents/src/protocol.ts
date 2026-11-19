@@ -27,6 +27,8 @@ export const DEADLINE_MS = 30 * 60_000;
 export const STOP_GRACE_MS = 2_000;
 export const DEFAULT_WAIT_SECONDS = 120;
 export const MAX_WAIT_SECONDS = 300;
+/** The root session may wait as long as Pi keeps its prompt cache warm during a run. */
+export const MAX_ROOT_WAIT_SECONDS = 3600;
 export const WAIT_COALESCE_MS = 25;
 export const MAX_TERMINAL_RECORDS = 256;
 
@@ -222,10 +224,13 @@ export function validateSendInput(rawTo: string, message: string): { to: string;
   return { to, message };
 }
 
-export function validateWaitTimeout(timeoutSeconds: number | undefined): number {
+export function validateWaitTimeout(
+  timeoutSeconds: number | undefined,
+  maxSeconds = MAX_WAIT_SECONDS,
+): number {
   const seconds = timeoutSeconds ?? DEFAULT_WAIT_SECONDS;
-  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > MAX_WAIT_SECONDS) {
-    throw new Error(`timeoutSeconds must be greater than 0 and at most ${MAX_WAIT_SECONDS}.`);
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > maxSeconds) {
+    throw new Error(`timeoutSeconds must be greater than 0 and at most ${maxSeconds}.`);
   }
   return seconds;
 }
