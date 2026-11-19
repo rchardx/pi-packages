@@ -24,6 +24,13 @@ export interface Task {
   result?: Result;
 }
 
+/** Names what the model passed and what is accepted; a truncated card ID is the usual cause. */
+function unknownSubagent(id: string): Error {
+  return new Error(
+    `No subagent "${oneLine(id, 64)}" in this session. Pass the full UUID returned by subagent; subagent_list shows those still running, and old terminal records expire.`,
+  );
+}
+
 export type StartChild = (launch: Launch, options?: RunnerOptions) => Execution;
 
 export class Tasks {
@@ -77,9 +84,7 @@ export class Tasks {
     const to = rawTo.trim();
     const target = this.records.get(to);
     if (!target || (!target.handedOff && !target.result)) {
-      throw new Error(
-        "Unknown subagent ID for this session (old terminal records may have expired).",
-      );
+      throw unknownSubagent(to);
     }
     if (target.result) {
       throw new Error(
@@ -187,18 +192,17 @@ export class Tasks {
     }
   }
 
-  async cancel(id: string): Promise<Result> {
+  /** The result carries the ID the task is recorded under, without the caller's padding. */
+  async cancel(rawId: string): Promise<Result & { id: string }> {
+    const id = rawId.trim();
     const task = this.records.get(id);
-    if (!task)
-      throw new Error(
-        "Unknown subagent ID for this session (old terminal records may have expired).",
-      );
-    if (task.result) return task.result;
+    if (!task) throw unknownSubagent(id);
+    if (task.result) return { id, ...task.result };
     if (!task.execution) throw new Error("Subagent has no running execution.");
     const wasRunning = task.handedOff && !task.cancelRequested;
     task.cancelRequested = true;
     if (wasRunning && !this.closed) this.onChange();
-    return task.execution.cancel();
+    return { id, ...(await task.execution.cancel()) };
   }
 
   async shutdown(): Promise<void> {

@@ -413,10 +413,15 @@ export default function subagents(pi: ExtensionAPI) {
     async execute(_call, { id }, _signal, _update, ctx) {
       currentCtx = ctx;
       if (!tasks) throw new Error("No subagents belong to this session.");
-      const result = await tasks.cancel(id);
+      const cancelled = await tasks.cancel(id);
       return {
-        content: [{ type: "text", text: `Subagent ${id}: ${result.status}. ${result.report}` }],
-        details: { id, ...result },
+        content: [
+          {
+            type: "text",
+            text: `Subagent ${cancelled.id}: ${cancelled.status}. ${cancelled.report}`,
+          },
+        ],
+        details: cancelled,
       };
     },
   });
