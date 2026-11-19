@@ -190,6 +190,22 @@ export async function runNightly(
     `See [nightly installation instructions](${GITHUB_ORIGIN}/${repository}/blob/${sha}/CONTRIBUTING.md#install-a-nightly-snapshot).`,
   ].join("\n");
 
+  // A rerun can reach publish with archives verified for a previous main tip.
+  const mainRef = record(await api("GET", `${prefix}/git/ref/heads/main`));
+  const main = record(mainRef.object);
+  if (
+    mainRef.ref !== "refs/heads/main" ||
+    main.type !== "commit" ||
+    typeof main.sha !== "string" ||
+    !/^[a-f0-9]{40}$/u.test(main.sha)
+  ) {
+    throw new Error("Unexpected GitHub main ref response");
+  }
+  if (main.sha !== sha) {
+    console.log(`Skipping stale nightly: verified ${sha}, but main now points to ${main.sha}.`);
+    return;
+  }
+
   try {
     let release = await findRelease();
     await readTag(); // Reject annotated tags before changing any remote state.

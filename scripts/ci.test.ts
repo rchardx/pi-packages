@@ -1,13 +1,35 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { type SpawnSyncReturns, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { type TestContext, test } from "node:test";
 
 const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const script = workflow.match(/node --input-type=module <<'JS'\n([\s\S]+?)\n +JS/u)?.[1];
 assert.ok(script, "CI must expose its dependency-free minimum-version reader");
+
+test("the aggregate check requires successful runtime and actionlint jobs", {
+  skip: process.platform === "win32",
+}, () => {
+  const gate = workflow.split("\n  check:\n")[1];
+  assert.ok(gate);
+  assert.match(gate, /needs: \[validate, actionlint\]/u);
+  assert.match(gate, /VALIDATE: \$\{\{ needs\.validate\.result \}\}/u);
+  assert.match(gate, /ACTIONLINT: \$\{\{ needs\.actionlint\.result \}\}/u);
+  const command = gate.match(/^ +run: (.+)$/mu)?.[1];
+  assert.ok(command);
+  for (const VALIDATE of ["success", "failure", "cancelled", "skipped"]) {
+    for (const ACTIONLINT of ["success", "failure", "cancelled", "skipped"]) {
+      const result: SpawnSyncReturns<string> = spawnSync("sh", ["-c", command], {
+        encoding: "utf8",
+        env: { ...process.env, VALIDATE, ACTIONLINT },
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status === 0, VALIDATE === "success" && ACTIONLINT === "success");
+    }
+  }
+});
 
 function resolveMinimum(t: TestContext, manifest: unknown) {
   const directory = mkdtempSync(join(tmpdir(), "pi-ci-minimum-"));

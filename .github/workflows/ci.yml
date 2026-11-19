@@ -13,6 +13,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Lint GitHub Actions workflows
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl --fail --silent --show-error --location --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/$archive"
+          printf '%s  %s\n' "$SHA256" "$RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+
   validate:
     name: validate (${{ matrix.runtime }})
     runs-on: ubuntu-latest
@@ -21,7 +37,7 @@ jobs:
       matrix:
         runtime: [minimum, development]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           lfs: true
       - name: Read minimum Node version
@@ -35,7 +51,7 @@ jobs:
           if (!match) throw new Error('engines.node must be a single >=x.y.z floor');
           appendFileSync(process.env.GITHUB_OUTPUT, `version=${match[1]}\n`);
           JS
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ steps.minimum.outputs.version }}
           node-version-file: ${{ matrix.runtime == 'development' && '.node-version' || '' }}
@@ -48,10 +64,11 @@ jobs:
   check:
     name: check
     if: ${{ always() }}
-    needs: validate
+    needs: [validate, actionlint]
     runs-on: ubuntu-latest
     steps:
-      - name: Require both runtimes to pass
+      - name: Require both runtimes and workflow lint to pass
         env:
-          RESULT: ${{ needs.validate.result }}
-        run: test "$RESULT" = success
+          VALIDATE: ${{ needs.validate.result }}
+          ACTIONLINT: ${{ needs.actionlint.result }}
+        run: test "$VALIDATE" = success && test "$ACTIONLINT" = success
