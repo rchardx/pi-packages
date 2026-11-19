@@ -62,7 +62,7 @@ test("OpenAI Search streams Responses web_search and orders cited sources ahead 
         "content-type": "application/json",
       });
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      assert.equal(body.model, "gpt-5.4-mini");
+      assert.equal(body.model, "gpt-6-luna");
       assert.equal(body.store, false);
       assert.equal(body.stream, true);
       assert.deepEqual(body.tools, [{ type: "web_search" }]);
@@ -93,7 +93,7 @@ test("OpenAI Search streams Responses web_search and orders cited sources ahead 
   );
   assert.equal(calls, 1);
   const text = result.content[0]?.text ?? "";
-  assert.match(text, /Provider: OpenAI Search \(gpt-5\.4-mini\)/u);
+  assert.match(text, /Provider: OpenAI Search \(gpt-6-luna\)/u);
   assert.match(text, /Omitted 1 result\(s\) with unusable source URLs\./u);
   assert.match(text, /Provider synthesis:\nNode 26 shipped \n\nsecurity fixes\.\n\n1\. Node blog/u);
   assert.doesNotMatch(text, /I will search first|ignored deltas|javascript:|sk-openai/u);
@@ -105,7 +105,7 @@ test("OpenAI Search streams Responses web_search and orders cited sources ahead 
   assert.ok(display.synthesis);
   assert.deepEqual(details, {
     provider: "openai",
-    model: "gpt-5.4-mini",
+    model: "gpt-6-luna",
     query: "Node.js releases",
     requestedCount: 3,
     resultCount: 3,
@@ -330,6 +330,26 @@ test("OpenAI Search validates stream framing, encoding, status, and size without
     run(() => new Response(`{"error":"${secret}"}`, { status: 401 })),
     { message: "OpenAI Search HTTP 401: Missing or invalid OpenAI credentials." },
   );
+  for (const [provider, model] of [
+    ["openai", undefined],
+    ["openai-codex", "retired-model"],
+  ] as const) {
+    await assert.rejects(
+      searchOpenAI(
+        provider,
+        { query: "test" },
+        auth,
+        model ? { model } : {},
+        undefined,
+        async () => new Response(`raw ${secret}`, { status: 404 }),
+      ),
+      {
+        message:
+          `${provider === "openai" ? "OpenAI Search" : "OpenAI Codex Search"} HTTP 404: ` +
+          `Requested model "${model ?? "gpt-6-luna"}" or endpoint was not found; if the model is unavailable, set search.providers.${provider}.model in web-access.json.`,
+      },
+    );
+  }
   await assert.rejects(
     run(() => new Response("", { status: 429 })),
     /HTTP 429: OpenAI search rate limit exceeded\. This may be transient; retry later\./u,

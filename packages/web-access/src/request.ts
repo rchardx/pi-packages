@@ -7,6 +7,12 @@ export interface HttpErrorOptions {
   reasons?: Readonly<Record<number, string>>;
 }
 
+// A 404 may come from a retired model or a missing endpoint; name the model and its setting
+// without claiming which one caused it.
+export function notFoundReason(tool: WebToolKind, provider: string, model: string): string {
+  return `Requested model "${model}" or endpoint was not found; if the model is unavailable, set ${tool}.providers.${provider}.model in web-access.json.`;
+}
+
 export function httpError(status: number, options: HttpErrorOptions): Error {
   const { label, providerLabel, tool } = options;
   const defaults: Record<number, string> = {

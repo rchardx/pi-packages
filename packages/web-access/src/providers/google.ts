@@ -2,11 +2,11 @@ import { Type } from "typebox";
 import { Check } from "typebox/value";
 import { GOOGLE_API_ORIGIN } from "../auth.ts";
 import { formatModelFetch } from "../grounded.ts";
-import { postJson, withDeadline } from "../request.ts";
+import { notFoundReason, postJson, withDeadline } from "../request.ts";
 import { normalizeFetchUrl, normalizeSourceUrl } from "../url.ts";
 import { FETCH_TIMEOUT_MS, MAX_RESPONSE_BYTES } from "./deepseek.ts";
 
-export const DEFAULT_GOOGLE_MODEL = "gemini-3.6-flash";
+export const DEFAULT_GOOGLE_MODEL = "gemini-3.8-flash";
 const LABEL = "Google Fetch";
 
 const TextPart = Type.Object({ text: Type.String(), thought: Type.Optional(Type.Boolean()) });
@@ -44,16 +44,18 @@ const GenerateContentResponse = Type.Object({
   promptFeedback: Type.Optional(Type.Object({ blockReason: Type.Optional(Type.String()) })),
 });
 
-const ERROR_OPTIONS = {
-  label: LABEL,
-  providerLabel: "Google",
-  tool: "fetch",
-  reasons: {
-    400: "Invalid request or Gemini API key.",
-    403: "Gemini API access denied; verify the API key and project permissions.",
-    404: "Requested Gemini model was not found.",
-  },
-} as const;
+function googleErrorOptions(model: string) {
+  return {
+    label: LABEL,
+    providerLabel: "Google",
+    tool: "fetch",
+    reasons: {
+      400: "Invalid request or Gemini API key.",
+      403: "Gemini API access denied; verify the API key and project permissions.",
+      404: notFoundReason("fetch", "google", model),
+    },
+  } as const;
+}
 
 export interface GoogleOptions {
   model?: string;
@@ -96,7 +98,7 @@ export async function fetchGoogle(
       signal: combined,
       maxBytes: MAX_RESPONSE_BYTES,
       request,
-      errorOptions: ERROR_OPTIONS,
+      errorOptions: googleErrorOptions(model),
     });
     if (!Check(GenerateContentResponse, data)) {
       throw new Error(`${LABEL} returned an invalid response schema.`);

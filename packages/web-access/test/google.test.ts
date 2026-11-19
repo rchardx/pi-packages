@@ -123,7 +123,10 @@ test("Google Fetch requires a successful url_context retrieval and returns the m
   );
   for (const [status, expected] of [
     [400, "Google Fetch HTTP 400: Invalid request or Gemini API key."],
-    [404, "Google Fetch HTTP 404: Requested Gemini model was not found."],
+    [
+      404,
+      'Google Fetch HTTP 404: Requested model "gemini-3.8-flash" or endpoint was not found; if the model is unavailable, set fetch.providers.google.model in web-access.json.',
+    ],
     [
       429,
       "Google Fetch HTTP 429: Google fetch rate limit exceeded. This may be transient; retry later.",
@@ -146,7 +149,7 @@ test("Google Fetch defaults to the catalog model and leaves an unmatched title e
       "Content.",
     );
   });
-  assert.equal(result.details.model, "gemini-3.6-flash");
+  assert.equal(result.details.model, "gemini-3.8-flash");
   assert.equal(result.details.title, "");
   assert.match(result.content[0]?.text ?? "", /Title: Not provided\./u);
 });

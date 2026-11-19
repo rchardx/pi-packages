@@ -63,7 +63,7 @@ Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
     "providers": {
       "deepseek": {},
       "anthropic": {},
-      "google": { "model": "gemini-3.6-flash" }
+      "google": { "model": "gemini-3.8-flash" }
     },
     "defaultProvider": "deepseek"
   }
@@ -74,18 +74,17 @@ Each entry under `providers` independently authorizes possible provider charges,
 use of Pi-resolved credentials, and query or URL disclosure to that provider:
 
 - `deepseek` uses standalone tool endpoints and accepts only `{}`.
-- `anthropic` uses the Messages API and accepts an optional `"model"` ID
-  (defaults to `claude-haiku-5-5`).
+- `anthropic` uses the Messages API and accepts an optional `"model"` ID.
 - `google` uses the Gemini API `generateContent` method with the built-in
-  `url_context` tool and accepts an optional `"model"` ID (defaults to
-  `gemini-3.6-flash`). It is fetch-only: the Gemini API terms for Grounding with
-  Google Search require showing Google's rendered Search Suggestions with the
-  results, unmodified, to the end user, which a terminal tool result consumed by
-  the agent model cannot do, so `search` rejects it.
+  `url_context` tool and accepts an optional `"model"` ID. It is fetch-only:
+  the Gemini API terms for Grounding with Google Search require showing Google's
+  rendered Search Suggestions with the results, unmodified, to the end user,
+  which a terminal tool result consumed by the agent model cannot do, so
+  `search` rejects it.
 - `openai` and `openai-codex` use the Responses API `web_search` tool and accept
-  an optional `"model"` ID (defaults to `gpt-5.4-mini` and `gpt-6-luna`). They
-  are search-only: OpenAI offers no deterministic page-fetch tool, so `fetch`
-  rejects them rather than approximating fetch through search.
+  an optional `"model"` ID. They are search-only: OpenAI offers no
+  deterministic page-fetch tool, so `fetch` rejects them rather than
+  approximating fetch through search.
 - On each call, if the active Pi model's provider (`ctx.model.provider`) is
   listed in `providers`, that provider handles the request. Otherwise
   `defaultProvider` (which must also appear in `providers`) is used when set;
@@ -107,6 +106,24 @@ changing its launch environment.
 Only `search` and `fetch` settings are supported. Malformed JSON, unknown fields,
 empty `providers` maps, or invalid settings prevent both tools from loading;
 invalid edits during a session fail on the next call. Fix the file and reload.
+
+### Default models
+
+Model-backed providers use these built-in model IDs when `"model"` is omitted:
+
+| Provider | Tools | Default model |
+| --- | --- | --- |
+| `anthropic` | search, fetch | `claude-haiku-5-5` |
+| `google` | fetch | `gemini-3.8-flash` |
+| `openai` | search | `gpt-6-luna` |
+| `openai-codex` | search | `gpt-6-luna` |
+
+Defaults are lightweight models fixed in each package release; they do not
+follow the active Pi model or newer provider releases. Tests check that each
+default exists in the model catalog of the Pi version used for development. Set
+`"model"` to choose another model, for example when a provider retires a
+default. When the provider returns HTTP 404, the error reports that the
+requested model or endpoint was not found and names the model and its setting.
 
 ### Authentication and origin boundaries
 

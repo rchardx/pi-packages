@@ -749,7 +749,7 @@ test("Pi routes search to OpenAI and OpenAI Codex by active model with their own
     assert.equal(body.stream, true);
     if (url === "https://api.openai.com/v1/responses") {
       assert.equal(headers.get("authorization"), "Bearer sk-openai-runtime-key");
-      assert.equal(body.model, "gpt-5.4-mini");
+      assert.equal(body.model, "gpt-6-luna");
     } else {
       assert.equal(url, "https://chatgpt.com/backend-api/codex/responses");
       assert.equal(headers.get("authorization"), `Bearer ${codexToken}`);
