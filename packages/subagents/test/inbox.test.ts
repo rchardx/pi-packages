@@ -19,13 +19,52 @@ function keepAlive(t: TestContext): void {
 test("AgentInbox bounds accepted messages until they are committed", () => {
   const inbox = new AgentInbox(2);
   assert.equal(inbox.hasQueued(), false);
-  assert.equal(inbox.acceptMessage("m1"), true);
-  assert.equal(inbox.acceptMessage("m2"), true);
-  assert.equal(inbox.acceptMessage("m3"), false, "exceeding maxMessages must fail closed");
+  assert.equal(inbox.acceptMessage("m1", "main"), true);
+  assert.equal(inbox.acceptMessage("m2", "main"), true);
+  assert.equal(inbox.acceptMessage("m3", "main"), false, "exceeding maxMessages must fail closed");
   inbox.markMessageCommitted("m1");
-  assert.equal(inbox.acceptMessage("m3"), true);
+  assert.equal(inbox.acceptMessage("m3", "main"), true);
   inbox.markMessageCommitted("m2");
   inbox.markMessageCommitted("m3");
+  assert.equal(inbox.hasQueued(), false);
+});
+
+test("AgentInbox ends a wait when a messaged peer finishes without replying", async (t) => {
+  keepAlive(t);
+  const inbox = new AgentInbox();
+  inbox.expectReplies(["main", "peer-a", "peer-b", "peer-c"]);
+
+  // A subagent this child never messaged does not end the wait.
+  inbox.peerFinished({ id: "stranger", status: "completed" });
+  assert.equal(inbox.hasQueued(), false);
+
+  const waiting = inbox.waitForUpdate(5);
+  inbox.peerFinished({ id: "peer-a", status: "failed" });
+  const woken = await waiting;
+  assert.equal(woken.outcome, "peer_finished");
+  assert.deepEqual(woken.outcome === "peer_finished" && woken.peers, [
+    { id: "peer-a", status: "failed" },
+  ]);
+  assert.equal(inbox.hasQueued(), false, "a finished peer is reported once");
+
+  // A peer that already replied is no longer awaited.
+  assert.equal(inbox.acceptMessage("reply", "peer-b"), true);
+  inbox.peerFinished({ id: "peer-b", status: "completed" });
+  // A queued message is reported first; the finished peer is kept for the next wait.
+  inbox.peerFinished({ id: "peer-c", status: "timed_out" });
+  assert.deepEqual(await inbox.waitForUpdate(5), { outcome: "woke", waitedMs: 0 });
+  inbox.markMessageCommitted("reply");
+  assert.deepEqual(await inbox.waitForUpdate(5), {
+    outcome: "peer_finished",
+    waitedMs: 0,
+    peers: [{ id: "peer-c", status: "timed_out" }],
+  });
+
+  // The root session is never awaited, and clearing forgets everything.
+  inbox.peerFinished({ id: "main", status: "completed" });
+  inbox.expectReplies(["peer-d"]);
+  inbox.clear();
+  inbox.peerFinished({ id: "peer-d", status: "cancelled" });
   assert.equal(inbox.hasQueued(), false);
 });
 
@@ -56,7 +95,7 @@ test("Mailbox owns updates in arrival order and bounds only peer messages", asyn
 test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, timeouts, and aborts", async (t) => {
   keepAlive(t);
   const prequeued = new AgentInbox();
-  prequeued.acceptMessage("m-ready");
+  prequeued.acceptMessage("m-ready", "main");
   assert.deepEqual(await prequeued.wait(10), { outcome: "woke", waitedMs: 0 });
   prequeued.markMessageCommitted("m-ready");
 
@@ -67,7 +106,7 @@ test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, time
 
   const waking = new AgentInbox();
   setTimeout(() => {
-    waking.acceptMessage("m-live");
+    waking.acceptMessage("m-live", "main");
   }, 15);
   const woke = await waking.wait(5);
   assert.equal(woke.outcome, "woke");
@@ -140,4 +179,16 @@ test("formatting helpers produce concise agent listings, receipts, and wait outc
   assert.match(formatWaitOutcome({ outcome: "woke", waitedMs: 10 }), /Incoming update queued/u);
   assert.match(formatWaitOutcome({ outcome: "idle", waitedMs: 0 }), /No running subagents/u);
   assert.match(formatWaitOutcome({ outcome: "timeout", waitedMs: 5_000 }), /within 5s/u);
+  assert.equal(
+    formatWaitOutcome({
+      outcome: "peer_finished",
+      waitedMs: 5_000,
+      peers: [
+        { id: "peer-a", status: "timed_out" },
+        { id: "peer-b", status: "completed" },
+      ],
+    }),
+    "Subagent peer-a finished (timed out) without replying and can no longer send or receive messages.\n" +
+      "Subagent peer-b finished (completed) without replying and can no longer send or receive messages.",
+  );
 });

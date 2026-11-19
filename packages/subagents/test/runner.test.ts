@@ -168,6 +168,27 @@ test("startup errors, invalid results, and spawn failures are explicit", async (
   assert.equal((await missing.done).status, "failed");
 });
 
+test("a finished peer is announced only to a child that has been handed off", async () => {
+  const execution = startChild(launch, {
+    args: script(
+      `process.send({type:'ready'});
+       process.on('message', m => {
+         if (m.type === 'peer_finished') {
+           const report = m.peer.id + ':' + m.peer.status;
+           process.send({type:'result', result:{status:'completed', report, requests:1, tokens:1}}, () => process.exit(0));
+         }
+       });`,
+    ),
+  });
+  await execution.ready;
+  execution.peerFinished({ id: "before-handoff", status: "completed" });
+  execution.run();
+  execution.peerFinished({ id: "peer", status: "timed_out" });
+  assert.equal((await execution.done).report, "peer:timed_out");
+  // A settled child is not written to.
+  execution.peerFinished({ id: "late", status: "completed" });
+});
+
 test("IPC messaging handles delivery acks, list/send requests, and exit during delivery", async () => {
   const execution = startChild(
     { ...launch, id: "child-uuid" },

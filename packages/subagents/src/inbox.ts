@@ -1,10 +1,12 @@
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { formatDuration } from "./notify.ts";
+import { formatDuration, statusPhrase } from "./notify.ts";
 import {
   DEFAULT_WAIT_SECONDS,
   type DeliveryReceipt,
+  type FinishedPeer,
   type LiveAgent,
+  MAIN_AGENT_ID,
   MAX_INBOX_MESSAGES,
   MAX_MESSAGE_BYTES,
   MAX_WAIT_SECONDS,
@@ -20,10 +22,11 @@ import {
   renderWaitResult,
 } from "./render.ts";
 
-export type WaitOutcome = {
-  outcome: "woke" | "idle" | "timeout";
-  waitedMs: number;
-};
+type QueueWaitOutcome = { outcome: "woke" | "idle" | "timeout"; waitedMs: number };
+
+export type WaitOutcome =
+  | QueueWaitOutcome
+  | { outcome: "peer_finished"; waitedMs: number; peers: FinishedPeer[] };
 
 /** Event-driven waiting on updates that an agent has not yet been shown. */
 export abstract class Waitable {
@@ -39,14 +42,14 @@ export abstract class Waitable {
     timeoutSeconds: number | undefined,
     signal?: AbortSignal,
     canStillReceive?: () => boolean,
-  ): Promise<WaitOutcome> {
+  ): Promise<QueueWaitOutcome> {
     const seconds = validateWaitTimeout(timeoutSeconds);
     if (signal?.aborted) throw new Error("Wait cancelled.");
     if (this.hasQueued()) return { outcome: "woke", waitedMs: 0 };
     if (canStillReceive && !canStillReceive()) return { outcome: "idle", waitedMs: 0 };
 
     const startedAt = Date.now();
-    return new Promise<WaitOutcome>((resolve, reject) => {
+    return new Promise<QueueWaitOutcome>((resolve, reject) => {
       let settled = false;
       let coalesceTimer: NodeJS.Timeout | undefined;
       const cleanup = () => {
@@ -57,7 +60,7 @@ export abstract class Waitable {
         this.waiters.delete(onWake);
         signal?.removeEventListener("abort", onAbort);
       };
-      const finish = (outcome: WaitOutcome["outcome"]) => {
+      const finish = (outcome: QueueWaitOutcome["outcome"]) => {
         if (settled) return;
         cleanup();
         resolve({ outcome, waitedMs: Math.max(0, Date.now() - startedAt) });
@@ -90,9 +93,14 @@ export abstract class Waitable {
  * Child-side record of steering messages accepted into the host queue and not yet
  * committed to the transcript. A child runs headless, where nothing clears that
  * queue, so every accepted message reaches a message_end.
+ *
+ * It also tracks the subagents this child has messaged and not heard from since. One of
+ * them finishing ends a wait, because no reply can follow.
  */
 export class AgentInbox extends Waitable {
   private readonly queuedMessageIds = new Set<string>();
+  private readonly awaitedPeers = new Set<string>();
+  private readonly finishedPeers: FinishedPeer[] = [];
   private readonly maxMessages: number;
 
   constructor(maxMessages = MAX_INBOX_MESSAGES) {
@@ -100,11 +108,23 @@ export class AgentInbox extends Waitable {
     this.maxMessages = maxMessages;
   }
 
-  acceptMessage(id: string): boolean {
+  acceptMessage(id: string, from: string): boolean {
     if (this.queuedMessageIds.size >= this.maxMessages) return false;
     this.queuedMessageIds.add(id);
+    this.awaitedPeers.delete(from);
     this.wake();
     return true;
+  }
+
+  /** Recipients that accepted a message from this child. The root session never finishes. */
+  expectReplies(recipients: readonly string[]): void {
+    for (const id of recipients) if (id !== MAIN_AGENT_ID) this.awaitedPeers.add(id);
+  }
+
+  peerFinished(peer: FinishedPeer): void {
+    if (!this.awaitedPeers.delete(peer.id)) return;
+    this.finishedPeers.push(peer);
+    this.wake();
   }
 
   markMessageCommitted(id: string): void {
@@ -112,11 +132,29 @@ export class AgentInbox extends Waitable {
   }
 
   hasQueued(): boolean {
-    return this.queuedMessageIds.size > 0;
+    return this.queuedMessageIds.size > 0 || this.finishedPeers.length > 0;
+  }
+
+  /** A queued message is reported first; finished peers are kept for the next wait. */
+  async waitForUpdate(
+    timeoutSeconds: number | undefined,
+    signal?: AbortSignal,
+  ): Promise<WaitOutcome> {
+    const result = await this.wait(timeoutSeconds, signal);
+    if (
+      result.outcome !== "woke" ||
+      this.queuedMessageIds.size > 0 ||
+      this.finishedPeers.length === 0
+    )
+      return result;
+    const peers = this.finishedPeers.splice(0);
+    return { outcome: "peer_finished", waitedMs: result.waitedMs, peers };
   }
 
   clear(): void {
     this.queuedMessageIds.clear();
+    this.awaitedPeers.clear();
+    this.finishedPeers.length = 0;
     this.wake();
   }
 }
@@ -154,6 +192,13 @@ export function formatWaitOutcome(result: WaitOutcome): string {
       return "No running subagents or queued updates remain.";
     case "timeout":
       return `No updates arrived within ${formatDuration(result.waitedMs)}.`;
+    case "peer_finished":
+      return result.peers
+        .map(
+          (peer) =>
+            `Subagent ${peer.id} finished (${statusPhrase(peer.status)}) without replying and can no longer send or receive messages.`,
+        )
+        .join("\n");
   }
 }
 
@@ -226,7 +271,7 @@ export function registerCommunicationTools(
     name: "subagent_wait",
     label: "subagent_wait",
     description: options.isChild
-      ? "Wait without polling for an incoming peer message. " +
+      ? "Wait without polling for an incoming peer message. Returns early when a subagent you messaged finishes without replying. " +
         "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent."
       : "Wait without polling for an incoming subagent message or completion notification. " +
         "Returns immediately when updates are already queued or no subagents are running.",

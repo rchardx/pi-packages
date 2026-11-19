@@ -9,6 +9,7 @@ import {
   DEADLINE_MS,
   type DeliveryAck,
   type DeliveryReceipt,
+  type FinishedPeer,
   formatIncompleteReport,
   isProgress,
   isResult,
@@ -29,6 +30,8 @@ export interface Execution {
   done: Promise<Result>;
   run(): void;
   deliver(envelope: MessageEnvelope): Promise<DeliveryAck>;
+  /** Tell the running child that another subagent of its session has ended. */
+  peerFinished(peer: FinishedPeer): void;
   cancel(): Promise<Result>;
 }
 
@@ -299,6 +302,9 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           }
         });
       });
+    },
+    peerFinished(peer: FinishedPeer) {
+      if (started && !settled && !reason && !result) send({ type: "peer_finished", peer });
     },
     cancel() {
       stop("cancelled", "Cancelled; existing filesystem changes were not reverted.");

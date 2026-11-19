@@ -1510,6 +1510,35 @@ async function communicationFixture(t: TestContext) {
       return;
     }
 
+    if (transcript.includes("Delegated task:\\n\\nROLE_SILENT")) {
+      // Leaves without answering the question it received.
+      if (transcript.includes("QUESTION_FOR_SILENT")) respondText("Silent peer leaves.");
+      else respondToolCalls([{ id: "wait", name: "subagent_wait", args: { timeoutSeconds: 10 } }]);
+      return;
+    }
+
+    if (transcript.includes("Delegated task:\\n\\nROLE_ASKER")) {
+      if (toolMessages.length === 0) {
+        respondToolCalls([{ id: "discover", name: "subagent_list", args: {} }]);
+      } else if (toolMessages.length === 1) {
+        const listing = JSON.stringify(toolMessages[0]?.content ?? "");
+        const peerMatch = /- ([0-9a-f-]{36}) ·/u.exec(listing);
+        assert.ok(peerMatch?.[1], `Expected live sibling UUID in listing: ${listing}`);
+        respondToolCalls([
+          {
+            id: "ask",
+            name: "subagent_send",
+            args: { to: peerMatch[1], message: "QUESTION_FOR_SILENT" },
+          },
+        ]);
+      } else if (toolMessages.length === 2) {
+        respondToolCalls([{ id: "wait", name: "subagent_wait", args: { timeoutSeconds: 20 } }]);
+      } else {
+        respondText(`Asker stopped waiting: ${String(toolMessages[2]?.content)}`);
+      }
+      return;
+    }
+
     if (transcript.includes("Delegated task:\\n\\nNOTIFY_MAIN_THEN_STAY")) {
       // The child asks again only after its send was accepted by the root session.
       if (toolMessages.length === 1) notes++;
@@ -2031,6 +2060,52 @@ test("sibling subagents discover peers and exchange direct and broadcast message
   assert.equal(broadcasts[0]?.from, senderId);
   assert.equal(broadcasts[0]?.broadcast, true);
   assert.equal(broadcasts[0]?.message, "BROADCAST_PING");
+});
+
+test("a child waiting on a peer's reply is woken when that peer finishes without replying", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const results = new Map<string, Record<string, unknown>>();
+  const bothDone = new Promise<void>((resolve) => {
+    const original = session.sendCustomMessage.bind(session);
+    session.sendCustomMessage = async (message, options) => {
+      if (
+        message.customType === "subagent:result" &&
+        record(message.details) &&
+        typeof message.details.id === "string"
+      ) {
+        results.set(message.details.id, message.details);
+        if (results.size === 2) resolve();
+      }
+      return original(message, options);
+    };
+  });
+
+  const silent = await tool.execute("start-silent", { task: "ROLE_SILENT" });
+  const silentId = (silent.details as { id?: string }).id;
+  assert.ok(silentId);
+  const asker = await tool.execute("start-asker", { task: "ROLE_ASKER" });
+  const askerId = (asker.details as { id?: string }).id;
+  assert.ok(askerId);
+
+  await bothDone;
+  await session.waitForIdle();
+
+  assert.equal(results.get(silentId)?.report, "Silent peer leaves.");
+  assert.equal(results.get(askerId)?.status, "completed");
+  // The 20-second wait ended on the peer's exit, not on its timeout.
+  assert.equal(
+    results.get(askerId)?.report,
+    `Asker stopped waiting: Subagent ${silentId} finished (completed) without replying and can no longer send or receive messages.`,
+  );
 });
 
 test("roles configure child model, instructions, tool selection, limits, and parent prompt advertisement", {

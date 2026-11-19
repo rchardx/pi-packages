@@ -233,6 +233,19 @@ test("subagent_send, subagent_list, subagent_wait, and subagent_cancel render ex
     isError: false,
   });
   assert.deepEqual(lines(waitCard), ["subagent_wait  120s", "Update queued · 4s"]);
+  waitCard.updateResult({
+    content: [{ type: "text", text: "Subagent finished." }],
+    details: {
+      outcome: "peer_finished",
+      waitedMs: 4_000,
+      peers: [{ id: CHILD_ID, status: "timed_out" }],
+    },
+    isError: false,
+  });
+  assert.deepEqual(lines(waitCard), [
+    "subagent_wait  120s",
+    `${CHILD_ID.slice(0, 8)} timed out without replying · 4s`,
+  ]);
 
   const cancelCard = card("subagent_cancel", { id: CHILD_ID });
   cancelCard.updateResult({

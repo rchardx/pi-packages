@@ -85,6 +85,8 @@ messages without polling or monitoring a dashboard:
 - `subagent_wait` suspends the current turn until an incoming message (or, in
   `"main"`, a child completion notification) arrives, no running children remain,
   `timeoutSeconds` elapses (default `120`, maximum `300`), or the turn is aborted.
+  In a child it also returns when a subagent the child messaged finishes without
+  having replied, naming that subagent and its terminal status.
 - **Terminal finality:** ending a child turn without calling `subagent_wait` and
   with no queued messages permanently completes the child and exits its process.
   Autonomously completed (or failed, timed-out, limit-reached, or cancelled)
