@@ -17,6 +17,7 @@ body:
         - ask
         - background
         - lsp
+        - prompt-history
         - statusline
         - subagents
         - web-access

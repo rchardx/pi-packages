@@ -143,7 +143,7 @@ async function verifyInstalled(root: string): Promise<void> {
   console.log(
     `Installed smoke passed on ${process.version}: ${sources.length} package extensions discovered/loaded; ` +
       "foreground bash; ask/background/subagent mode guards; lsp unavailable-language path; empty subagent cancellation; " +
-      "web search/fetch consent guards. Statusline loading only; no model or child-agent execution.",
+      "web search/fetch consent guards. Prompt-history and statusline loading only in print mode; no model or child-agent execution.",
   );
 }
 

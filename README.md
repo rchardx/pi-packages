@@ -19,6 +19,7 @@ is not an installable Pi bundle.
 | [background](packages/background/README.md) | `bash` (override), `/background` | Background execution for long `bash` commands with bounded logs and completion notifications |
 | [subagents](packages/subagents/README.md) | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | Session-owned child Pi agents with fresh context, role presets, and live parent-child messaging |
 | [statusline](packages/statusline/README.md) | Interactive TUI footer | Fixed two-line TUI footer with inline `subagents` and `background` statuses above token, cost, and model stats |
+| [prompt-history](packages/prompt-history/README.md) | Interactive TUI editor history | Persistent per-directory `Up` / `Down` prompt history across fresh interactive sessions |
 
 See [`packages/README.md`](packages/README.md) for package overviews and
 configuration files, and each package's `README.md` for full behavior, limits,

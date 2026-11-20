@@ -14,6 +14,7 @@ installable Pi bundle.
 | `@rchardx/pi-background` | `packages/background/index.ts` | `bash` tool override, `/background` | `~/.pi/agent/background.json` | Backgrounding in `tui`/`rpc`; foreground-only in `print`/`json` | [background/README.md](background/README.md) |
 | `@rchardx/pi-subagents` | `packages/subagents/index.ts` | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `~/.pi/agent/subagents.json` | `tui`, `rpc` on Linux/macOS | [subagents/README.md](subagents/README.md) |
 | `@rchardx/pi-statusline` | `packages/statusline/index.ts` | Custom 2-line footer | None | `tui` only | [statusline/README.md](statusline/README.md) |
+| `@rchardx/pi-prompt-history` | `packages/prompt-history/index.ts` | Persistent per-`cwd` editor history | None | `tui` only | [prompt-history/README.md](prompt-history/README.md) |
 
 All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
 
@@ -46,6 +47,10 @@ All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
   a fixed two-line layout that renders `subagents`, `background`, and other
   extension statuses inline on line 1 above token, cache, cost, context, and
   model statistics on line 2.
+- **[prompt-history](prompt-history/README.md):** records submitted interactive
+  TUI prompts per `cwd` (up to `100` entries / `2 MiB` per directory, `256 KiB`
+  per entry) under `<agentDir>/prompt-history/` and seeds Pi's `Up` / `Down`
+  editor history on `session_start`.
 
 ## Installation and boundaries
 

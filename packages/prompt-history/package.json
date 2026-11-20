@@ -1,0 +1,32 @@
+{
+  "name": "@rchardx/pi-prompt-history",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Persistent per-directory interactive prompt history across Pi sessions",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rchardx/pi-packages.git",
+    "directory": "packages/prompt-history"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
