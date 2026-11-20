@@ -95,8 +95,7 @@ Expanding (`ctrl+o`) reveals each question and its selected or custom answer.
 
 ## Compatibility
 
-Developed against Pi `1.5.2` with Node `>=22.19.0`. Checks, tests, package
-discovery, extension loading, and representative `ask` tool execution (including
-live PTY `pi` CLI TUI rendering and RPC fallback) have been verified on **Node
-22.19.0, Node 24.21.0, and Node 26.13.1 with Pi 1.5.2 on Linux** using a local
-mock model endpoint rather than live provider credentials.
+Developed against Pi `1.6.0` with Node `>=22.19.0`. Verified on Linux with
+Pi `1.6.0` on Node `22.19.0` and `26.13.1`: Pi discovered and loaded the
+package, and a local mock model received the selected `ask` answer in both the
+interactive CLI (PTY) and RPC modes.

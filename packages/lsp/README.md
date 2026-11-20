@@ -226,10 +226,11 @@ Optional user configuration lives in `~/.pi/agent/lsp.json` (honoring
 
 ## Compatibility
 
-Developed against Pi `1.5.2` with Node `>=22.19.0`. Checks, tests, package
-discovery, extension loading, post-edit diagnostics, and `lsp` tool execution
-have been verified on **Node 22.19.0, Node 24.21.0, and Node 26.13.1 with Pi
-1.5.2 on Linux**. Diagnostics and navigation were exercised against
+With **Pi 1.6.0 on Linux**, package discovery, extension loading, `lsp` tool
+execution, and post-edit diagnostics with a test language server were verified
+on **Node 22.19.0 and 26.13.1**.
+
+With Pi 1.5.2, diagnostics and navigation were exercised against
 `typescript-language-server` 6.1.0 (TypeScript 6.0.3), TypeScript 7.0.2
 `tsc --lsp`, basedpyright 1.40.2, and clangd 22.1.1; `rust-analyzer`, `gopls`,
 and the other Python servers are configured but have not been exercised.

@@ -47,8 +47,8 @@ testing, see [Installation and Nightly Snapshots](docs/installation.md) and
 
 | Target | Version |
 | --- | --- |
-| Pi development target | `@earendil-works/pi-coding-agent@1.5.2` |
-| Verified Pi compatibility | Pi `1.5.2` — package discovery, extension loading, and representative tool execution |
+| Pi development target | `@earendil-works/pi-coding-agent@1.6.0` |
+| Verified Pi compatibility | Pi `1.6.0` — package discovery, extension loading, and representative tool execution |
 | Node.js minimum (`engines.node`) | `>=22.19.0` |
 | Default development runtime (`.node-version`) | Node `26.13.1` |
 | Verified Node.js runtimes | Node `22.19.0` and Node `26.13.1` on Linux |

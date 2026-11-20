@@ -28,6 +28,7 @@ async function verifyInstalled(root: string): Promise<void> {
     ModelRuntime,
     SessionManager,
     SettingsManager,
+    VERSION,
   } = await import("@earendil-works/pi-coding-agent");
   await writeFile(
     join(agentDir, "settings.json"),
@@ -141,7 +142,7 @@ async function verifyInstalled(root: string): Promise<void> {
   assert.deepEqual(runtimeErrors, [], "Installed extension lifecycle handlers must not fail");
   assert.equal(networkAttempts, 0, "No model/provider requests are allowed");
   console.log(
-    `Installed smoke passed on ${process.version}: ${sources.length} package extensions discovered/loaded; ` +
+    `Installed smoke passed with Pi ${VERSION} on Node ${process.version}: ${sources.length} package extensions discovered/loaded; ` +
       "foreground bash; ask/background/subagent mode guards; lsp unavailable-language path; empty subagent cancellation; " +
       "web search/fetch consent guards. Statusline loading only; no model or child-agent execution.",
   );

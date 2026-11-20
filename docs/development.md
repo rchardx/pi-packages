@@ -84,10 +84,14 @@ ignored build output or caches.
 ## Nightly publishing and recovery
 
 [`.github/workflows/nightly.yml`](../.github/workflows/nightly.yml) runs daily
-at 08:29 UTC and supports `main`-only manual dispatch with an optional `force`
+at 08:08 UTC and supports `main`-only manual dispatch with an optional `force`
 boolean (default `false`). One `main` SHA is fixed across all jobs. If that SHA
 already has a published `nightly` prerelease, validation and publishing are
 skipped unless `force` is `true`.
+
+CI and nightly validation install the Pi development dependencies pinned in the
+root `package.json` with `npm ci`. Installed-tarball smoke logs report the Pi
+SDK and Node versions used; nightly release notes report the pinned Pi version.
 
 Before publishing, both the minimum and development Node runtimes run checks,
 tests, tarball packing (`<base>-nightly.<run_number>.g<full SHA>`, leaving
