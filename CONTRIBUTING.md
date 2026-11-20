@@ -128,7 +128,7 @@ Both nightly and local tarball installs remain **local Pi sources**, not managed
 ## Nightly publishing and recovery
 
 [`.github/workflows/nightly.yml`](.github/workflows/nightly.yml) runs daily at
-00:00 UTC and supports main-only manual dispatch with an optional `force`
+08:29 UTC and supports main-only manual dispatch with an optional `force`
 boolean (default `false`). One `main` SHA is fixed across all jobs. If that SHA
 already has a published `nightly` prerelease, validation and publishing are
 skipped unless `force` is `true`.

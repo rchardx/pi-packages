@@ -198,7 +198,7 @@ Publication is a separate decision from source licensing.
 ### Nightly tarballs
 
 The [nightly workflow](.github/workflows/nightly.yml) checks `main` daily at
-00:00 UTC and supports manual dispatch on `main` with optional `force` (default
+08:29 UTC and supports manual dispatch on `main` with optional `force` (default
 `false`). It skips unchanged published commits unless forced.
 
 After checks, tests, and installed-tarball smoke tests pass on both Node
