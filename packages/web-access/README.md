@@ -298,8 +298,7 @@ Cancellation cannot undo provider charges or server-side tool usage.
 
 ## Pi compatibility
 
-Latest verified compatible version: **Pi 1.5.2**, on the runtimes recorded in
-[Compatibility](../../README.md#compatibility).
+Verified with **Pi 1.6.0 on Linux** using **Node 22.19.0 and Node 26.13.1**.
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
 and execute both tools across DeepSeek and Anthropic, search across OpenAI and

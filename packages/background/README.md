@@ -167,6 +167,8 @@ A missing file uses defaults.
 
 ## Compatibility
 
-Developed and tested against Pi `1.5.2` on Linux. The process-tree cleanup also
-covers macOS (process groups) and Windows (`taskkill /T`), but those platforms
-are not continuously tested.
+With **Pi 1.6.0 on Linux**, package discovery, extension loading, foreground
+commands, and background job completion, logging, and notification were
+verified on **Node 22.19.0 and 26.13.1**. Process-tree cleanup also covers
+macOS (process groups) and Windows (`taskkill /T`), but those platforms are
+not continuously tested.

@@ -70,7 +70,7 @@ function fixture() {
     join(root, "package.json"),
     JSON.stringify({
       engines: { node: ">=22.19.0" },
-      devDependencies: { "@earendil-works/pi-coding-agent": "1.5.2" },
+      devDependencies: { "@earendil-works/pi-coding-agent": "1.6.0" },
     }),
   );
   writeFileSync(join(root, ".node-version"), "26.13.0\n");
@@ -227,6 +227,7 @@ test("existing release overwrites matching assets, updates notes, and moves tag 
           assert.ok(parsed.body.includes(`| @rchardx/pi-ask | 1.0.0-nightly.42.g${sha} |`));
           assert.ok(parsed.body.includes(`| @rchardx/pi-background | 1.1.0-nightly.42.g${sha} |`));
           assert.ok(parsed.body.includes(">=22.19.0"));
+          assert.ok(parsed.body.includes("tested Pi: `1.6.0`"));
         },
       },
       { method: "GET", url: refUrl, response: tagBody(oldSha) },

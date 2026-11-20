@@ -61,4 +61,7 @@ starts or finishes.
 
 ## Compatibility
 
-Developed and tested against Pi `1.5.2` with Node `>=22.19.0` on Linux.
+Developed against Pi `1.6.0` with Node `>=22.19.0`. Verified on Linux with
+Pi `1.6.0` on Node `22.19.0` and `26.13.1`: Pi discovered and loaded the
+package, and its interactive CLI (PTY) rendered an extension status inline on
+the path line.

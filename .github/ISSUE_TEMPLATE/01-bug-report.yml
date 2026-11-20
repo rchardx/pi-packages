@@ -69,7 +69,7 @@ body:
       label: Environment
       description: Include Pi, Node.js, OS, and commit SHA or nightly tag (plus provider or language server if relevant).
       placeholder: |
-        - Pi: 1.5.2
+        - Pi: <output of pi --version>
         - Node.js: 22.19.0
         - OS: Linux / macOS / Windows
         - Package revision: main (<sha>) or nightly (<tag>)

@@ -89,6 +89,10 @@ boolean (default `false`). One `main` SHA is fixed across all jobs. If that SHA
 already has a published `nightly` prerelease, validation and publishing are
 skipped unless `force` is `true`.
 
+CI and nightly validation install the Pi development dependencies pinned in the
+root `package.json` with `npm ci`. Installed-tarball smoke logs report the Pi
+SDK and Node versions used; nightly release notes report the pinned Pi version.
+
 Before publishing, both the minimum and development Node runtimes run checks,
 tests, tarball packing (`<base>-nightly.<run_number>.g<full SHA>`, leaving
 source versions unchanged and `private: true`), and isolated installed-tarball
