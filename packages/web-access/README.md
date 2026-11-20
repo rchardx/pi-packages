@@ -1,4 +1,4 @@
-# Web access
+# @rchardx/pi-web-access
 
 Two independent, opt-in Pi tools backed by user-enabled hosted providers
 (**DeepSeek**, **Anthropic**, search-only **OpenAI** / **OpenAI Codex**, and
@@ -25,7 +25,7 @@ pi install ./packages/web-access
 ```
 
 For a checkout-free development snapshot, follow the
-[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+[nightly tarball installation guide](../../docs/installation.md#install-a-nightly-snapshot).
 Nightlies are rolling prereleases, not npm registry publications.
 
 The local install refers to this checkout; keep it in place and reload Pi after
@@ -299,7 +299,7 @@ Cancellation cannot undo provider charges or server-side tool usage.
 ## Pi compatibility
 
 Latest verified compatible version: **Pi 1.5.2**, on the runtimes recorded in
-[Node.js compatibility](../../README.md#nodejs-compatibility).
+[Compatibility](../../README.md#compatibility).
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
 and execute both tools across DeepSeek and Anthropic, search across OpenAI and

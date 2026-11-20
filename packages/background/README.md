@@ -73,7 +73,7 @@ pi install ./packages/background
 ```
 
 For a checkout-free development snapshot, follow the
-[nightly tarball installation guide](../../CONTRIBUTING.md#install-a-nightly-snapshot).
+[nightly tarball installation guide](../../docs/installation.md#install-a-nightly-snapshot).
 Nightlies are rolling prereleases, not npm registry publications.
 
 ### Inspect running jobs
