@@ -163,7 +163,7 @@ test("workspace packages expose root index.ts entrypoints and include them in ta
   const packages = await listWorkspacePackages();
   assert.deepEqual(
     packages.map((pkg) => pkg.dir),
-    ["ask", "background", "lsp", "statusline", "subagents", "web-access"],
+    ["ask", "background", "statusline", "subagents", "web-access"],
   );
 
   for (const pkg of packages) {
@@ -197,7 +197,7 @@ test("local package installs display package directory names instead of /src in 
   const compactBanner = await renderStartupBanner(t, agentDir, sources, false);
   assert.match(
     compactBanner,
-    /\[Extensions\]\n {2}ask, background, lsp, statusline, subagents, web-access\n/u,
+    /\[Extensions\]\n {2}ask, background, statusline, subagents, web-access\n/u,
   );
   assert.doesNotMatch(compactBanner, /\/src\b/u);
 
@@ -226,7 +226,7 @@ test("managed npm package installs display package specs without :src suffixes i
   const banner = await renderStartupBanner(t, agentDir, specs);
   assert.match(
     banner,
-    /\[Extensions\]\n {2}@rchardx\/pi-ask@0\.1\.0,\s+@rchardx\/pi-background@0\.1\.0,\s+@rchardx\/pi-lsp@0\.1\.0,\s+@rchardx\/pi-statusline@0\.1\.0,\s+@rchardx\/pi-subagents@0\.1\.0,\s+@rchardx\/pi-web-access@0\.1\.0\n/u,
+    /\[Extensions\]\n {2}@rchardx\/pi-ask@0\.1\.0,\s+@rchardx\/pi-background@0\.1\.0,\s+@rchardx\/pi-statusline@0\.1\.0,\s+@rchardx\/pi-subagents@0\.1\.0,\s+@rchardx\/pi-web-access@0\.1\.0\n/u,
   );
   assert.doesNotMatch(banner, /:src\b/u);
 });
