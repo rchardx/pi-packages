@@ -9,21 +9,28 @@ import { runNightly } from "./nightly-release.ts";
 
 const sha = "a".repeat(40);
 const oldSha = "b".repeat(40);
+const existingTagSha = "c".repeat(40);
+const createdTagSha = "d".repeat(40);
 const apiBase = "https://api.github.com/repos/example/packages";
 const uploadBase = "https://uploads.github.com/repos/example/packages";
 const mainUrl = `${apiBase}/git/ref/heads/main`;
 const refUrl = `${apiBase}/git/ref/tags/nightly`;
 const refsUrl = `${apiBase}/git/refs/tags/nightly`;
+const tagsUrl = `${apiBase}/git/tags`;
+const existingTagUrl = `${tagsUrl}/${existingTagSha}`;
 const releasesUrl = `${apiBase}/releases?per_page=100`;
-const releaseUrl = `${apiBase}/releases/12`;
-const assetsUrl = `${releaseUrl}/assets?per_page=100`;
+const existingReleaseUrl = `${apiBase}/releases/12`;
+const replacementReleaseUrl = `${apiBase}/releases/13`;
 const names = ["ask", "background"];
 const filenames = names.map((name) => `pi-${name}-nightly.tgz`);
 const publicRelease = { id: 12, tag_name: "nightly", draft: false, prerelease: true };
 const draftRelease = { ...publicRelease, draft: true };
-const tagBody = (value = sha) => ({ object: { type: "commit", sha: value } });
+const replacementDraft = { id: 13, tag_name: "nightly", draft: true, prerelease: true };
+const commitRefBody = (value = sha) => ({ object: { type: "commit", sha: value } });
+const annotatedRefBody = (value = existingTagSha) => ({ object: { type: "tag", sha: value } });
+const tagObjectBody = (value = sha) => ({ object: { type: "commit", sha: value } });
 
-const mainRef = { ref: "refs/heads/main", ...tagBody() };
+const mainRef = { ref: "refs/heads/main", ...commitRefBody() };
 const currentMain = { method: "GET", url: mainUrl, response: mainRef };
 
 interface Step {
@@ -96,22 +103,29 @@ function fixture() {
 
 for (const scenario of [
   {
-    name: "unchanged public prerelease skips",
-    tag: sha,
+    name: "unchanged public prerelease with annotated tag skips",
+    tag: { annotated: true, commit: sha },
     release: publicRelease,
     force: "false",
     expected: false,
   },
   {
     name: "force rebuilds unchanged release",
-    tag: sha,
+    tag: { annotated: true, commit: sha },
     release: publicRelease,
     force: "true",
     expected: true,
   },
   {
     name: "changed commit rebuilds",
-    tag: oldSha,
+    tag: { annotated: true, commit: oldSha },
+    release: publicRelease,
+    force: "false",
+    expected: true,
+  },
+  {
+    name: "lightweight tag at selected SHA repairs to annotated tag",
+    tag: { annotated: false, commit: sha },
     release: publicRelease,
     force: "false",
     expected: true,
@@ -123,17 +137,23 @@ for (const scenario of [
     force: "false",
     expected: true,
   },
-  { name: "missing release repairs", tag: sha, release: undefined, force: "false", expected: true },
+  {
+    name: "missing release repairs",
+    tag: { annotated: true, commit: sha },
+    release: undefined,
+    force: "false",
+    expected: true,
+  },
   {
     name: "draft repairs even at selected SHA",
-    tag: sha,
+    tag: { annotated: true, commit: sha },
     release: draftRelease,
     force: "false",
     expected: true,
   },
   {
     name: "non-prerelease repairs",
-    tag: sha,
+    tag: { annotated: true, commit: sha },
     release: { ...publicRelease, prerelease: false },
     force: "false",
     expected: true,
@@ -147,8 +167,21 @@ for (const scenario of [
           method: "GET",
           url: refUrl,
           status: scenario.tag ? 200 : 404,
-          response: tagBody(scenario.tag),
+          response: scenario.tag
+            ? scenario.tag.annotated
+              ? annotatedRefBody()
+              : commitRefBody(scenario.tag.commit)
+            : undefined,
         },
+        ...(scenario.tag?.annotated
+          ? [
+              {
+                method: "GET",
+                url: existingTagUrl,
+                response: tagObjectBody(scenario.tag.commit),
+              },
+            ]
+          : []),
         { method: "GET", url: releasesUrl, response: scenario.release ? [scenario.release] : [] },
       ]);
       await runNightly(
@@ -168,73 +201,121 @@ for (const scenario of [
   });
 }
 
-test("nightly plan fails on API errors without writing output", async () => {
+test("nightly plan fails on API errors or invalid tag targets without writing output", async () => {
   const f = fixture();
   try {
-    const mock = fakeFetch([
-      { method: "GET", url: refUrl, status: 500, response: { message: "boom" } },
-    ]);
-    await assert.rejects(runNightly(["plan"], f.env, f.root, mock.fetchImpl), /HTTP 500/u);
-    assert.equal(readFileSync(f.output, "utf8"), "existing=value\n");
-    mock.done();
+    for (const [steps, pattern] of [
+      [[{ method: "GET", url: refUrl, status: 500, response: { message: "boom" } }], /HTTP 500/u],
+      [
+        [{ method: "GET", url: refUrl, response: { object: { type: "tree", sha } } }],
+        /must point to a commit/u,
+      ],
+      [
+        [
+          { method: "GET", url: refUrl, response: annotatedRefBody() },
+          { method: "GET", url: existingTagUrl, response: { object: { type: "tag", sha } } },
+        ],
+        /must point to a commit/u,
+      ],
+    ] as const) {
+      const mock = fakeFetch([...steps]);
+      await assert.rejects(runNightly(["plan"], f.env, f.root, mock.fetchImpl), pattern);
+      assert.equal(readFileSync(f.output, "utf8"), "existing=value\n");
+      mock.done();
+    }
   } finally {
     f.cleanup();
   }
 });
 
-function uploadSteps(overwrite = false): Step[] {
-  return filenames.flatMap((name, index) => [
-    ...(overwrite
-      ? [{ method: "DELETE", url: `${apiBase}/releases/assets/${100 + index}`, status: 204 }]
-      : []),
-    {
-      method: "POST",
-      url: `${uploadBase}/releases/12/assets?name=${name}`,
-      status: 201,
-      check: (init?: RequestInit) => {
-        const headers = init?.headers as Record<string, string>;
-        assert.equal(headers["Content-Type"], "application/gzip");
-        assert.ok(init?.body instanceof Uint8Array);
-      },
+function createTagStep(onDate?: (date: string) => void): Step {
+  return {
+    method: "POST",
+    url: tagsUrl,
+    status: 201,
+    response: { sha: createdTagSha },
+    check: (init) => {
+      const parsed = JSON.parse(String(init?.body));
+      assert.equal(parsed.tag, "nightly");
+      assert.equal(parsed.message, `Nightly (${sha})`);
+      assert.equal(parsed.object, sha);
+      assert.equal(parsed.type, "commit");
+      assert.equal(parsed.tagger.name, "github-actions[bot]");
+      assert.equal(parsed.tagger.email, "41898282+github-actions[bot]@users.noreply.github.com");
+      assert.match(parsed.tagger.date, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u);
+      onDate?.(parsed.tagger.date);
     },
-  ]);
+  };
 }
 
-test("existing release overwrites matching assets, updates notes, and moves tag last", async () => {
+function uploadSteps(releaseId: number): Step[] {
+  return filenames.map((name) => ({
+    method: "POST",
+    url: `${uploadBase}/releases/${releaseId}/assets?name=${name}`,
+    status: 201,
+    check: (init?: RequestInit) => {
+      const headers = init?.headers as Record<string, string>;
+      assert.equal(headers["Content-Type"], "application/gzip");
+      assert.ok(init?.body instanceof Uint8Array);
+    },
+  }));
+}
+
+function checkReleaseBody(body: string, expectedDate: string): void {
+  assert.ok(body.includes(`Updated: ${expectedDate}`));
+  assert.ok(body.includes(`| @rchardx/pi-ask | 1.0.0-nightly.42.g${sha} |`));
+  assert.ok(body.includes(`| @rchardx/pi-background | 1.1.0-nightly.42.g${sha} |`));
+  assert.ok(body.includes(">=22.19.0"));
+  assert.ok(body.includes("tested Pi: `1.6.0`"));
+}
+
+test("existing release deletes old release, uploads to fresh draft, advances annotated tag, and publishes", async () => {
   const f = fixture();
   try {
+    let tagDate = "";
     const mock = fakeFetch([
       currentMain,
       { method: "GET", url: releasesUrl, response: [publicRelease] },
-      { method: "GET", url: refUrl, response: tagBody(oldSha) },
+      { method: "GET", url: refUrl, response: annotatedRefBody() },
+      { method: "GET", url: existingTagUrl, response: tagObjectBody(oldSha) },
+      createTagStep((date) => {
+        tagDate = date;
+      }),
+      { method: "DELETE", url: existingReleaseUrl, status: 204 },
       {
-        method: "GET",
-        url: assetsUrl,
-        response: [
-          ...filenames.map((name, index) => ({ name, id: 100 + index })),
-          { name: "unrelated.txt", id: 99 },
-        ],
-      },
-      ...uploadSteps(true),
-      {
-        method: "PATCH",
-        url: releaseUrl,
+        method: "POST",
+        url: `${apiBase}/releases`,
+        status: 201,
+        response: replacementDraft,
         check: (init) => {
           const parsed = JSON.parse(String(init?.body));
+          assert.equal(parsed.tag_name, "nightly");
+          assert.equal(parsed.target_commitish, sha);
+          assert.equal(parsed.name, "Nightly");
+          assert.equal(parsed.draft, true);
           assert.equal(parsed.prerelease, true);
           assert.equal(parsed.make_latest, "false");
-          assert.equal(parsed.target_commitish, sha);
-          assert.ok(parsed.body.includes(`| @rchardx/pi-ask | 1.0.0-nightly.42.g${sha} |`));
-          assert.ok(parsed.body.includes(`| @rchardx/pi-background | 1.1.0-nightly.42.g${sha} |`));
-          assert.ok(parsed.body.includes(">=22.19.0"));
-          assert.ok(parsed.body.includes("tested Pi: `1.6.0`"));
+          checkReleaseBody(parsed.body, tagDate);
         },
       },
-      { method: "GET", url: refUrl, response: tagBody(oldSha) },
+      ...uploadSteps(13),
       {
         method: "PATCH",
         url: refsUrl,
-        check: (init) => assert.deepEqual(JSON.parse(String(init?.body)), { sha, force: true }),
+        check: (init) =>
+          assert.deepEqual(JSON.parse(String(init?.body)), { sha: createdTagSha, force: true }),
+      },
+      {
+        method: "PATCH",
+        url: replacementReleaseUrl,
+        check: (init) => {
+          const parsed = JSON.parse(String(init?.body));
+          assert.equal(parsed.draft, false);
+          assert.equal(parsed.prerelease, true);
+          assert.equal(parsed.make_latest, "false");
+          assert.equal(parsed.target_commitish, sha);
+          checkReleaseBody(parsed.body, tagDate);
+        },
       },
     ]);
     await runNightly(["publish", f.archives], f.env, f.root, mock.fetchImpl);
@@ -244,28 +325,60 @@ test("existing release overwrites matching assets, updates notes, and moves tag 
   }
 });
 
-test("first run creates draft, uploads assets, publishes, and establishes tag", async () => {
+test("existing lightweight tag migrates to annotated tag and replaces release", async () => {
+  const f = fixture();
+  try {
+    const mock = fakeFetch([
+      currentMain,
+      { method: "GET", url: releasesUrl, response: [publicRelease] },
+      { method: "GET", url: refUrl, response: commitRefBody(oldSha) },
+      createTagStep(),
+      { method: "DELETE", url: existingReleaseUrl, status: 204 },
+      { method: "POST", url: `${apiBase}/releases`, status: 201, response: replacementDraft },
+      ...uploadSteps(13),
+      {
+        method: "PATCH",
+        url: refsUrl,
+        check: (init) =>
+          assert.deepEqual(JSON.parse(String(init?.body)), { sha: createdTagSha, force: true }),
+      },
+      {
+        method: "PATCH",
+        url: replacementReleaseUrl,
+        check: (init) => assert.equal(JSON.parse(String(init?.body)).draft, false),
+      },
+    ]);
+    await runNightly(["publish", f.archives], f.env, f.root, mock.fetchImpl);
+    mock.done();
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("first run creates annotated tag, draft release, assets, tag ref, and publishes", async () => {
   const f = fixture();
   try {
     const mock = fakeFetch([
       currentMain,
       { method: "GET", url: releasesUrl, response: [] },
       { method: "GET", url: refUrl, status: 404 },
+      createTagStep(),
       { method: "POST", url: `${apiBase}/releases`, status: 201, response: draftRelease },
-      { method: "GET", url: assetsUrl, response: [] },
-      ...uploadSteps(false),
-      {
-        method: "PATCH",
-        url: releaseUrl,
-        check: (init) => assert.equal(JSON.parse(String(init?.body)).draft, false),
-      },
-      { method: "GET", url: refUrl, status: 404 },
+      ...uploadSteps(12),
       {
         method: "POST",
         url: `${apiBase}/git/refs`,
         status: 201,
         check: (init) =>
-          assert.deepEqual(JSON.parse(String(init?.body)), { ref: "refs/tags/nightly", sha }),
+          assert.deepEqual(JSON.parse(String(init?.body)), {
+            ref: "refs/tags/nightly",
+            sha: createdTagSha,
+          }),
+      },
+      {
+        method: "PATCH",
+        url: existingReleaseUrl,
+        check: (init) => assert.equal(JSON.parse(String(init?.body)).draft, false),
       },
     ]);
     await runNightly(["publish", f.archives], f.env, f.root, mock.fetchImpl);
@@ -278,7 +391,9 @@ test("first run creates draft, uploads assets, publishes, and establishes tag", 
 test("stale publish skips without mutation, even when forced", async () => {
   const f = fixture();
   try {
-    const mock = fakeFetch([{ ...currentMain, response: { ...mainRef, ...tagBody(oldSha) } }]);
+    const mock = fakeFetch([
+      { ...currentMain, response: { ...mainRef, ...commitRefBody(oldSha) } },
+    ]);
     await runNightly(
       ["publish", f.archives],
       { ...f.env, NIGHTLY_FORCE: "true" },
@@ -296,7 +411,7 @@ test("failed or malformed main ref lookup aborts without mutation", async () => 
   try {
     for (const [step, error] of [
       [{ ...currentMain, status: 404 }, /HTTP 404/u],
-      [{ ...currentMain, response: { ...mainRef, ...tagBody("bad") } }, /main ref/u],
+      [{ ...currentMain, response: { ...mainRef, ...commitRefBody("bad") } }, /main ref/u],
       [{ ...currentMain, response: { ...mainRef, object: { type: "tag", sha } } }, /main ref/u],
       [{ ...currentMain, response: { ...mainRef, ref: "refs/heads/other" } }, /main ref/u],
     ] as const) {
@@ -327,26 +442,30 @@ test("preflight rejects missing or empty archives before remote mutation", async
   }
 });
 
-test("annotated tag and upload failures abort before tag mutation", async () => {
+test("invalid tag targets and upload failures abort before tag ref mutation", async () => {
   const f = fixture();
   try {
-    const annotated = fakeFetch([
+    const nestedTag = fakeFetch([
       currentMain,
       { method: "GET", url: releasesUrl, response: [publicRelease] },
-      { method: "GET", url: refUrl, response: { object: { type: "tag", sha } } },
+      { method: "GET", url: refUrl, response: annotatedRefBody() },
+      { method: "GET", url: existingTagUrl, response: { object: { type: "tag", sha } } },
     ]);
     await assert.rejects(
-      runNightly(["publish", f.archives], f.env, f.root, annotated.fetchImpl),
-      /must be lightweight/u,
+      runNightly(["publish", f.archives], f.env, f.root, nestedTag.fetchImpl),
+      /must point to a commit/u,
     );
-    annotated.done();
+    nestedTag.done();
 
     const failedUpload = fakeFetch([
       currentMain,
       { method: "GET", url: releasesUrl, response: [publicRelease] },
-      { method: "GET", url: refUrl, response: tagBody(oldSha) },
-      { method: "GET", url: assetsUrl, response: [] },
-      { method: "POST", url: `${uploadBase}/releases/12/assets?name=${filenames[0]}`, status: 502 },
+      { method: "GET", url: refUrl, response: annotatedRefBody() },
+      { method: "GET", url: existingTagUrl, response: tagObjectBody(oldSha) },
+      createTagStep(),
+      { method: "DELETE", url: existingReleaseUrl, status: 204 },
+      { method: "POST", url: `${apiBase}/releases`, status: 201, response: replacementDraft },
+      { method: "POST", url: `${uploadBase}/releases/13/assets?name=${filenames[0]}`, status: 502 },
     ]);
     await assert.rejects(
       runNightly(["publish", f.archives], f.env, f.root, failedUpload.fetchImpl),
