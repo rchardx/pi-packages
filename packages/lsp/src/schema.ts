@@ -9,13 +9,9 @@ export type LspAction = (typeof LSP_ACTIONS)[number];
 
 function stringEnum<const T extends readonly string[]>(
   values: T,
-  description?: string,
+  description: string,
 ): TUnsafe<T[number]> {
-  return Type.Unsafe<T[number]>({
-    type: "string",
-    enum: [...values],
-    ...(description !== undefined ? { description } : {}),
-  });
+  return Type.Unsafe<T[number]>({ type: "string", enum: [...values], description });
 }
 
 export const LspParameters = Type.Object(
@@ -40,75 +36,6 @@ export const LspParameters = Type.Object(
 );
 
 export type LspInput = Static<typeof LspParameters>;
-
-const LspDiagnosticItem = Type.Object(
-  {
-    line: Type.Integer({ minimum: 1 }),
-    column: Type.Integer({ minimum: 1 }),
-    severity: stringEnum(["error", "warning"] as const),
-    code: Type.Optional(Type.String()),
-    message: Type.String(),
-  },
-  { additionalProperties: false },
-);
-
-const LspLocationItem = Type.Object(
-  {
-    path: Type.String(),
-    line: Type.Integer({ minimum: 1 }),
-    column: Type.Integer({ minimum: 1 }),
-    preview: Type.Optional(Type.String()),
-  },
-  { additionalProperties: false },
-);
-
-export const LspOutputSchema = Type.Union([
-  Type.Object(
-    {
-      status: Type.Literal("unavailable"),
-      reason: Type.String(),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      status: Type.Literal("ok"),
-      action: Type.Literal("diagnostics"),
-      server: Type.String(),
-      path: Type.String(),
-      errorCount: Type.Integer({ minimum: 0 }),
-      warningCount: Type.Integer({ minimum: 0 }),
-      truncated: Type.Boolean(),
-      diagnostics: Type.Array(LspDiagnosticItem),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      status: Type.Literal("ok"),
-      action: stringEnum(["definition", "references"] as const),
-      server: Type.String(),
-      totalCount: Type.Integer({ minimum: 0 }),
-      truncated: Type.Boolean(),
-      locations: Type.Array(LspLocationItem),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      status: Type.Literal("ok"),
-      action: Type.Literal("hover"),
-      server: Type.String(),
-      path: Type.String(),
-      line: Type.Integer({ minimum: 1 }),
-      contents: Type.Union([Type.String(), Type.Null()]),
-      truncated: Type.Boolean(),
-    },
-    { additionalProperties: false },
-  ),
-]);
-
-export type LspOutput = Static<typeof LspOutputSchema>;
 
 /** Strip terminal escape sequences and control characters before UI display. */
 export function sanitizeDisplayText(value: string): string {

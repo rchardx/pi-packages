@@ -5,7 +5,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { LspManager } from "./src/manager.ts";
 import { renderLspCall, renderLspResult } from "./src/render.ts";
-import { LspOutputSchema, LspParameters } from "./src/schema.ts";
+import { LspParameters } from "./src/schema.ts";
 
 export default function lspExtension(pi: ExtensionAPI) {
   const manager = new LspManager();
@@ -115,17 +115,11 @@ export default function lspExtension(pi: ExtensionAPI) {
       "Use lsp definition, references, and hover for one symbol when text search is ambiguous; search and whole-project checks stay with grep and the project's compiler.",
     ],
     parameters: LspParameters,
-    outputSchema: LspOutputSchema,
     renderCall: renderLspCall,
     renderResult: renderLspResult,
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-      const { text, structuredContent } = await manager.executeResult(
-        params,
-        ctx.cwd,
-        ctx.isProjectTrusted(),
-        signal,
-      );
-      return { content: [{ type: "text", text }], details: undefined, structuredContent };
+      const text = await manager.execute(params, ctx.cwd, ctx.isProjectTrusted(), signal);
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 }

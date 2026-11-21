@@ -80,11 +80,6 @@ The result is plain text whose first line is a summary:
 - A file that cannot be served returns the reason as text: outside the session
   directory, no server configured, server not installed, or server failed to
   start.
-- The tool's `outputSchema` exposes typed `structuredContent` to Codemode
-  scripts: `{ status: "ok", action, server, ... }` with the queried
-  `diagnostics`, `locations`, or `hover` `contents` (plus counts and `truncated`
-  flags), or `{ status: "unavailable", reason }` whenever a file cannot be
-  served or a push server sends no diagnostics in time.
 
 `/lsp` lists the running servers and those that could not be used. `/lsp reset`
 stops running language servers, clears cached unavailable-server and
