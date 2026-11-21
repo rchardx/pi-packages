@@ -308,6 +308,38 @@ test("killAll skips jobs that already settled", async (t) => {
   assert.ok(!job.controller.signal.aborted);
 });
 
+test("stopJob aborts only the target job, prevents late output after the trailer, and cleans up", async (t) => {
+  const session = createSessionJobs("stop-one", await tempDir(t));
+  const target = await startJob(session, nodeScript("setTimeout(() => {}, 30000)"));
+  const sibling = await startJob(session, nodeScript("setTimeout(() => {}, 30000)"));
+  assert.equal(await session.openLog(target), true);
+  assert.equal(await session.openLog(sibling), true);
+  session.writeOutput(target, Buffer.from("before-stop\n"));
+
+  assert.equal(await session.stopJob("bg_00000000", "stopped by user"), undefined);
+
+  const stopping = session.stopJob(target.id, "stopped by user");
+  // State and running counts update synchronously before log I/O settles.
+  assert.equal(target.state, "ended");
+  assert.equal(target.controller.signal.aborted, true);
+  assert.equal(session.runningCount(), 1);
+  assert.deepEqual(session.runningJobs(), [sibling]);
+  // Late pipe chunks and concurrent stop calls while the stream is closing are ignored.
+  session.writeOutput(target, Buffer.from("after-stop\n"));
+  const duplicate = session.stopJob(target.id, "stopped by user");
+
+  assert.equal(await duplicate, undefined);
+  assert.equal(await stopping, target);
+  assert.equal(session.jobs.has(target.id), false);
+  assert.ok(target.logPath);
+  const log = await readFile(target.logPath, "utf8");
+  assert.equal(log, `before-stop\n\n[pi-background] job ${target.id} killed: stopped by user\n`);
+
+  assert.equal(sibling.state, "running");
+  assert.equal(sibling.controller.signal.aborted, false);
+  await session.killAll("session ended");
+});
+
 test("pruneOldLogs removes old logs and empty dirs but keeps recent files", async (t) => {
   const root = await tempDir(t);
   const oldDir = join(root, "old-session");

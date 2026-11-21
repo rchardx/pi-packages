@@ -76,7 +76,7 @@ For a checkout-free development snapshot, follow the
 [nightly tarball installation guide](../../docs/installation.md#install-a-nightly-snapshot).
 Nightlies are rolling prereleases, not npm registry publications.
 
-### Inspect running jobs
+### Inspect and stop running jobs
 
 While jobs are running, Pi's status area shows `background: N running`.
 The count updates on lifecycle changes and disappears when no jobs remain or the
@@ -106,6 +106,19 @@ This user slash command shows a read-only snapshot of the in-memory registry
 through a Pi UI notification in interactive or RPC mode, without starting a model
 turn or adding model-context messages. There is no automatic refresh: enter
 `/background` again for a new snapshot.
+
+To stop one running job owned by the current session, enter:
+
+```text
+/background stop bg_6f6bb444
+```
+
+In interactive TUI mode, argument completion suggests `stop` and running
+`bg_<hex>` job ids with elapsed durations and single-line command previews.
+Stopping a job kills its process tree, updates the `background` status
+indicator, and confirms the stop without waking the model. Missing arguments or
+unknown or finished job ids report an error notification and leave running jobs
+untouched.
 
 ## Settings
 
@@ -153,9 +166,12 @@ A missing file uses defaults.
   process is already running at that point, and killing it would break the
   no-kill promise. `maxJobs` is therefore not a bound on concurrent
   processes; parallel foreground commands can exceed it as well.
-- **Stopping a job:** there is no dedicated kill action yet. Ask Pi to stop
-  it with `pkill -f <command pattern>` or similar; ending the session also
-  kills all of its jobs.
+- **Stopping a job:** enter `/background stop <job-id>` in interactive (`tui`)
+  or `rpc` mode to kill that session-owned job's process tree (`SIGKILL` on
+  Unix, `taskkill /F /T` on Windows), append a `killed: stopped by user`
+  trailer to its log when open, and close the log without emitting
+  `bash-job:notification` or waking the model. There is no model-facing cancel
+  tool; ending the session still kills all remaining jobs.
 - If several background jobs are running, each completion sends its own
   notification; Pi sees them queued in order.
 - The tool's `outputSchema` accepts the built-in foreground result or
