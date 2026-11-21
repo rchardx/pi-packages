@@ -21,7 +21,6 @@ is not an installable Pi bundle.
 | Package | Surface | Summary |
 | --- | --- | --- |
 | [ask](packages/ask/README.md) | `ask` | Structured 1–4 question multiple-choice user clarification in TUI and RPC sessions |
-| [lsp](packages/lsp/README.md) | `lsp`, `/lsp`, post-edit diagnostics | Post-edit and single-file `diagnostics` plus single-symbol `definition`, `references`, and `hover` queries |
 | [web-access](packages/web-access/README.md) | `web_fetch`, `web_search` | Opt-in hosted web search and page fetching across user-authorized providers |
 | [background](packages/background/README.md) | `bash` (override), `/background` | Background execution for long `bash` commands with bounded logs and completion notifications |
 | [subagents](packages/subagents/README.md) | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | Session-owned child Pi agents with fresh context, role presets, and live parent-child messaging |

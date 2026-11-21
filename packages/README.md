@@ -9,7 +9,6 @@ installable Pi bundle.
 | Package | Entrypoint | Surface | User config (optional) | Modes | Guide |
 | --- | --- | --- | --- | --- | --- |
 | `@rchardx/pi-ask` | `packages/ask/index.ts` | `ask` tool | None | `tui`, `rpc` (hidden in `print`/`json`) | [ask/README.md](ask/README.md) |
-| `@rchardx/pi-lsp` | `packages/lsp/index.ts` | `lsp` tool, `/lsp`, `edit`/`write` diagnostic hook | `~/.pi/agent/lsp.json` | `tui`, `rpc`, `print`, `json` | [lsp/README.md](lsp/README.md) |
 | `@rchardx/pi-web-access` | `packages/web-access/index.ts` | `web_fetch`, `web_search` tools | `~/.pi/agent/web-access.json` (required to enable tools) | `tui`, `rpc`, `print`, `json` | [web-access/README.md](web-access/README.md) |
 | `@rchardx/pi-background` | `packages/background/index.ts` | `bash` tool override, `/background` | `~/.pi/agent/background.json` | Backgrounding in `tui`/`rpc`; foreground-only in `print`/`json` | [background/README.md](background/README.md) |
 | `@rchardx/pi-subagents` | `packages/subagents/index.ts` | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `~/.pi/agent/subagents.json` | `tui`, `rpc` on Linux/macOS | [subagents/README.md](subagents/README.md) |
@@ -23,10 +22,6 @@ All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
   through 1–4 multiple-choice questions (2–5 options each, optional
   `multiSelect`, plus automatic `Other…` free-text input) with a custom TUI
   prompt and RPC dialog fallback.
-- **[lsp](lsp/README.md):** appends a file's errors and warnings to successful
-  `edit` and `write` results within a 0.8s budget and provides a read-only
-  single-file/symbol `lsp` tool (`diagnostics`, `definition`, `references`,
-  `hover`) backed by locally installed language servers in trusted projects.
 - **[web-access](web-access/README.md):** provides opt-in hosted `web_fetch` and
   `web_search` across user-authorized providers (DeepSeek, Anthropic, search-only
   OpenAI / OpenAI Codex, and fetch-only Google Gemini), routing to the active
