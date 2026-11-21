@@ -1,7 +1,13 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import { DEEPSEEK_API_ORIGIN } from "../auth.ts";
-import { FormattedOutput, prepareOutput, singleLine } from "../output.ts";
+import {
+  type FetchStructuredOutput,
+  FormattedOutput,
+  prepareOutput,
+  type SearchStructuredOutput,
+  singleLine,
+} from "../output.ts";
 import { postJson, type WebToolKind, withDeadline } from "../request.ts";
 import { normalizeFetchUrl, normalizeSourceUrl } from "../url.ts";
 
@@ -81,6 +87,13 @@ export async function fetchDeepSeek(
     const body = output.append(data.content);
     output.sections.push({ heading, metadata: [], body: [body] });
     const result = await prepareOutput(output, "fetch", combined);
+    const structuredContent: FetchStructuredOutput = {
+      provider: "deepseek",
+      url,
+      title,
+      content: data.content,
+      ...(result.details.fullOutputPath ? { fullOutputPath: result.details.fullOutputPath } : {}),
+    };
     return {
       ...result,
       details: {
@@ -89,6 +102,7 @@ export async function fetchDeepSeek(
         title,
         ...result.details,
       },
+      structuredContent,
     };
   });
 }
@@ -165,6 +179,25 @@ export async function searchDeepSeek(
       output.sections.push({ heading, url, metadata, body });
     });
     const result = await prepareOutput(output, "search", combined);
+    const structuredContent: SearchStructuredOutput = {
+      provider: "deepseek",
+      query: args.query,
+      results: entries.map((item) => {
+        const siteName = item.site_name ? singleLine(item.site_name) : "";
+        const publishedDate = item.date ? singleLine(item.date) : "";
+        const summary = item.summary.trim() || item.snippet.trim();
+        return {
+          title: singleLine(item.title),
+          url: item.url,
+          ...(siteName ? { siteName } : {}),
+          ...(publishedDate ? { publishedDate } : {}),
+          ...(summary ? { summary } : {}),
+          ...(needContent && item.content ? { content: item.content } : {}),
+        };
+      }),
+      omittedInvalidUrls,
+      ...(result.details.fullOutputPath ? { fullOutputPath: result.details.fullOutputPath } : {}),
+    };
     return {
       ...result,
       details: {
@@ -176,6 +209,7 @@ export async function searchDeepSeek(
         needContent,
         ...result.details,
       },
+      structuredContent,
     };
   });
 }

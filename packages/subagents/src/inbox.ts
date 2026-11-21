@@ -1,13 +1,78 @@
-import { Type } from "typebox";
+import { type TUnsafe, Type } from "typebox";
 import { formatDuration } from "./notify.ts";
 import {
   DEFAULT_WAIT_SECONDS,
   MAX_INBOX_MESSAGES,
   MAX_WAIT_SECONDS,
   type RunningAgent,
+  STATUSES,
   validateWaitTimeout,
   WAIT_COALESCE_MS,
 } from "./protocol.ts";
+
+function stringEnum<const T extends readonly string[]>(values: T): TUnsafe<T[number]> {
+  return Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
+}
+
+export const SubagentLaunchOutputSchema = Type.Object(
+  {
+    id: Type.String(),
+    role: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export const SubagentCancelOutputSchema = Type.Object(
+  {
+    id: Type.String(),
+    status: stringEnum(STATUSES),
+    report: Type.String(),
+    requests: Type.Integer({ minimum: 0 }),
+    tokens: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+export const SubagentListOutputSchema = Type.Object(
+  {
+    agents: Type.Array(
+      Type.Object(
+        {
+          id: Type.String(),
+          role: Type.Optional(Type.String()),
+          elapsedMs: Type.Number({ minimum: 0 }),
+          task: Type.String(),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const SubagentSendOutputSchema = Type.Object(
+  { to: Type.String() },
+  { additionalProperties: false },
+);
+
+const WAIT_OUTCOMES = ["woke", "idle", "timeout"] as const;
+
+export const RootWaitOutputSchema = Type.Object(
+  {
+    outcome: stringEnum(WAIT_OUTCOMES),
+    waitedMs: Type.Number({ minimum: 0 }),
+    running: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+
+export const ChildWaitOutputSchema = Type.Object(
+  {
+    outcome: stringEnum(WAIT_OUTCOMES),
+    waitedMs: Type.Number({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
 
 export type WaitOutcome =
   | { outcome: "woke" | "idle" | "timeout"; waitedMs: number }

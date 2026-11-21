@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { AgentInbox, formatWaitOutcome, waitTimeoutParameter } from "./inbox.ts";
+import {
+  AgentInbox,
+  ChildWaitOutputSchema,
+  formatWaitOutcome,
+  SubagentSendOutputSchema,
+  waitTimeoutParameter,
+} from "./inbox.ts";
 import {
   formatPartialProgress,
   formatMessage,
@@ -228,6 +234,7 @@ export default async function child(pi: ExtensionAPI) {
         description: `Message text (at most ${MAX_MESSAGE_BYTES / 1024} KiB).`,
       }),
     }),
+    outputSchema: SubagentSendOutputSchema,
     async execute(_callId, { message }, signal) {
       await sendToParent(message, signal);
       return {
@@ -238,6 +245,7 @@ export default async function child(pi: ExtensionAPI) {
           },
         ],
         details: { to: MAIN_AGENT_ID },
+        structuredContent: { to: MAIN_AGENT_ID },
       };
     },
   });
@@ -249,11 +257,13 @@ export default async function child(pi: ExtensionAPI) {
       "Wait without polling for a message from the parent session. " +
       "Call this after subagent_send when you need a reply before completing your task; ending your turn without waiting completes and closes your agent.",
     parameters: Type.Object({ timeoutSeconds: waitTimeoutParameter(MAX_WAIT_SECONDS) }),
+    outputSchema: ChildWaitOutputSchema,
     async execute(_callId, { timeoutSeconds }, signal) {
       const outcome = await inbox.wait(timeoutSeconds, signal);
       return {
         content: [{ type: "text", text: formatWaitOutcome(outcome) }],
         details: outcome,
+        structuredContent: outcome,
       };
     },
   });

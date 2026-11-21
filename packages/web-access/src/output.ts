@@ -2,7 +2,56 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
+import { type Static, type TUnsafe, Type } from "typebox";
+import { FETCH_PROVIDERS, SEARCH_PROVIDERS } from "./config.ts";
+
+function stringEnum<const T extends readonly string[]>(values: T): TUnsafe<T[number]> {
+  return Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
+}
+
+export const SearchResultItemSchema = Type.Object(
+  {
+    title: Type.String(),
+    url: Type.String(),
+    siteName: Type.Optional(Type.String()),
+    publishedDate: Type.Optional(Type.String()),
+    pageAge: Type.Optional(Type.String()),
+    summary: Type.Optional(Type.String()),
+    citedText: Type.Optional(Type.String()),
+    content: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export const SearchOutputSchema = Type.Object(
+  {
+    provider: stringEnum(SEARCH_PROVIDERS),
+    model: Type.Optional(Type.String()),
+    query: Type.String(),
+    synthesis: Type.Optional(Type.String()),
+    results: Type.Array(SearchResultItemSchema),
+    omittedInvalidUrls: Type.Integer({ minimum: 0 }),
+    outputTokenLimitReached: Type.Optional(Type.Boolean()),
+    fullOutputPath: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export const FetchOutputSchema = Type.Object(
+  {
+    provider: stringEnum(FETCH_PROVIDERS),
+    model: Type.Optional(Type.String()),
+    url: Type.String(),
+    title: Type.String(),
+    content: Type.String(),
+    outputTokenLimitReached: Type.Optional(Type.Boolean()),
+    fullOutputPath: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export type SearchStructuredOutput = Static<typeof SearchOutputSchema>;
+export type FetchStructuredOutput = Static<typeof FetchOutputSchema>;
 
 const TextRange = Type.Object({
   start: Type.Integer({ minimum: 0 }),

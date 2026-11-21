@@ -15,7 +15,16 @@ import {
   type RoleConfig,
   resolveRole,
 } from "./src/config.ts";
-import { formatAgentList, formatWaitOutcome, waitTimeoutParameter } from "./src/inbox.ts";
+import {
+  formatAgentList,
+  formatWaitOutcome,
+  RootWaitOutputSchema,
+  SubagentCancelOutputSchema,
+  SubagentLaunchOutputSchema,
+  SubagentListOutputSchema,
+  SubagentSendOutputSchema,
+  waitTimeoutParameter,
+} from "./src/inbox.ts";
 import { Mailbox } from "./src/mailbox.ts";
 import {
   buildNotification,
@@ -366,6 +375,7 @@ export default function subagents(pi: ExtensionAPI) {
     name: "subagent",
     label: "subagent",
     parameters,
+    outputSchema: SubagentLaunchOutputSchema,
     description:
       "Start a background child agent with fresh conversation context. Unless narrowed by a role, it can edit files and run commands in the shared working directory. Returns an agent ID; its final report is delivered automatically.",
     promptGuidelines: [
@@ -393,9 +403,11 @@ export default function subagents(pi: ExtensionAPI) {
       const started = role
         ? `Started subagent ${id} (role: ${role.name}).`
         : `Started subagent ${id}.`;
+      const details = role ? { id, role: role.name } : { id };
       return {
         content: [{ type: "text", text: started }],
-        details: role ? { id, role: role.name } : { id },
+        details,
+        structuredContent: details,
       };
     },
   });
@@ -408,6 +420,7 @@ export default function subagents(pi: ExtensionAPI) {
     parameters: Type.Object({
       id: Type.String({ description: "Full agent UUID returned by subagent" }),
     }),
+    outputSchema: SubagentCancelOutputSchema,
     renderCall: renderCancelCall,
     renderResult: renderCancelResult,
     async execute(_call, { id }, _signal, _update, ctx) {
@@ -422,6 +435,13 @@ export default function subagents(pi: ExtensionAPI) {
           },
         ],
         details: cancelled,
+        structuredContent: {
+          id: cancelled.id,
+          status: cancelled.status,
+          report: cancelled.report,
+          requests: cancelled.requests,
+          tokens: cancelled.tokens,
+        },
       };
     },
   });
@@ -437,6 +457,7 @@ export default function subagents(pi: ExtensionAPI) {
     description:
       "List the running subagents of this session. Completed or cancelled subagents are omitted.",
     parameters: Type.Object({}),
+    outputSchema: SubagentListOutputSchema,
     renderCall: renderListCall,
     renderResult: renderListResult,
     async execute(_callId, _params, _signal, _update, ctx) {
@@ -445,6 +466,14 @@ export default function subagents(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: formatAgentList(agents) }],
         details: { agents },
+        structuredContent: {
+          agents: agents.map(({ id, role, elapsedMs, task }) => ({
+            id,
+            ...(role !== undefined ? { role } : {}),
+            elapsedMs,
+            task,
+          })),
+        },
       };
     },
   });
@@ -460,6 +489,7 @@ export default function subagents(pi: ExtensionAPI) {
         description: `Message text (at most ${MAX_MESSAGE_BYTES / 1024} KiB).`,
       }),
     }),
+    outputSchema: SubagentSendOutputSchema,
     renderCall: renderSendCall,
     renderResult: renderSendResult,
     async execute(_callId, { to: rawTo, message }, _signal, _update, ctx) {
@@ -474,6 +504,7 @@ export default function subagents(pi: ExtensionAPI) {
           },
         ],
         details: { to },
+        structuredContent: { to },
       };
     },
   });
@@ -494,6 +525,7 @@ export default function subagents(pi: ExtensionAPI) {
         }),
       ),
     }),
+    outputSchema: RootWaitOutputSchema,
     renderCall: renderWaitCall,
     renderResult: renderWaitResult,
     async execute(_callId, { timeoutSeconds, all }, signal, _update, ctx) {
@@ -507,6 +539,7 @@ export default function subagents(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: formatWaitOutcome(outcome) }],
         details: outcome,
+        structuredContent: outcome,
       };
     },
   });

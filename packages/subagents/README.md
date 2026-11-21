@@ -47,6 +47,12 @@ or use sleep loops. If nothing independent remains, end the turn and wait for th
 notification. See [Delivery to the root session](#delivery-to-the-root-session)
 for how hosts observe these updates.
 
+All five root tools (`subagent`, `subagent_list`, `subagent_send`,
+`subagent_wait`, and `subagent_cancel`) and the child messaging tools declare an
+`outputSchema` and set `structuredContent` (`{ id, role? }`, `{ agents }`,
+`{ to }`, `{ outcome, waitedMs, running? }`, and
+`{ id, status, report, requests, tokens }`) for Codemode scripts.
+
 ### Inspect running subagents
 
 While children are running, Pi's status area shows `subagents: N running`. The

@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { loadConfig, resolveCapabilityTarget } from "./src/config.ts";
 import { executeFetch, FetchParameters } from "./src/fetch.ts";
+import { FetchOutputSchema, SearchOutputSchema } from "./src/output.ts";
 import { renderWebCall, renderWebResult } from "./src/render.ts";
 import { executeSearch, SearchParameters } from "./src/search.ts";
 
@@ -20,6 +21,7 @@ export default async function webAccess(pi: ExtensionAPI) {
     ],
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     parameters: SearchParameters,
+    outputSchema: SearchOutputSchema,
     renderCall: (args, theme) => renderWebCall("search", args.query, theme),
     renderResult: (result, options, theme, context) =>
       renderWebResult("search", result, options, theme, context),
@@ -44,6 +46,7 @@ export default async function webAccess(pi: ExtensionAPI) {
     ],
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     parameters: FetchParameters,
+    outputSchema: FetchOutputSchema,
     renderCall: (args, theme) => renderWebCall("fetch", args.url, theme),
     renderResult: (result, options, theme, context) =>
       renderWebResult("fetch", result, options, theme, context),

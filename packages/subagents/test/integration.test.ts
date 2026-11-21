@@ -8,6 +8,7 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
+  createCodemodeExtension,
   DefaultResourceLoader,
   getPackageDir,
   ModelRuntime,
@@ -16,6 +17,7 @@ import {
   SettingsManager,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 import { record } from "../src/protocol.ts";
 import { parentOptions } from "../src/cli.ts";
 import { environment } from "../index.ts";
@@ -2532,4 +2534,213 @@ test("roles fail closed on unknown names, unavailable models, and parent tool re
     tool.execute("unauthed-provider", { task: "Inspect.", role: "unauthed_model" }),
     /Child exited before startup[\s\S]*xai/iu,
   );
+});
+
+test("subagent tools declare outputSchema and return matching structuredContent", {
+  timeout: 30_000,
+}, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-subagents-schema-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const oldDir = process.env.PI_CODING_AGENT_DIR;
+  const oldOffline = process.env.PI_OFFLINE;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  process.env.PI_OFFLINE = "1";
+  t.after(() => {
+    if (oldDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldDir;
+    if (oldOffline === undefined) delete process.env.PI_OFFLINE;
+    else process.env.PI_OFFLINE = oldOffline;
+  });
+
+  let parentTurn = 0;
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const parsed: unknown = JSON.parse(body);
+    assert.ok(record(parsed));
+    const messages = Array.isArray(parsed.messages) ? parsed.messages.filter(record) : [];
+    const isChild = JSON.stringify(messages).includes("Delegated task:");
+    res.writeHead(200, { "content-type": "text/event-stream" });
+
+    let delta: Record<string, unknown>;
+    let finishReason: string;
+    if (isChild) {
+      delta = {
+        role: "assistant",
+        tool_calls: [
+          {
+            index: 0,
+            id: "c1",
+            type: "function",
+            function: { name: "bash", arguments: JSON.stringify({ command: "sleep 30" }) },
+          },
+        ],
+      };
+      finishReason = "tool_calls";
+    } else if (parentTurn++ === 0) {
+      const code = `
+        const idleWait = await tools.subagent_wait({ timeoutSeconds: 1 });
+        const launched = await tools.subagent({ task: "Hold shell briefly.", role: "sleeper" });
+        const listed = await tools.subagent_list({});
+        const sent = await tools.subagent_send({ to: launched.id, message: "Note from script." });
+        const cancelled = await tools.subagent_cancel({ id: launched.id });
+        return {
+          idleOutcome: idleWait.outcome,
+          launchedRole: launched.role,
+          listedCount: listed.agents.length,
+          sentTo: sent.to,
+          cancelledStatus: cancelled.status,
+        };
+      `;
+      delta = {
+        role: "assistant",
+        tool_calls: [
+          {
+            index: 0,
+            id: "p1",
+            type: "function",
+            function: { name: "codemode", arguments: JSON.stringify({ code }) },
+          },
+        ],
+      };
+      finishReason = "tool_calls";
+    } else {
+      delta = { role: "assistant", content: "Done." };
+      finishReason = "stop";
+    }
+
+    const chunk = { id: "mock", object: "chat.completion.chunk", created: 1, model: "test-model" };
+    res.write(
+      `data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,
+    );
+    res.write(
+      `data: ${JSON.stringify({
+        ...chunk,
+        choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+        usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+      })}\n\n`,
+    );
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      ),
+  );
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+  await writeFile(
+    join(dir, "models.json"),
+    JSON.stringify({
+      providers: {
+        mock: {
+          baseUrl: `http://127.0.0.1:${address.port}/v1`,
+          api: "openai-completions",
+          apiKey: "test-only",
+          models: [
+            {
+              id: "test-model",
+              name: "Test",
+              reasoning: false,
+              input: ["text"],
+              contextWindow: 32000,
+              maxTokens: 1000,
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            },
+          ],
+        },
+      },
+    }),
+  );
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({
+      roles: {
+        sleeper: { tools: ["bash", "subagent_send", "subagent_wait"] },
+      },
+    }),
+  );
+
+  const settingsManager = SettingsManager.inMemory();
+  const loader = new DefaultResourceLoader({
+    cwd: dir,
+    agentDir: dir,
+    settingsManager,
+    additionalExtensionPaths: [fileURLToPath(new URL("../", import.meta.url))],
+    extensionFactories: [createCodemodeExtension({ mode: "on" })],
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(dir, "auth.json"),
+    modelsPath: join(dir, "models.json"),
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  });
+  const { session } = await createAgentSession({
+    cwd: dir,
+    agentDir: dir,
+    resourceLoader: loader,
+    modelRuntime,
+    settingsManager,
+    sessionManager: SessionManager.inMemory(dir),
+    tools: [
+      "read",
+      "bash",
+      "subagent",
+      "subagent_list",
+      "subagent_send",
+      "subagent_wait",
+      "subagent_cancel",
+      "codemode",
+    ],
+  });
+  t.after(async () => {
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    session.dispose();
+  });
+  const mockModel = modelRuntime.getProvider("mock")?.getModels()[0];
+  assert.ok(mockModel);
+  await session.setModel(mockModel);
+  await session.bindExtensions({ mode: "tui" });
+
+  for (const name of [
+    "subagent",
+    "subagent_list",
+    "subagent_send",
+    "subagent_wait",
+    "subagent_cancel",
+  ]) {
+    const candidate = session.agent.state.tools.find((item) => item.name === name);
+    assert.ok(candidate?.outputSchema, `missing outputSchema on ${name}`);
+  }
+  const listTool = session.agent.state.tools.find((item) => item.name === "subagent_list");
+  assert.ok(listTool?.outputSchema);
+  assert.equal(
+    Check(listTool.outputSchema, (await listTool.execute("l0", {})).structuredContent),
+    true,
+  );
+
+  await session.prompt("Run subagent lifecycle via codemode");
+  const cmResult = session.messages.find(
+    (msg) => msg.role === "toolResult" && msg.toolName === "codemode",
+  );
+  assert.ok(cmResult && cmResult.role === "toolResult");
+  assert.equal(cmResult.isError, false, JSON.stringify(cmResult.content));
+  const payloadPart = cmResult.content.at(1);
+  assert.ok(payloadPart && payloadPart.type === "text");
+  const parsedPayload: unknown = JSON.parse(payloadPart.text);
+  assert.ok(record(parsedPayload));
+  assert.equal(parsedPayload.idleOutcome, "idle");
+  assert.equal(parsedPayload.launchedRole, "sleeper");
+  assert.equal(parsedPayload.listedCount, 1);
+  assert.equal(typeof parsedPayload.sentTo, "string");
+  assert.equal(parsedPayload.cancelledStatus, "cancelled");
 });
