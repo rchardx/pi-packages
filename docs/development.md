@@ -86,8 +86,8 @@ ignored build output or caches.
 [`.github/workflows/nightly.yml`](../.github/workflows/nightly.yml) runs daily
 at 08:08 UTC and supports `main`-only manual dispatch with an optional `force`
 boolean (default `false`). One `main` SHA is fixed across all jobs. If that SHA
-already has a published `nightly` prerelease, validation and publishing are
-skipped unless `force` is `true`.
+already has a published `nightly` prerelease and an annotated `nightly` tag
+pointing to it, validation and publishing are skipped unless `force` is `true`.
 
 CI and nightly validation install the Pi development dependencies pinned in the
 root `package.json` with `npm ci`. Installed-tarball smoke logs report the Pi
@@ -97,14 +97,25 @@ Before publishing, both the minimum and development Node runtimes run checks,
 tests, tarball packing (`<base>-nightly.<run_number>.g<full SHA>`, leaving
 source versions unchanged and `private: true`), and isolated installed-tarball
 smoke tests. Only the `publish` job requests `contents: write` (using the
-built-in `GITHUB_TOKEN`). Before writing, it reads the current `main` SHA again.
-If the read fails, publication stops; if `main` has moved, the job skips without
-changing the release or tag, even when forced. To publish the new head, start a
-fresh run instead of rerunning the old failed jobs. This guard runs from the
-verified commit: do not rerun failed publish jobs from commits predating it.
+built-in `GITHUB_TOKEN`). Before staging and again immediately before cutover,
+it reads the current `main` SHA. If the read fails, publication stops; if `main`
+has moved, or if a newer `run_number` has already published `nightly` for the
+same `main` SHA, the job skips without changing the live release or tag, even
+when forced. To publish the new head, start a fresh run instead of rerunning the
+old failed jobs. This guard runs from the verified commit: do not rerun failed
+publish jobs from commits predating it.
 
-For a matching SHA, it replaces each package's `pi-<capability>-nightly.tgz`
-asset in place, updates the release notes, publishes the draft on first run, and
-advances the lightweight `nightly` tag last. If publication fails partway
-through and `main` is still at that SHA, rerun the workflow (or dispatch with
-`force: true` for a same-SHA failure) to repair the release.
+For a matching SHA, it creates an annotated `nightly` tag object stamped with
+the publication time and uploads each package's `pi-<capability>-nightly.tgz`
+archive to a temporary `nightly-draft-<run_id>-<run_attempt>` draft prerelease
+while keeping the existing `nightly` release online. Once all archives are
+uploaded, it deletes any existing `nightly` release, advances
+`refs/tags/nightly` to the annotated tag, promotes the draft to `nightly`, and
+sweeps any leftover `nightly-draft-*` drafts (a pre-promotion failure also
+deletes its own temporary draft before exiting). Recreating the release
+refreshes `published_at` and the package archives, while the annotated tag
+points source archives at the verified `main` commit and updates the tag and
+`Source code` entry dates shown on the GitHub release page (file timestamps
+inside GitHub's generated source archives still reflect the commit time). If
+publication fails partway through and `main` is still at that SHA, rerun the
+workflow (or dispatch with `force: true`) to repair the release.

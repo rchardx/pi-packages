@@ -8,12 +8,17 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const GITHUB_ORIGIN = "https://github.com";
 const API_ORIGIN = "https://api.github.com";
 const UPLOAD_ORIGIN = "https://uploads.github.com";
+const TAGGER_NAME = "github-actions[bot]";
+const TAGGER_EMAIL = "41898282+github-actions[bot]@users.noreply.github.com";
+const DRAFT_PREFIX = "nightly-draft-";
+const DRAFT_TAG = /^nightly-draft-[1-9]\d*-[1-9]\d*$/u;
 
 interface GitHubRelease {
   id: number;
   tag_name: string;
   draft: boolean;
   prerelease: boolean;
+  body: string;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -26,6 +31,13 @@ function record(value: unknown): Record<string, unknown> {
 function positiveId(value: unknown): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new Error("Unexpected GitHub API ID");
+  }
+  return value;
+}
+
+function gitSha(value: unknown, message: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{40}$/u.test(value)) {
+    throw new Error(message);
   }
   return value;
 }
@@ -64,6 +76,8 @@ export async function runNightly(
   nightlyVersion("0.0.0", runNumber, sha);
   const runId = required(env, "GITHUB_RUN_ID");
   if (!/^[1-9]\d*$/u.test(runId)) throw new Error("GITHUB_RUN_ID must be positive");
+  const runAttempt = required(env, "GITHUB_RUN_ATTEMPT");
+  if (!/^[1-9]\d*$/u.test(runAttempt)) throw new Error("GITHUB_RUN_ATTEMPT must be positive");
   const prefix = `repos/${repository}`;
 
   async function api(
@@ -105,35 +119,70 @@ export async function runNightly(
     return text.trim() ? JSON.parse(text) : undefined;
   }
 
-  async function findRelease(): Promise<GitHubRelease | undefined> {
+  async function findReleases(): Promise<{
+    nightly: GitHubRelease | undefined;
+    staleDrafts: GitHubRelease[];
+  }> {
     // The tag lookup endpoint excludes drafts; authenticated listing includes them.
     const releases = await api("GET", `${prefix}/releases?per_page=100`);
     if (!Array.isArray(releases)) throw new Error("Unexpected GitHub releases response");
+    let nightly: GitHubRelease | undefined;
+    const staleDrafts: GitHubRelease[] = [];
     for (const item of releases) {
       const release = record(item);
-      if (release.tag_name === "nightly") {
-        if (typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean") {
-          throw new Error("Unexpected GitHub release flags");
-        }
-        return {
-          id: positiveId(release.id),
-          tag_name: "nightly",
-          draft: release.draft,
-          prerelease: release.prerelease,
-        };
+      const tagName = release.tag_name;
+      const isNightly = tagName === "nightly";
+      const isStaleDraft =
+        release.draft === true && typeof tagName === "string" && DRAFT_TAG.test(tagName);
+      if (!isNightly && !isStaleDraft) continue;
+      if (typeof release.draft !== "boolean" || typeof release.prerelease !== "boolean") {
+        throw new Error("Unexpected GitHub release flags");
+      }
+      if (release.body !== undefined && release.body !== null && typeof release.body !== "string") {
+        throw new Error("Unexpected GitHub release body");
+      }
+      const parsed: GitHubRelease = {
+        id: positiveId(release.id),
+        tag_name: tagName,
+        draft: release.draft,
+        prerelease: release.prerelease,
+        body: typeof release.body === "string" ? release.body : "",
+      };
+      if (isNightly) {
+        nightly ??= parsed;
+      } else {
+        staleDrafts.push(parsed);
       }
     }
-    return undefined;
+    return { nightly, staleDrafts };
   }
 
-  async function readTag(): Promise<string | undefined> {
+  function publishedRunForSha(
+    release: GitHubRelease | undefined,
+    targetSha: string,
+  ): bigint | undefined {
+    if (!release || release.draft || !release.prerelease) return undefined;
+    const pattern = new RegExp(`-nightly\\.([1-9]\\d*)\\.g${targetSha}\\b`, "gu");
+    let maxRun: bigint | undefined;
+    for (const match of release.body.matchAll(pattern)) {
+      const matched = match[1];
+      if (!matched) continue;
+      const value = BigInt(matched);
+      if (maxRun === undefined || value > maxRun) maxRun = value;
+    }
+    return maxRun;
+  }
+
+  async function readAnnotatedCommit(): Promise<string | undefined> {
     const value = await api("GET", `${prefix}/git/ref/tags/nightly`, { allowMissing: true });
     if (value === undefined) return undefined;
     const object = record(record(value).object);
-    if (object.type !== "commit" || typeof object.sha !== "string") {
-      throw new Error("The nightly tag must be lightweight and point to a commit");
-    }
-    return object.sha;
+    const objectSha = gitSha(object.sha, "Unexpected GitHub tag ref SHA");
+    if (object.type !== "tag") return undefined;
+    const tag = record(await api("GET", `${prefix}/git/tags/${objectSha}`));
+    const target = record(tag.object);
+    const targetSha = gitSha(target.sha, "Unexpected GitHub tag target SHA");
+    return target.type === "commit" ? targetSha : undefined;
   }
 
   if (command === "plan") {
@@ -142,8 +191,8 @@ export async function runNightly(
       throw new Error("NIGHTLY_FORCE must be true or false");
     }
     const output = required(env, "GITHUB_OUTPUT");
-    const current = await readTag();
-    const release = await findRelease();
+    const current = await readAnnotatedCommit();
+    const { nightly: release } = await findReleases();
     const publish =
       force === "true" || current !== sha || !release || release.draft || !release.prerelease;
     appendFileSync(output, `publish=${Boolean(publish)}\n`);
@@ -174,12 +223,13 @@ export async function runNightly(
     throw new Error("Root package.json must pin the Pi development dependency");
   }
 
+  const updatedAt = new Date().toISOString().replace(/\.\d{3}Z$/u, "Z");
   const body = [
-    "Rolling development builds; not stable releases. Assets are replaced in place, not atomically.",
+    "Rolling development builds; not stable releases. Replaced as a fresh prerelease on each publish; avoid downloading while a run is publishing.",
     "",
     `Commit: ${GITHUB_ORIGIN}/${repository}/commit/${sha}`,
     `Build: ${GITHUB_ORIGIN}/${repository}/actions/runs/${runId}`,
-    `Updated: ${new Date().toISOString()}`,
+    `Updated: ${updatedAt}`,
     `Node.js minimum: \`${minimumNode}\`; development runtime: \`${developmentNode}\`; tested Pi: \`${piVersion}\`.`,
     "",
     "| Package | Version |",
@@ -190,77 +240,141 @@ export async function runNightly(
     `See [nightly installation instructions](${GITHUB_ORIGIN}/${repository}/blob/${sha}/docs/installation.md#install-a-nightly-snapshot).`,
   ].join("\n");
 
+  async function isCurrentMain(): Promise<boolean> {
+    const mainRef = record(await api("GET", `${prefix}/git/ref/heads/main`));
+    const main = record(mainRef.object);
+    if (
+      mainRef.ref !== "refs/heads/main" ||
+      main.type !== "commit" ||
+      typeof main.sha !== "string" ||
+      !/^[a-f0-9]{40}$/u.test(main.sha)
+    ) {
+      throw new Error("Unexpected GitHub main ref response");
+    }
+    if (main.sha !== sha) {
+      console.log(`Skipping stale nightly: verified ${sha}, but main now points to ${main.sha}.`);
+      return false;
+    }
+    return true;
+  }
+
   // A rerun can reach publish with archives verified for a previous main tip.
-  const mainRef = record(await api("GET", `${prefix}/git/ref/heads/main`));
-  const main = record(mainRef.object);
-  if (
-    mainRef.ref !== "refs/heads/main" ||
-    main.type !== "commit" ||
-    typeof main.sha !== "string" ||
-    !/^[a-f0-9]{40}$/u.test(main.sha)
-  ) {
-    throw new Error("Unexpected GitHub main ref response");
-  }
-  if (main.sha !== sha) {
-    console.log(`Skipping stale nightly: verified ${sha}, but main now points to ${main.sha}.`);
-    return;
-  }
+  if (!(await isCurrentMain())) return;
+
+  const draftTag = `${DRAFT_PREFIX}${runId}-${runAttempt}`;
+  let cleanupDraftId: number | undefined;
 
   try {
-    let release = await findRelease();
-    await readTag(); // Reject annotated tags before changing any remote state.
-    if (!release) {
-      const created = record(
-        await api("POST", `${prefix}/releases`, {
-          body: {
-            tag_name: "nightly",
-            target_commitish: sha,
-            name: "Nightly",
-            draft: true,
-            prerelease: true,
-            make_latest: "false",
-          },
-        }),
+    const { nightly: existingRelease, staleDrafts } = await findReleases();
+    const publishedRun = publishedRunForSha(existingRelease, sha);
+    if (publishedRun !== undefined && BigInt(runNumber) < publishedRun) {
+      console.log(
+        `Skipping superseded nightly: run ${runNumber} predates published run ${publishedRun} for ${sha}.`,
       );
-      release = { id: positiveId(created.id), tag_name: "nightly", draft: true, prerelease: true };
+      return;
     }
 
-    const rawAssets = await api("GET", `${prefix}/releases/${release.id}/assets?per_page=100`);
-    if (!Array.isArray(rawAssets)) throw new Error("Unexpected GitHub assets response");
-    const existingAssets = rawAssets.map(record);
+    const hasTagRef =
+      (await api("GET", `${prefix}/git/ref/tags/nightly`, { allowMissing: true })) !== undefined;
+
+    for (const duplicate of staleDrafts.filter((draft) => draft.tag_name === draftTag)) {
+      await api("DELETE", `${prefix}/releases/${duplicate.id}`, { allowMissing: true });
+    }
+
+    const createdTag = record(
+      await api("POST", `${prefix}/git/tags`, {
+        body: {
+          tag: "nightly",
+          message: `Nightly (${sha})`,
+          object: sha,
+          type: "commit",
+          tagger: {
+            name: TAGGER_NAME,
+            email: TAGGER_EMAIL,
+            date: updatedAt,
+          },
+        },
+      }),
+    );
+    const tagSha = gitSha(createdTag.sha, "Unexpected GitHub tag SHA");
+
+    const createdDraft = record(
+      await api("POST", `${prefix}/releases`, {
+        body: {
+          tag_name: draftTag,
+          target_commitish: sha,
+          name: "Nightly",
+          body,
+          draft: true,
+          prerelease: true,
+          make_latest: "false",
+        },
+      }),
+    );
+    const draftId = positiveId(createdDraft.id);
+    cleanupDraftId = draftId;
 
     for (const archive of archives) {
-      for (const existing of existingAssets.filter((asset) => asset.name === archive.name)) {
-        await api("DELETE", `${prefix}/releases/assets/${positiveId(existing.id)}`);
-      }
       await api(
         "POST",
-        `${prefix}/releases/${release.id}/assets?name=${encodeURIComponent(archive.name)}`,
+        `${prefix}/releases/${draftId}/assets?name=${encodeURIComponent(archive.name)}`,
         { origin: UPLOAD_ORIGIN, upload: archive.bytes },
       );
     }
 
-    await api("PATCH", `${prefix}/releases/${release.id}`, {
+    if (!(await isCurrentMain())) return;
+
+    if (existingRelease) {
+      await api("DELETE", `${prefix}/releases/${existingRelease.id}`);
+    }
+
+    if (!hasTagRef) {
+      await api("POST", `${prefix}/git/refs`, {
+        body: { ref: "refs/tags/nightly", sha: tagSha },
+      });
+    } else {
+      await api("PATCH", `${prefix}/git/refs/tags/nightly`, {
+        body: { sha: tagSha, force: true },
+      });
+    }
+
+    // Clear cleanupDraftId before promotion so a response-read failure cannot delete a newly published release.
+    cleanupDraftId = undefined;
+    await api("PATCH", `${prefix}/releases/${draftId}`, {
       body: {
-        name: "Nightly",
-        body,
-        ...(release.draft ? { draft: false } : {}),
+        tag_name: "nightly",
+        target_commitish: sha,
+        draft: false,
         prerelease: true,
         make_latest: "false",
-        target_commitish: sha,
       },
     });
 
-    // Re-read because publishing a draft can create the tag itself.
-    if ((await readTag()) === undefined) {
-      await api("POST", `${prefix}/git/refs`, { body: { ref: "refs/tags/nightly", sha } });
-    } else {
-      await api("PATCH", `${prefix}/git/refs/tags/nightly`, { body: { sha, force: true } });
+    for (const stale of staleDrafts) {
+      if (stale.tag_name !== draftTag && stale.id !== draftId) {
+        try {
+          await api("DELETE", `${prefix}/releases/${stale.id}`, { allowMissing: true });
+        } catch (cleanupError) {
+          console.warn(
+            `Failed to delete stale nightly draft ${stale.id}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+          );
+        }
+      }
     }
   } catch (error) {
     throw new Error(
-      `Nightly publication failed; assets may be partially replaced. Fix the failure and rerun with force=true to repair the same release. ${error instanceof Error ? error.message : String(error)}`,
+      `Nightly publication failed before completing the replacement prerelease. Fix the failure and rerun the workflow (or dispatch with force=true) to repair it. ${error instanceof Error ? error.message : String(error)}`,
     );
+  } finally {
+    if (cleanupDraftId !== undefined) {
+      try {
+        await api("DELETE", `${prefix}/releases/${cleanupDraftId}`, { allowMissing: true });
+      } catch (cleanupError) {
+        console.warn(
+          `Failed to clean up unpublished nightly draft ${cleanupDraftId}: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
+        );
+      }
+    }
   }
 }
 

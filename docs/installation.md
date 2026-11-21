@@ -49,7 +49,7 @@ Each successful nightly run publishes one `pi-<capability>-nightly.tgz` archive
 per package under `packages/`.
 
 These snapshots are rolling development builds, not stable releases or npm
-registry publications, and asset replacement is not atomic—avoid downloading
+registry publications, and release replacement is not atomic—avoid downloading
 while a workflow run is publishing and keep your previous local installation
 directory for rollback.
 
