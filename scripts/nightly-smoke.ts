@@ -75,7 +75,6 @@ async function verifyInstalled(root: string): Promise<void> {
     for (const [name, owner] of [
       ["ask", "ask"],
       ["bash", "background"],
-      ["lsp", "lsp"],
       ["subagent", "subagents"],
       ["subagent_cancel", "subagents"],
       ["web_search", "web-access"],
@@ -122,10 +121,6 @@ async function verifyInstalled(root: string): Promise<void> {
       execute("subagent_cancel", { id: "00000000-0000-4000-8000-000000000000" }),
       /No subagents belong to this session/u,
     );
-    const lsp = await execute("lsp", { action: "diagnostics", path: "notes.txt" });
-    assert.deepEqual(lsp.content, [
-      { type: "text", text: 'No language server is configured for "notes.txt".' },
-    ]);
     await assert.rejects(execute("web_search", { query: "nightly smoke" }), /Search is disabled/u);
     await assert.rejects(
       execute("web_fetch", { url: "https://example.invalid/nightly-smoke" }),
@@ -143,7 +138,7 @@ async function verifyInstalled(root: string): Promise<void> {
   assert.equal(networkAttempts, 0, "No model/provider requests are allowed");
   console.log(
     `Installed smoke passed with Pi ${VERSION} on Node ${process.version}: ${sources.length} package extensions discovered/loaded; ` +
-      "foreground bash; ask/background/subagent mode guards; lsp unavailable-language path; empty subagent cancellation; " +
+      "foreground bash; ask/background/subagent mode guards; empty subagent cancellation; " +
       "web search/fetch consent guards. Statusline loading only; no model or child-agent execution.",
   );
 }

@@ -17,7 +17,6 @@ body:
       options:
         - ask
         - background
-        - lsp
         - statusline
         - subagents
         - web-access

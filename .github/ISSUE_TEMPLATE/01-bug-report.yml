@@ -16,7 +16,6 @@ body:
       options:
         - ask
         - background
-        - lsp
         - statusline
         - subagents
         - web-access
@@ -67,7 +66,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Include Pi, Node.js, OS, and commit SHA or nightly tag (plus provider or language server if relevant).
+      description: Include Pi, Node.js, OS, and commit SHA or nightly tag (plus provider if relevant).
       placeholder: |
         - Pi: <output of pi --version>
         - Node.js: 22.19.0
