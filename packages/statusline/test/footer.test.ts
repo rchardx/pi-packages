@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionContext, SessionEntry } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import {
   accumulateSessionStats,
   formatCwd,
@@ -82,7 +82,7 @@ test("orderExtensionStatuses places subagents first, background second, then alp
   ]);
 });
 
-test("renderStatuslineRows appends inline statuses on line 1 and keeps native stats on line 2", () => {
+test("renderStatuslineRows appends inline statuses on line 1 and orders model-first stats on line 2", () => {
   const statuses = new Map<string, string>([
     ["background", "background: 1 running"],
     ["subagents", "subagents: 2 running"],
@@ -96,12 +96,23 @@ test("renderStatuslineRows appends inline statuses on line 1 and keeps native st
     line1,
     "~/projects/pi-packages (main) · subagents: 2 running · background: 1 running",
   );
-  assert.match(line2, /^↑208k ↓25k R1\.4M CH97\.4% \$0\.809 9\.9%\/1\.0M \(auto\) +/u);
-  assert.ok(line2.endsWith("(anthropic) claude-opus-4-6 • high"));
-  assert.equal(visibleWidth(line2), 120);
+  assert.equal(
+    line2,
+    "claude-opus-4-6 • high (anthropic) · 9.9%/1.0M (auto) · $0.809 · ↑208k ↓25k R1.4M CH97.4%",
+  );
+
+  const [, singleProviderIdleLine2] = renderStatuslineRows(
+    baseState({
+      availableProviderCount: 1,
+      usageTotals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    }),
+    120,
+    plainTheme,
+  );
+  assert.equal(singleProviderIdleLine2, "claude-opus-4-6 • high · 9.9%/1.0M (auto)");
 });
 
-test("renderStatuslineRows handles session names, subscription labels, thresholds, and narrow widths", () => {
+test("renderStatuslineRows handles session names, subscription labels, and context thresholds", () => {
   const [withNameLine1, warningLine2] = renderStatuslineRows(
     baseState({
       sessionName: "refactor\nauth",
@@ -116,42 +127,84 @@ test("renderStatuslineRows handles session names, subscription labels, threshold
       },
       thinkingLevel: "off",
     }),
-    120,
+    220,
     taggedTheme,
   );
   assert.match(
     withNameLine1,
     /~\/*projects\/pi-packages \(main\) • refactor auth<\/dim><dim> · <\/dim><dim>subagents: 1 running/u,
   );
-  assert.match(warningLine2, /\$0\.809 \(sub\)/u);
+  assert.match(warningLine2, /<dim>claude-opus-4-6 • thinking off \(anthropic\)<\/dim>/u);
   assert.match(warningLine2, /<warning>75\.0%\/1\.0M \(auto\)<\/warning>/u);
-  assert.match(warningLine2, /claude-opus-4-6 • thinking off/u);
+  assert.match(warningLine2, /<dim>\$0\.809 \(sub\)<\/dim>/u);
 
   const [, errorLine2] = renderStatuslineRows(
     baseState({
       contextUsage: { tokens: 950_000, contextWindow: 1_000_000, percent: 95 },
     }),
-    120,
+    220,
     taggedTheme,
   );
   assert.match(errorLine2, /<error>95\.0%\/1\.0M \(auto\)<\/error>/u);
+});
 
-  for (const width of [24, 50, 72]) {
-    const rows = renderStatuslineRows(
-      baseState({
-        extensionStatuses: new Map([
-          ["subagents", "subagents: 8 running"],
-          ["background", "background: 4 running"],
-        ]),
-      }),
-      width,
-      plainTheme,
-    );
-    assert.equal(rows.length, 2);
-    for (const row of rows) {
-      assert.ok(visibleWidth(row) <= width, `row exceeded width ${width}: ${row}`);
-    }
-  }
+test("renderStatuslineRows preserves active statuses and model info in narrow widths", () => {
+  const [idleNarrowLine1] = renderStatuslineRows(baseState(), 24, plainTheme);
+  assert.equal(stripTerminalSequences(idleNarrowLine1), "~/projects/pi-package...");
+
+  // Short location (~) fits completely even when remaining width (2) <= ellipsis width (3).
+  const [shortLocationLine1] = renderStatuslineRows(
+    baseState({
+      cwd: "/home/dev",
+      branch: null,
+      extensionStatuses: new Map([["subagents", "subagents: 2 running"]]),
+    }),
+    25,
+    plainTheme,
+  );
+  assert.equal(shortLocationLine1, "~ · subagents: 2 running");
+
+  const deepState = baseState({
+    cwd: "/home/dev/projects/pi-packages/packages/statusline",
+    branch: "feat/narrow-statusline",
+    sessionName: "ui polish",
+    extensionStatuses: new Map([
+      ["subagents", "subagents: 2 running"],
+      ["background", "background: 1 running"],
+    ]),
+  });
+
+  // Split-pane width: elides deep path/branch/session prefix while keeping active statuses and model.
+  const [splitLine1, splitLine2] = renderStatuslineRows(deepState, 72, plainTheme);
+  assert.equal(
+    stripTerminalSequences(splitLine1),
+    "~/projects/pi-packages... · subagents: 2 running · background: 1 running",
+  );
+  assert.equal(
+    stripTerminalSequences(splitLine2),
+    "claude-opus-4-6 • high (anthropic) · 9.9%/1.0M (auto) · $0.809 · ↑208...",
+  );
+
+  // Tight width where statuses fit (44 cols) but location + separator cannot keep a prefix: omit location.
+  const [tightLine1, tightLine2] = renderStatuslineRows(deepState, 46, plainTheme);
+  assert.equal(stripTerminalSequences(tightLine1), "subagents: 2 running · background: 1 running");
+  assert.equal(
+    stripTerminalSequences(tightLine2),
+    "claude-opus-4-6 • high (anthropic) · 9.9%/1...",
+  );
+
+  // Active statuses exceed width, including CJK and ANSI-styled status text.
+  const [cjkLine1At16] = renderStatuslineRows(
+    baseState({
+      extensionStatuses: new Map([
+        ["subagents", "\u001b[33m子代理: 2 运行中\u001b[0m"],
+        ["background", "后台任务: 1 运行中"],
+      ]),
+    }),
+    16,
+    plainTheme,
+  );
+  assert.equal(cjkLine1At16, "\u001b[33m子代理: 2 运\u001b[0m...\u001b[0m");
 });
 
 test("accumulateSessionStats sums usage across entry kinds and tracks latest assistant cache hit rate", () => {

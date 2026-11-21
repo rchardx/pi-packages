@@ -22,11 +22,13 @@ import type { Terminal } from "@earendil-works/pi-tui";
 
 const statuslineRoot = fileURLToPath(new URL("../", import.meta.url));
 
-function createCaptureTerminal(): {
+function createCaptureTerminal(initialColumns = 140): {
   terminal: Terminal;
+  setColumns: (columns: number) => void;
   clear: () => void;
   output: () => string;
 } {
+  let currentColumns = initialColumns;
   const chunks: string[] = [];
   const terminal: Terminal = {
     start() {},
@@ -36,7 +38,7 @@ function createCaptureTerminal(): {
       chunks.push(data);
     },
     get columns() {
-      return 140;
+      return currentColumns;
     },
     get rows() {
       return 40;
@@ -56,6 +58,9 @@ function createCaptureTerminal(): {
   };
   return {
     terminal,
+    setColumns: (columns: number) => {
+      currentColumns = columns;
+    },
     clear: () => {
       chunks.length = 0;
     },
@@ -132,7 +137,7 @@ test("statusline renders subagents before background on the path line in TUI mod
   t.after(() => runtime.dispose());
 
   initTheme();
-  const { terminal, clear, output } = createCaptureTerminal();
+  const { terminal, setColumns, clear, output } = createCaptureTerminal();
   const mode = new InteractiveMode(runtime, {
     terminal,
     tuiMode: "regular",
@@ -156,6 +161,18 @@ test("statusline renders subagents before background on the path line in TUI mod
   assert.ok(
     !rendered.includes("\nsubagents: 2 running"),
     "extension statuses must not render on a separate third footer row",
+  );
+
+  // Shrink terminal width in the same session to verify narrow widths propagate to the footer.
+  setColumns(60);
+  clear();
+  capturedCtx.ui.setStatus("subagents", "subagents: 3 running");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const narrowRendered = output();
+  assert.ok(
+    narrowRendered.includes("... · subagents: 3 running · background: 1 running"),
+    `Expected elided cwd and intact statuses in narrow output:\n${narrowRendered}`,
   );
 });
 
