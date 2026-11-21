@@ -121,6 +121,12 @@ export interface SessionJobs {
   /** Append lifecycle metadata outside the output budget; no-op without a log. */
   appendLog(job: JobRecord, line: string): Promise<void>;
   closeLog(job: JobRecord): Promise<void>;
+  /**
+   * Abort a running job's process tree, append a killed trailer, and close its
+   * log. Claims state synchronously and resolves to undefined when the job is
+   * unknown or already ended.
+   */
+  stopJob(id: string, reason: string): Promise<JobRecord | undefined>;
   /** Kill every running job's process tree and close its log. */
   killAll(reason: string): Promise<void>;
 }
@@ -132,6 +138,20 @@ export function createSessionJobs(
   // Session ids are pi-generated and already name the session's own files.
   const dir = join(rootDir, sessionId);
   const jobs = new Map<string, JobRecord>();
+
+  function killRecord(job: JobRecord, reason: string): Promise<void> {
+    // Mark first so the in-flight execution's settle handler skips the
+    // completion notification for a user- or session-initiated stop.
+    job.state = "ended";
+    job.controller.abort();
+    return state
+      .appendLog(job, `\n[pi-background] job ${job.id} killed: ${reason}\n`)
+      .then(() => state.closeLog(job))
+      .finally(() => {
+        jobs.delete(job.id);
+      });
+  }
+
   const state: SessionJobs = {
     sessionId,
     dir,
@@ -179,6 +199,7 @@ export function createSessionJobs(
       return true;
     },
     writeOutput(job, data) {
+      if (job.state !== "running") return;
       const { log } = job;
       if (!log || log.destroyed || log.closed || !log.writable) return;
       const remaining = LOG_OUTPUT_BYTES - job.logBytes;
@@ -204,19 +225,17 @@ export function createSessionJobs(
     closeLog(job) {
       return job.log ? endLog(job.log) : Promise.resolve();
     },
+    async stopJob(id, reason) {
+      const job = jobs.get(id);
+      if (job?.state !== "running") return undefined;
+      await killRecord(job, reason);
+      return job;
+    },
     async killAll(reason) {
       const pending: Promise<unknown>[] = [];
       for (const job of jobs.values()) {
-        // Mark first so the in-flight execution's settle handler skips the
-        // completion notification for a job the session itself is ending.
         if (job.state !== "running") continue;
-        job.state = "ended";
-        job.controller.abort();
-        pending.push(
-          state
-            .appendLog(job, `\n[pi-background] job ${job.id} killed: ${reason}\n`)
-            .then(() => state.closeLog(job)),
-        );
+        pending.push(killRecord(job, reason));
       }
       await Promise.allSettled(pending);
     },

@@ -72,14 +72,16 @@ async function loadSession(
   });
   // SDK sessions default to print-mode bindings; bind the mode under test.
   const notices: string[] = [];
+  const notifications: { message: string; type: "info" | "warning" | "error" | undefined }[] = [];
   const statuses = new Map<string, string>();
   const statusUpdates: { key: string; text: string | undefined }[] = [];
   await session.bindExtensions({
     mode,
     uiContext: {
       ...session.extensionRunner.createContext().ui,
-      notify: (message) => {
+      notify: (message, type) => {
         notices.push(message);
+        notifications.push({ message, type });
       },
       setStatus: (key, text) => {
         statusUpdates.push({ key, text });
@@ -91,7 +93,15 @@ async function loadSession(
   assert.deepEqual(session.getActiveToolNames(), ["bash"]);
   const tool = session.agent.state.tools.find((candidate) => candidate.name === "bash");
   assert.ok(tool);
-  return { session, directory, tool, notices, statuses, statusUpdates };
+  return {
+    session,
+    directory,
+    tool,
+    notices,
+    notifications,
+    statuses,
+    statusUpdates,
+  };
 }
 
 function textOf(result: { content: unknown }): string {
@@ -103,10 +113,13 @@ function textOf(result: { content: unknown }): string {
 }
 
 /** Wait until predicate() returns a value or the deadline passes. */
-async function waitFor<T>(predicate: () => T | undefined, timeoutMs = 10_000): Promise<T> {
+async function waitFor<T>(
+  predicate: () => T | undefined | Promise<T | undefined>,
+  timeoutMs = 10_000,
+): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const value = predicate();
+    const value = await predicate();
     if (value !== undefined) return value;
     if (Date.now() > deadline) throw new Error("waitFor timed out");
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -465,6 +478,9 @@ for (const ending of ["completed", "failed", "shutdown"] as const) {
     const result = await execution;
     if (ending === "shutdown") {
       await setImmediate();
+      assert.equal(result.isError, true);
+      assert.equal(result.structuredContent, undefined);
+      assert.match(textOf(result), /stopped because the session ended/u);
       assert.equal(streamMock.mock.callCount(), 0, "shutdown must not open a late log stream");
       assert.equal(statuses.has("background"), false);
       assert.equal(notificationMessages(session).length, 0);
@@ -669,4 +685,226 @@ test("auto-backgrounding with an unwritable log dir preserves foreground and pos
   const notification = await waitFor(() => notificationMessages(session)[0]);
   assert.match(notification.content, /early-line/u);
   assert.match(notification.content, /late-line/u);
+});
+
+for (const mode of ["tui", "rpc"] as const) {
+  test(`/background stop <id> stops only the target job and preserves sibling completion in ${mode}`, async (t) => {
+    const { session, directory, tool, notifications, statuses } = await loadSession(t, mode);
+    const identicalCommand = nodeScript(
+      `const fs = require('node:fs');
+       console.log('ready');
+       const finish = () => {
+         if (!fs.existsSync('finish-sibling')) return;
+         watcher.close();
+         console.log('sibling completed');
+         process.exitCode = 0;
+       };
+       const watcher = fs.watch('.', finish);
+       finish();`.replaceAll("\n", " "),
+    );
+    const first = await tool.execute("dup-1", { command: identicalCommand, background: true });
+    const second = await tool.execute("dup-2", { command: identicalCommand, background: true });
+    const firstId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(first))?.[1];
+    const secondId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(second))?.[1];
+    const firstLog = /Log: (\S+)/u.exec(textOf(first))?.[1];
+    assert.ok(firstId && secondId && firstLog);
+    assert.equal(statuses.get("background"), "background: 2 running");
+    await waitFor(async () =>
+      (await readFile(firstLog, "utf8").catch(() => "")).includes("ready") ? true : undefined,
+    );
+
+    const messagesBefore = [...session.messages];
+    await session.prompt(`/background   stop   ${firstId}  `);
+    assert.equal(statuses.get("background"), "background: 1 running");
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]?.type, "info");
+    assert.match(
+      notifications[0]?.message ?? "",
+      new RegExp(`^Stopped background job ${firstId}: `, "u"),
+    );
+    assert.deepEqual(session.messages, messagesBefore);
+    assert.match(
+      await readFile(firstLog, "utf8"),
+      /^ready\n\n\[pi-background\] job bg_[0-9a-f]{8} killed: stopped by user\n$/u,
+    );
+
+    await writeFile(join(directory, "finish-sibling"), "done");
+    const completion = await waitFor(() => notificationMessages(session)[0]);
+    assert.match(completion.content, new RegExp(`${secondId} exited with code 0`, "u"));
+    assert.equal(notificationMessages(session).length, 1);
+    assert.equal(statuses.has("background"), false);
+  });
+
+  test(`/background stop reports clear error notifications without side effects in ${mode}`, async (t) => {
+    const { session, tool, notifications, statuses } = await loadSession(t, mode);
+    const running = await tool.execute("keep-running", {
+      command: nodeScript("setTimeout(() => {}, 30000)"),
+      background: true,
+    });
+    const runningId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(running))?.[1];
+    const fast = await tool.execute("finish-fast", {
+      command: nodeScript('setTimeout(() => console.log("done"), 50)'),
+      background: true,
+    });
+    const finishedId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(fast))?.[1];
+    assert.ok(runningId && finishedId);
+    await waitFor(() =>
+      notificationMessages(session).find((msg) => msg.content.includes(finishedId)),
+    );
+
+    const messagesBefore = [...session.messages];
+    const invalidInputs = [
+      ["/background list", /Unknown \/background subcommand "list"/u],
+      ["/background stop", /^Usage: \/background stop <job-id>$/u],
+      [`/background stop ${runningId} extra`, /^Usage: \/background stop <job-id>$/u],
+      ["/background stop not-an-id", /^No running background job not-an-id in this session\.$/u],
+      [
+        "/background stop bg_00000000",
+        /^No running background job bg_00000000 in this session\.$/u,
+      ],
+      [
+        `/background stop ${finishedId}`,
+        new RegExp(`^No running background job ${finishedId} in this session\\.$`, "u"),
+      ],
+    ] as const;
+
+    for (const [input, expected] of invalidInputs) {
+      await session.prompt(input);
+      const latest = notifications.at(-1);
+      assert.equal(latest?.type, "error", input);
+      assert.match(latest?.message ?? "", expected, input);
+    }
+
+    assert.deepEqual(session.messages, messagesBefore);
+    assert.equal(statuses.get("background"), "background: 1 running");
+  });
+}
+
+test("/background provides case-sensitive two-stage argument completions", async (t) => {
+  const { session, tool } = await loadSession(t, "tui");
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+
+  const command = session.extensionRunner.getCommand("background");
+  assert.ok(command?.getArgumentCompletions);
+  assert.equal(command.description, "Show running background jobs (or stop <id>)");
+
+  assert.equal(await command.getArgumentCompletions("s"), null);
+  assert.equal(await command.getArgumentCompletions("stop "), null);
+
+  const first = await tool.execute("ac-1", {
+    command: `printf 'build'\n${nodeScript("setTimeout(() => {}, 30000)")}`,
+    background: true,
+  });
+  const second = await tool.execute("ac-2", {
+    command: nodeScript("setTimeout(() => {}, 30000)"),
+    background: true,
+  });
+  const firstId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(first))?.[1];
+  const secondId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(second))?.[1];
+  assert.ok(firstId && secondId);
+  now += 83_000;
+
+  assert.deepEqual(await command.getArgumentCompletions("s"), [
+    { value: "stop ", label: "stop", description: "Stop a running background job (2 running)" },
+  ]);
+  assert.equal(await command.getArgumentCompletions("S"), null);
+  assert.equal(await command.getArgumentCompletions("kill"), null);
+
+  const stage2 = await command.getArgumentCompletions("stop ");
+  assert.ok(stage2);
+  assert.equal(stage2.length, 2);
+  assert.equal(stage2[0]?.value, `stop ${firstId}`);
+  assert.equal(stage2[0]?.label, firstId);
+  assert.match(stage2[0]?.description ?? "", /^1m23s · printf 'build' ⏎ /u);
+  assert.equal(stage2[1]?.value, `stop ${secondId}`);
+  assert.equal(stage2[1]?.label, secondId);
+
+  assert.deepEqual(
+    (await command.getArgumentCompletions(`stop ${firstId.slice(0, 7)}`))?.map((i) => i.label),
+    [firstId],
+  );
+  assert.equal(await command.getArgumentCompletions(`stop ${firstId.slice(3, 7)}`), null);
+  assert.equal(await command.getArgumentCompletions(`stop ${firstId} extra`), null);
+
+  await session.prompt(`/background stop ${firstId}`);
+  assert.deepEqual(
+    (await command.getArgumentCompletions("stop "))?.map((i) => i.label),
+    [secondId],
+  );
+  await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  assert.equal(await command.getArgumentCompletions("s"), null);
+});
+
+test("stopping a job during openLog reports an error with captured output instead of Started", async (t) => {
+  const { session, directory, tool, notices, notifications, statuses } = await loadSession(
+    t,
+    "rpc",
+  );
+  const gate = new EventEmitter();
+  const entered = once(gate, "entered");
+  const released = once(gate, "release");
+  const mkdir = fsPromises.mkdir;
+  const mkdirMock = t.mock.method(
+    fsPromises,
+    "mkdir",
+    async (...args: Parameters<typeof mkdir>) => {
+      if (String(args[0]).startsWith(join(directory, "bash-jobs"))) {
+        gate.emit("entered");
+        await released;
+      }
+      return mkdir(...args);
+    },
+  );
+  let captured = "";
+  const spawn = childProcess.spawn;
+  const spawnMock = t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+    const child = spawn(...args);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      captured += chunk.toString("utf8");
+    });
+    return child;
+  });
+  const streamMock = t.mock.method(fs, "createWriteStream");
+  syncBuiltinESMExports();
+  t.after(() => {
+    gate.emit("release");
+    mkdirMock.mock.restore();
+    spawnMock.mock.restore();
+    streamMock.mock.restore();
+    syncBuiltinESMExports();
+  });
+
+  const execution = tool.execute("stop-during-openlog", {
+    command: nodeScript('console.log("captured-before-stop"); setTimeout(() => {}, 30000)'),
+    background: true,
+  });
+  await entered;
+  await waitFor(() => (captured.includes("captured-before-stop") ? true : undefined));
+  await setImmediate();
+
+  await session.prompt("/background");
+  const jobId = /(bg_[0-9a-f]{8})\s+running/u.exec(notices.at(-1) ?? "")?.[1];
+  assert.ok(jobId);
+
+  await session.prompt(`/background stop ${jobId}`);
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.match(
+    notifications.at(-1)?.message ?? "",
+    new RegExp(`^Stopped background job ${jobId}:`, "u"),
+  );
+
+  gate.emit("release");
+  const result = await execution;
+  await setImmediate();
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent, undefined);
+  assert.equal(
+    textOf(result),
+    `captured-before-stop\n\nBackground job ${jobId} was stopped by user.`,
+  );
+  assert.equal(streamMock.mock.callCount(), 0);
+  assert.equal(statuses.has("background"), false);
+  assert.equal(notificationMessages(session).length, 0);
 });

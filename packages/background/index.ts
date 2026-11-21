@@ -6,6 +6,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { loadConfig } from "./src/config.ts";
 import {
@@ -22,6 +23,7 @@ import {
   NOTIFICATION_TYPE,
   type JobOutcome,
   type NotificationDetails,
+  oneLine,
   renderNotification,
   tailText,
 } from "./src/notify.ts";
@@ -68,20 +70,46 @@ function updateStatus(ctx: ExtensionContext, session: SessionJobs): void {
   ctx.ui.setStatus("background", count > 0 ? `background: ${count} running` : undefined);
 }
 
+function completeBackgroundArgs(
+  prefix: string,
+  jobs: readonly JobRecord[],
+): AutocompleteItem[] | null {
+  if (jobs.length === 0) return null;
+  const [subcommand, jobId, ...rest] = prefix.trimStart().split(/\s+/u);
+  if (rest.length > 0) return null;
+  if (jobId === undefined) {
+    return "stop".startsWith(subcommand ?? "")
+      ? [
+          {
+            value: "stop ",
+            label: "stop",
+            description: `Stop a running background job (${jobs.length} running)`,
+          },
+        ]
+      : null;
+  }
+  if (subcommand !== "stop") return null;
+  const now = Date.now();
+  const items = jobs
+    .filter((job) => job.id.startsWith(jobId))
+    .map((job) => ({
+      value: `stop ${job.id}`,
+      label: job.id,
+      description: `${formatDuration(now - job.startedAtMs)} · ${oneLine(job.command)}`,
+    }));
+  return items.length > 0 ? items : null;
+}
+
 export default function background(pi: ExtensionAPI) {
-  const sessions = new Map<string, SessionJobs>();
+  // Pi creates a new extension instance for each replacement session.
+  let current: SessionJobs | undefined;
   // Renderers, prompt metadata, and sampling config come from the built-in
   // definition; only the description, schema, and execute behavior differ.
   const builtin = createBashToolDefinition(process.cwd(), {});
 
   function sessionJobs(ctx: ExtensionContext): SessionJobs {
-    const sessionId = ctx.sessionManager.getSessionId();
-    let state = sessions.get(sessionId);
-    if (!state) {
-      state = createSessionJobs(sessionId);
-      sessions.set(sessionId, state);
-    }
-    return state;
+    current ??= createSessionJobs(ctx.sessionManager.getSessionId());
+    return current;
   }
 
   pi.on("session_start", (_event, ctx) => {
@@ -91,10 +119,9 @@ export default function background(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    const sessionId = ctx.sessionManager.getSessionId();
-    const state = sessions.get(sessionId);
+    const state = current;
+    current = undefined;
     if (!state) return;
-    sessions.delete(sessionId);
     state.shuttingDown = true;
     updateStatus(ctx, state);
     await state.killAll("session ended");
@@ -103,25 +130,53 @@ export default function background(pi: ExtensionAPI) {
   pi.registerMessageRenderer<NotificationDetails>(NOTIFICATION_TYPE, renderNotification);
 
   pi.registerCommand("background", {
-    description: "Show running background jobs with elapsed time and full commands",
-    handler: async (_args, ctx) => {
-      const state = sessions.get(ctx.sessionManager.getSessionId());
-      const jobs = state?.runningJobs() ?? [];
-      const now = Date.now();
-      const rows = jobs.map(
-        (job) =>
-          `${job.id}  running  ${formatDuration(now - job.startedAtMs)}\n` +
-          job.command
-            .split("\n")
-            .map((line) => `  ${line}`)
-            .join("\n"),
-      );
-      ctx.ui.notify(
-        rows.length === 0
-          ? "No background jobs running."
-          : `Background jobs · ${rows.length} running\n\n${rows.join("\n\n")}`,
-        "info",
-      );
+    description: "Show running background jobs (or stop <id>)",
+    getArgumentCompletions: (prefix) =>
+      completeBackgroundArgs(prefix, current?.runningJobs() ?? []),
+    handler: async (args, ctx) => {
+      const session = current;
+      const trimmed = args.trim();
+      if (trimmed === "") {
+        const jobs = session?.runningJobs() ?? [];
+        const now = Date.now();
+        const rows = jobs.map(
+          (job) =>
+            `${job.id}  running  ${formatDuration(now - job.startedAtMs)}\n` +
+            job.command
+              .split("\n")
+              .map((line) => `  ${line}`)
+              .join("\n"),
+        );
+        ctx.ui.notify(
+          rows.length === 0
+            ? "No background jobs running."
+            : `Background jobs · ${rows.length} running\n\n${rows.join("\n\n")}`,
+          "info",
+        );
+        return;
+      }
+
+      const [subcommand, jobId, ...rest] = trimmed.split(/\s+/u);
+      if (subcommand !== "stop") {
+        ctx.ui.notify(
+          `Unknown /background subcommand "${subcommand}". Usage: /background [stop <job-id>]`,
+          "error",
+        );
+        return;
+      }
+      if (!jobId || rest.length > 0) {
+        ctx.ui.notify("Usage: /background stop <job-id>", "error");
+        return;
+      }
+
+      const stopped = await session?.stopJob(jobId, "stopped by user");
+      if (!session || !stopped) {
+        ctx.ui.notify(`No running background job ${jobId} in this session.`, "error");
+        return;
+      }
+      if (session.shuttingDown) return;
+      updateStatus(ctx, session);
+      ctx.ui.notify(`Stopped background job ${stopped.id}: ${oneLine(stopped.command)}`, "info");
     },
   });
 
@@ -290,6 +345,17 @@ export default function background(pi: ExtensionAPI) {
         job.seed.clear();
       }
       bufferingSeed = false;
+      const tail = tailText(job.tail.text());
+      if (job.state !== "running") {
+        const status = session.shuttingDown
+          ? `Background job ${job.id} was stopped because the session ended.`
+          : `Background job ${job.id} was stopped by user.`;
+        return {
+          content: [{ type: "text", text: tail ? `${tail}\n\n${status}` : status }],
+          details: undefined,
+          isError: true,
+        };
+      }
       execPromise.then(
         () =>
           void finalizeJob(
@@ -311,7 +377,6 @@ export default function background(pi: ExtensionAPI) {
             },
           ),
       );
-      const tail = tailText(job.tail.text());
       const logLine = job.logPath
         ? `Log: ${job.logPath}`
         : "Log unavailable; completion notification will include the output tail.";
