@@ -14,7 +14,7 @@ export default function lspExtension(pi: ExtensionAPI) {
     return error instanceof Error ? error.message : String(error);
   }
 
-  // An invalid lsp.json is reported once here; edits stay silent and lsp calls report it again.
+  // An invalid lsp.json is reported once here (and on /lsp reset); edits stay silent and lsp calls report it again.
   pi.on("session_start", async (_event, ctx) => {
     try {
       await manager.getConfig();
@@ -26,8 +26,32 @@ export default function lspExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", () => manager.shutdownAll());
 
   pi.registerCommand("lsp", {
-    description: "Show running language servers",
-    handler: async (_args, ctx) => {
+    description: "Show running language servers (or reset)",
+    getArgumentCompletions: (prefix) =>
+      "reset".startsWith(prefix.trimStart())
+        ? [
+            {
+              value: "reset",
+              label: "reset",
+              description: "Stop running servers, clear cached failures, and reload lsp.json",
+            },
+          ]
+        : null,
+    handler: async (args, ctx) => {
+      const sub = args.trim();
+      if (sub === "reset") {
+        try {
+          await manager.reset();
+          ctx.ui.notify("LSP reset · configuration reloaded.", "info");
+        } catch (error) {
+          ctx.ui.notify(errorMessage(error), "error");
+        }
+        return;
+      }
+      if (sub !== "") {
+        ctx.ui.notify("Usage: /lsp [reset]", "error");
+        return;
+      }
       try {
         await manager.getConfig();
       } catch (error) {

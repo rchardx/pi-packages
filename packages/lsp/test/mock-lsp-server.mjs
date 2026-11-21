@@ -21,7 +21,7 @@
 // Lifecycle modes
 //   hang-on-initialize, corrupt-after-init, hang-on-shutdown
 import { spawn } from "node:child_process";
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -44,12 +44,22 @@ if (process.env.MOCK_LSP_PID_FILE) {
 }
 if (process.env.MOCK_LSP_GRANDCHILD_PID_FILE) {
   // A worker in the server's process group that outlives the server unless the group is ended.
-  const worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 10000);"], {
-    stdio: "ignore",
-  });
-  writeFileSync(process.env.MOCK_LSP_GRANDCHILD_PID_FILE, String(worker.pid));
+  // Write the pid file from the worker after installing any signal handler so tests do not race startup.
+  const ignoreTerm =
+    mode === "hang-on-shutdown" || mode === "corrupt-after-init"
+      ? 'process.on("SIGTERM", () => {}); '
+      : "";
+  const pidPath = JSON.stringify(process.env.MOCK_LSP_GRANDCHILD_PID_FILE);
+  spawn(
+    process.execPath,
+    [
+      "-e",
+      `${ignoreTerm}require("node:fs").writeFileSync(${pidPath}, String(process.pid)); setInterval(() => {}, 10000);`,
+    ],
+    { stdio: "ignore" },
+  );
 }
-if (mode === "hang-on-shutdown") {
+if (mode === "hang-on-shutdown" || mode === "corrupt-after-init") {
   process.on("SIGTERM", () => {});
 }
 

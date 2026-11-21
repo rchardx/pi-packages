@@ -328,7 +328,7 @@ test("edits wait a bounded time; late results are dropped and broken servers are
   await waitUntil(() => lsp.snapshot().unavailable.length === 1, 4_000);
   assert.match(
     lsp.snapshot().unavailable[0] ?? "",
-    /^Language server "hung" failed to start and is disabled for this session: /u,
+    /^Language server "hung" failed to start and is disabled until \/lsp reset: /u,
   );
   assert.ok((await edit("b.zz")).ms < 100);
   assert.match(
@@ -533,10 +533,10 @@ test("a server start belongs to the session: callers can leave, and shutdown rea
   await waitUntil(async () => (await pids()).length === 4);
   await second.shutdownAll();
   assert.equal((await pids()).some(isPidAlive), false);
-  assert.equal(await call, "Language servers are shut down.");
+  assert.equal(await call, "Language servers were stopped.");
   assert.equal(
     await second.execute({ action: "diagnostics", path: "a.ts" }, ws, true),
-    "Language servers are shut down.",
+    "Language servers were stopped.",
   );
   assert.equal((await pids()).length, 4);
 });
@@ -626,4 +626,216 @@ test("typescript-language-server is asked for diagnostics synchronously instead 
     (await check()).value?.map((item) => [item.line, item.column, item.code]),
     [[1, 1, "9999"]],
   );
+});
+
+test("reset stops running process groups, clears unavailable servers, and reloads lsp.json", async (t) => {
+  const agentDir = await tempDir(t, "pi-lsp-reset-agent-");
+  setEnv(t, "PI_CODING_AGENT_DIR", agentDir);
+  const ws = await tempDir(t, "pi-lsp-reset-ws-");
+  await writeFile(join(ws, "tsconfig.json"), "{}");
+  await writeFile(join(ws, "a.ts"), "const a = TYPE_ERROR;\n");
+  await writeFile(join(ws, "b.zz"), "const b = TYPE_ERROR;\n");
+  await writeFile(join(ws, "main.go"), "package main\n");
+
+  const pids = serverPids(t, ws);
+  const workerPidFile = join(ws, "worker.pid");
+  setEnv(t, "MOCK_LSP_GRANDCHILD_PID_FILE", workerPidFile);
+
+  const configPath = join(agentDir, "lsp.json");
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      requestTimeoutSeconds: 1,
+      servers: {
+        ts: {
+          command: process.execPath,
+          args: [mockServerScript, "pull"],
+          extensions: [".ts"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "typescript",
+        },
+        broken: {
+          command: process.execPath,
+          args: [mockServerScript, "hang-on-initialize"],
+          extensions: [".zz"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "typescript",
+        },
+      },
+    }),
+  );
+
+  const binDir = await tempDir(t, "pi-lsp-reset-bin-");
+  const lsp = new LspManager({ envPath: binDir });
+  t.after(() => lsp.shutdownAll());
+
+  // 1. Start a running server (with a grandchild worker), a missing server, and a broken server
+  assert.match(
+    await lsp.execute({ action: "diagnostics", path: "a.ts" }, ws, true),
+    /^a\.ts: 1 error \(ts\)/u,
+  );
+  await waitUntil(async () => Number(await readFile(workerPidFile, "utf8").catch(() => "")) > 0);
+  const firstWorkerPid = Number(await readFile(workerPidFile, "utf8"));
+  assert.ok(firstWorkerPid > 0 && isPidAlive(firstWorkerPid));
+
+  assert.match(
+    await lsp.execute({ action: "diagnostics", path: "main.go" }, ws, true),
+    /Language server "go" is not installed/u,
+  );
+  assert.match(
+    await lsp.execute({ action: "diagnostics", path: "b.zz" }, ws, true),
+    /Language server "broken" failed to start/u,
+  );
+  assert.equal(lsp.snapshot().servers.length, 1);
+  assert.equal(lsp.snapshot().unavailable.length, 2);
+
+  const initialPids = await pids();
+  assert.equal(initialPids.length, 2);
+
+  // 2. Fix lsp.json so both broken (.zz) and go (.go) point to working servers, then reset
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      servers: {
+        ts: {
+          command: process.execPath,
+          args: [mockServerScript, "pull"],
+          extensions: [".ts"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "typescript",
+        },
+        broken: {
+          command: process.execPath,
+          args: [mockServerScript, "pull"],
+          extensions: [".zz"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "typescript",
+        },
+        go: {
+          command: process.execPath,
+          args: [mockServerScript, "pull"],
+          extensions: [".go"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "go",
+        },
+      },
+    }),
+  );
+
+  await lsp.reset();
+  assert.equal(isPidAlive(firstWorkerPid), false, "grandchild worker must exit on reset");
+  assert.equal(initialPids.some(isPidAlive), false, "previous server pids must exit on reset");
+  assert.deepEqual(lsp.snapshot(), { servers: [], unavailable: [] });
+
+  // 3. Subsequent edits and queries lazily start recovered servers with refreshed config
+  assert.match(
+    (await lsp.checkFileAfterEdit("b.zz", ws, true)) ?? "",
+    /LSP diagnostics \(1 error\)/u,
+  );
+  assert.equal(
+    await lsp.execute({ action: "diagnostics", path: "main.go" }, ws, true),
+    "main.go: no errors or warnings reported (go)",
+  );
+  assert.equal(lsp.snapshot().servers.length, 2);
+});
+
+test("reset reaps an initializing server and lets subsequent calls start a fresh one", async (t) => {
+  const ws = await workspace(t, { slow: ["pull-slow-init", ".ts", 350] });
+  const pids = serverPids(t, ws);
+  const workerPidFile = join(ws, "reset-race-worker.pid");
+  setEnv(t, "MOCK_LSP_GRANDCHILD_PID_FILE", workerPidFile);
+  await writeFile(join(ws, "a.ts"), "const a = TYPE_ERROR;\n");
+
+  const lsp = manager(t);
+  const inflightEdit = lsp.checkFileAfterEdit("a.ts", ws, true);
+  const inflightQuery = lsp.execute({ action: "diagnostics", path: "a.ts" }, ws, true);
+  await waitUntil(async () => (await pids()).length === 1);
+  await waitUntil(async () => {
+    const raw = await readFile(workerPidFile, "utf8").catch(() => "");
+    return Number(raw) > 0;
+  });
+  const startingWorkerPid = Number(await readFile(workerPidFile, "utf8"));
+
+  await lsp.reset();
+  assert.equal(await inflightEdit, undefined);
+  assert.equal(await inflightQuery, "Language servers were stopped.");
+  assert.equal((await pids()).some(isPidAlive), false);
+  assert.equal(isPidAlive(startingWorkerPid), false);
+  assert.deepEqual(lsp.snapshot(), { servers: [], unavailable: [] });
+
+  assert.match(
+    await lsp.execute({ action: "diagnostics", path: "a.ts" }, ws, true),
+    /^a\.ts: 1 error \(slow\)/u,
+  );
+  assert.equal((await pids()).length, 2);
+});
+
+test("reset awaits cleanup of crashed-server workers and replaced broken-RPC servers", async (t) => {
+  const ws = await workspace(t, {
+    stubborn: ["hang-on-shutdown", ".ts"],
+    corrupt: ["corrupt-after-init", ".zz"],
+  });
+  const pids = serverPids(t, ws);
+  const workerPidFile = join(ws, "stubborn-worker.pid");
+  setEnv(t, "MOCK_LSP_GRANDCHILD_PID_FILE", workerPidFile);
+  await writeFile(join(ws, "a.ts"), "const a = 1;\n");
+  await writeFile(join(ws, "b.zz"), "const b = 1;\n");
+
+  const lsp = manager(t);
+
+  const nextWorkerPid = async () => {
+    await waitUntil(async () => Number(await readFile(workerPidFile, "utf8").catch(() => "")) > 0);
+    const pid = Number(await readFile(workerPidFile, "utf8"));
+    await rm(workerPidFile);
+    return pid;
+  };
+
+  // 1. Crash/kill the server leader: onExit sends SIGTERM (ignored by worker) and removes client
+  await lsp.execute({ action: "diagnostics", path: "a.ts" }, ws, true);
+  const [crashedServerPid] = await pids();
+  assert.ok(crashedServerPid);
+  const crashedWorkerPid = await nextWorkerPid();
+  assert.equal(isPidAlive(crashedWorkerPid), true);
+
+  process.kill(crashedServerPid, "SIGKILL");
+  await waitUntil(() => lsp.snapshot().servers.length === 0);
+  // The worker ignores SIGTERM and is still being reaped in the background when reset starts
+  assert.equal(isPidAlive(crashedWorkerPid), true);
+
+  const firstReset = lsp.reset();
+  await lsp.reset();
+  assert.equal(
+    isPidAlive(crashedWorkerPid),
+    false,
+    "worker must be gone even when a second concurrent reset returns",
+  );
+  await firstReset;
+
+  // 2. Break the RPC channel: wait until clientFor replaces the dead client while its worker is still alive
+  await lsp.execute({ action: "diagnostics", path: "b.zz" }, ws, true);
+  const corruptServerPid = (await pids()).at(-1);
+  assert.ok(corruptServerPid);
+  const corruptWorkerPid = await nextWorkerPid();
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(isPidAlive(corruptServerPid), true);
+  assert.equal(isPidAlive(corruptWorkerPid), true);
+
+  const replacing = lsp.execute({ action: "diagnostics", path: "b.zz" }, ws, true);
+  await waitUntil(async () => (await pids()).length === 3);
+  const replacementWorkerPid = await nextWorkerPid();
+  assert.equal(isPidAlive(corruptWorkerPid), true);
+
+  await lsp.reset();
+  assert.equal(
+    isPidAlive(corruptServerPid),
+    false,
+    "evicted server must be gone when reset returns",
+  );
+  assert.equal(
+    isPidAlive(corruptWorkerPid),
+    false,
+    "evicted worker must be gone when reset returns",
+  );
+  assert.equal(isPidAlive(replacementWorkerPid), false);
+  await replacing;
 });
