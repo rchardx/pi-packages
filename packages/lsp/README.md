@@ -81,7 +81,9 @@ The result is plain text whose first line is a summary:
   directory, no server configured, server not installed, or server failed to
   start.
 
-`/lsp` lists the running servers and those that could not be used.
+`/lsp` lists the running servers and those that could not be used. `/lsp reset`
+stops running language servers, clears cached unavailable-server and
+configuration state, and reloads `~/.pi/agent/lsp.json`.
 
 ## How diagnostics are obtained
 
@@ -133,9 +135,8 @@ is the root.
 ## Installing language servers
 
 Install only the servers for languages you edit; files without an installed
-server are skipped silently. After installing, run `/reload` (or start a new
-session), because a missing executable is remembered for the rest of the
-session.
+server are skipped silently. After installing, run `/lsp reset` (or start a new
+session), because a missing executable is cached until reset.
 
 | Language | Install | Notes |
 | --- | --- | --- |
@@ -179,10 +180,11 @@ Optional user configuration lives in `~/.pi/agent/lsp.json` (honoring
 - `requestTimeoutSeconds` bounds each request to a server, including startup.
 - `servers` disables a built-in server (`false`) or defines one. Server
   commands are read from this file only, never from the repository.
-- An invalid file is reported once when the session starts, naming the first
-  offending field (for example `/servers/zig/command: must match pattern "\S"`).
-  Edits then stay silent, and `lsp` calls and `/lsp` report the error until the
-  file is fixed and the session reloads.
+- An invalid file is reported once when the session starts (and when
+  `/lsp reset` runs), naming the first offending field (for example
+  `/servers/zig/command: must match pattern "\S"`). Edits then stay silent, and
+  `lsp` calls and `/lsp` report the error until the file is fixed and
+  `/lsp reset` runs.
 
 ## Boundaries
 
@@ -195,9 +197,9 @@ Optional user configuration lives in `~/.pi/agent/lsp.json` (honoring
   workspace root never lies above it. Paths are read like those of Pi's
   built-in file tools (`@` prefix, `~`, `file://` URLs).
 - **Processes:** a server that is not installed or fails to start is not tried
-  again in the session (`/reload` after installing or fixing it). Session
-  shutdown aborts servers that are still starting, asks running ones to exit,
-  and then ends whatever remains of each server's process group, including
+  again until `/lsp reset` runs after installing or fixing it. `/lsp reset` and
+  session shutdown abort servers that are still starting, ask running ones to
+  exit, and then end whatever remains of each server's process group, including
   workers that outlive the server process.
 
 ## Known limitations
@@ -218,8 +220,8 @@ Optional user configuration lives in `~/.pi/agent/lsp.json` (honoring
   next report replaces it a moment later. None of the servers exercised below
   is affected: they use pull, tsserver's synchronous diagnostics, or versioned
   reports.
-- **Servers run until the session ends;** there is no limit on their number and
-  no idle shutdown.
+- **Servers run until `/lsp reset` or the session ends;** there is no limit on
+  their number and no idle shutdown.
 - **Platforms:** verified on Linux only. Windows is not supported: `.cmd` /
   `.exe` launchers are not resolved, and server shutdown relies on POSIX
   process groups.

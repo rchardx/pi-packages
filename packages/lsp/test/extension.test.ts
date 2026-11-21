@@ -533,3 +533,104 @@ test("post-edit checks resolve paths like the built-in tools, including file:// 
   assert.match(JSON.stringify(requests[1]?.messages), /LSP diagnostics \(1 error\)/u);
   assert.match(JSON.stringify(requests[1]?.messages), /my file\.ts:1:18/u);
 });
+
+test("/lsp reset reloads lsp.json without starting a model turn and keeps edits silent while invalid", async (t: TestContext) => {
+  const { requests, modelsJson } = await startScriptedOpenAIServer(t, [
+    // Prompt 1 (while lsp.json is still invalid after /lsp reset): edit stays silent
+    {
+      toolCalls: [
+        { name: "write", args: { path: "app.ts", content: "export const x = TYPE_ERROR;\n" } },
+      ],
+    },
+    { reply: "Wrote while invalid." },
+    // Prompt 2 (after fixing lsp.json and running /lsp reset): edit appends diagnostics
+    {
+      toolCalls: [
+        {
+          name: "edit",
+          args: {
+            path: "app.ts",
+            edits: [{ oldText: "TYPE_ERROR", newText: "TYPE_ERROR // retry" }],
+          },
+        },
+      ],
+    },
+    { reply: "Recovered." },
+  ]);
+
+  const { session, cwd, agentDir, notices } = await createLspSession(t, {
+    mode: "tui",
+    modelsJson,
+    lspConfig: { requestTimeoutSeconds: 0 },
+  });
+  await writeFile(join(cwd, "tsconfig.json"), "{}");
+  const configPath = join(agentDir, "lsp.json");
+
+  const command = session.extensionRunner.getCommand("lsp");
+  assert.ok(command?.getArgumentCompletions);
+  assert.deepEqual(await command.getArgumentCompletions("re"), [
+    {
+      value: "reset",
+      label: "reset",
+      description: "Stop running servers, clear cached failures, and reload lsp.json",
+    },
+  ]);
+  assert.equal(await command.getArgumentCompletions("reset "), null);
+
+  // Initial invalid config reported once at session_start
+  assert.equal(notices.length, 1);
+  assert.equal(notices[0]?.level, "error");
+
+  // Unsupported arguments report usage without starting a model turn
+  await session.prompt("/lsp reset typescript");
+  assert.equal(session.messages.length, 0);
+  assert.equal(notices.at(-1)?.level, "error");
+  assert.equal(notices.at(-1)?.message, "Usage: /lsp [reset]");
+
+  // /lsp reset when lsp.json is still invalid reports the new error immediately and keeps edits silent
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      servers: {
+        typescript: { command: "   ", extensions: [".ts"], languageId: "typescript" },
+      },
+    }),
+  );
+  await session.prompt("/lsp reset");
+  assert.equal(session.messages.length, 0);
+  assert.equal(notices.at(-1)?.level, "error");
+  assert.match(notices.at(-1)?.message ?? "", /\/servers\/typescript\/command/u);
+
+  const errorCountBeforeEdit = notices.filter((n) => n.level === "error").length;
+  await session.prompt("Write app.ts while invalid");
+  assert.equal(
+    notices.filter((n) => n.level === "error").length,
+    errorCountBeforeEdit,
+    "subsequent edits must stay silent while lsp.json remains invalid",
+  );
+  assert.doesNotMatch(JSON.stringify(requests[1]?.messages), /LSP diagnostics/u);
+
+  // Fix lsp.json and run /lsp reset in the same session: no model turn starts, next edit recovers
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      servers: {
+        typescript: {
+          command: process.execPath,
+          args: [mockServerScript],
+          extensions: [".ts"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "typescript",
+        },
+      },
+    }),
+  );
+  const messageCountBeforeReset = session.messages.length;
+  await session.prompt("/lsp reset");
+  assert.equal(session.messages.length, messageCountBeforeReset);
+  assert.equal(notices.at(-1)?.level, "info");
+  assert.equal(notices.at(-1)?.message, "LSP reset · configuration reloaded.");
+
+  await session.prompt("Edit app.ts after recovery");
+  assert.match(JSON.stringify(requests[3]?.messages), /LSP diagnostics \(1 error\)/u);
+});
