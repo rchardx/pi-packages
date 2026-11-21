@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Write in English (for example: `feat(web-access): ...` or `refactor(lsp): ...`).
+        Write in English (for example: `feat(web-access): ...` or `refactor(subagents): ...`).
         See CONTRIBUTING.md and AGENTS.md for package boundaries and validation rules.
   - type: dropdown
     id: packages
@@ -15,7 +15,6 @@ body:
       options:
         - ask
         - background
-        - lsp
         - statusline
         - subagents
         - web-access
