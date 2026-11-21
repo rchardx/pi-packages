@@ -6,6 +6,7 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
+  createCodemodeExtension,
   DefaultResourceLoader,
   ModelRuntime,
   SessionManager,
@@ -813,10 +814,273 @@ test("Pi routes fetch to Google with the Gemini key from Pi", async (t) => {
     });
   });
   const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
-  assert.ok(fetchTool);
+  assert.ok(fetchTool?.outputSchema);
   const result = await fetchTool.execute("f", { url: "https://example.test/page" });
   assert.equal(result.details.provider, "google");
+  assert.equal(Check(fetchTool.outputSchema, result.structuredContent), true);
   assert.deepEqual(seen, [
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent",
   ]);
+});
+
+test("web_search and web_fetch expose structuredContent matching outputSchema to codemode scripts", async (t) => {
+  const dualConfig = JSON.stringify({
+    search: {
+      providers: {
+        deepseek: {},
+        anthropic: { model: "claude-haiku-5-5" },
+      },
+      defaultProvider: "deepseek",
+    },
+    fetch: {
+      providers: {
+        deepseek: {},
+        anthropic: { model: "claude-haiku-5-5" },
+      },
+      defaultProvider: "deepseek",
+    },
+  });
+  let mockTurn = 0;
+  const { server: mockLlm } = await fixture(t, (_req, reply) => {
+    const step = mockTurn++;
+    reply.writeHead(200, { "content-type": "text/event-stream" });
+    if (step === 0) {
+      const code = `
+        const [searched, page] = await Promise.all([
+          tools.web_search({ query: "Node 26", need_content: true }),
+          tools.web_fetch({ url: "https://nodejs.org/en/blog" }),
+        ]);
+        return {
+          provider: searched.provider,
+          firstUrl: searched.results[0].url,
+          omitted: searched.omittedInvalidUrls,
+          pageTitle: page.title,
+          rawBody: page.content,
+        };
+      `;
+      reply.write(
+        `data: ${JSON.stringify({
+          id: "cmpl_1",
+          object: "chat.completion.chunk",
+          choices: [
+            {
+              index: 0,
+              delta: {
+                role: "assistant",
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_cm",
+                    type: "function",
+                    function: { name: "codemode", arguments: JSON.stringify({ code }) },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        })}\n\n` +
+          `data: ${JSON.stringify({
+            id: "cmpl_1",
+            object: "chat.completion.chunk",
+            choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+            usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+          })}\n\n` +
+          "data: [DONE]\n\n",
+      );
+      reply.end();
+      return;
+    }
+    reply.write(
+      `data: ${JSON.stringify({
+        id: "cmpl_2",
+        object: "chat.completion.chunk",
+        choices: [
+          { index: 0, delta: { role: "assistant", content: "Done." }, finish_reason: null },
+        ],
+      })}\n\n` +
+        `data: ${JSON.stringify({
+          id: "cmpl_2",
+          object: "chat.completion.chunk",
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        })}\n\n` +
+        "data: [DONE]\n\n",
+    );
+    reply.end();
+  });
+  const llmAddr = mockLlm.address();
+  assert.ok(llmAddr && typeof llmAddr === "object");
+
+  const directory = await mkdtemp(join(tmpdir(), "pi-web-codemode-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const prevDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  t.after(() => {
+    if (prevDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = prevDir;
+  });
+  await writeFile(join(directory, "web-access.json"), dualConfig);
+  const modelsPath = join(directory, "models.json");
+  await writeFile(
+    modelsPath,
+    JSON.stringify({
+      providers: {
+        mock: {
+          baseUrl: `http://127.0.0.1:${llmAddr.port}/v1`,
+          apiKey: "mock-key",
+          api: "openai-completions",
+          models: [
+            {
+              id: "mock-model",
+              name: "Mock",
+              reasoning: false,
+              input: ["text"],
+              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+              contextWindow: 32000,
+              maxTokens: 4096,
+            },
+          ],
+        },
+      },
+    }),
+  );
+
+  const settingsManager = SettingsManager.inMemory();
+  const loader = new DefaultResourceLoader({
+    cwd: directory,
+    agentDir: directory,
+    settingsManager,
+    additionalExtensionPaths: [fileURLToPath(new URL("../", import.meta.url))],
+    extensionFactories: [createCodemodeExtension({ mode: "on" })],
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(directory, "auth.json"),
+    modelsPath,
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  });
+  await modelRuntime.setRuntimeApiKey("deepseek", "cm-deepseek-key");
+  await modelRuntime.setRuntimeApiKey("anthropic", "sk-ant-api03-cm-key");
+
+  const { session } = await createAgentSession({
+    cwd: directory,
+    agentDir: directory,
+    resourceLoader: loader,
+    modelRuntime,
+    settingsManager,
+    sessionManager: SessionManager.inMemory(directory),
+    tools: ["web_search", "web_fetch", "codemode"],
+  });
+  t.after(() => session.dispose());
+
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    if (String(url).startsWith(`http://127.0.0.1:${llmAddr.port}/`)) {
+      return nativeFetch(String(url), init);
+    }
+    if (url === "https://api.deepseek.com/v1/tools/search") {
+      return Response.json({
+        results: [
+          {
+            title: "Node 26 Release",
+            url: "https://nodejs.org/en/blog/release/v26.0.0",
+            summary: "Major V8 update.",
+            snippet: "",
+            content: "Detailed changelog content.",
+            site_name: "Node.js",
+            date: "2026-04-21",
+          },
+          {
+            title: "Invalid",
+            url: "ftp://invalid.example.test",
+            summary: "",
+            snippet: "",
+            content: "",
+            site_name: null,
+            date: null,
+          },
+        ],
+      });
+    }
+    if (url === "https://api.deepseek.com/v1/tools/fetch") {
+      return Response.json({
+        title: "Node 26 Guide",
+        content: "# Node 26\n\nBody without wrapper header.",
+      });
+    }
+    return Response.json({
+      stop_reason: "end_turn",
+      content: [
+        {
+          type: "web_search_tool_result",
+          tool_use_id: "srv_cm",
+          content: [
+            {
+              type: "web_search_result",
+              title: "Anthropic Doc",
+              url: "https://docs.anthropic.com/en/home",
+              page_age: "1d",
+            },
+          ],
+        },
+        {
+          type: "text",
+          text: "Anthropic grounded synthesis.",
+          citations: [
+            {
+              type: "web_search_result_location",
+              url: "https://docs.anthropic.com/en/home",
+              title: "Anthropic Doc",
+              cited_text: "Official docs.",
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  const searchTool = session.agent.state.tools.find((tool) => tool.name === "web_search");
+  const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
+  assert.ok(searchTool?.outputSchema && fetchTool?.outputSchema);
+
+  const mockModel = modelRuntime.getProvider("mock")?.getModels()[0];
+  assert.ok(mockModel);
+  await session.setModel(mockModel);
+
+  const dsSearch = await searchTool.execute("cm-s1", { query: "Node 26", need_content: true });
+  assert.equal(Check(searchTool.outputSchema, dsSearch.structuredContent), true);
+  const dsFetch = await fetchTool.execute("cm-f1", { url: "https://nodejs.org/en/blog" });
+  assert.equal(Check(fetchTool.outputSchema, dsFetch.structuredContent), true);
+
+  const anthropicModel = modelRuntime.getProvider("anthropic")?.getModels()[0];
+  assert.ok(anthropicModel);
+  await session.setModel(anthropicModel);
+  const anthroSearch = await searchTool.execute("cm-s2", { query: "Anthropic docs" });
+  assert.equal(Check(searchTool.outputSchema, anthroSearch.structuredContent), true);
+
+  await session.setModel(mockModel);
+  await session.prompt("Run codemode web search and fetch");
+
+  const cmResult = session.messages.find(
+    (msg) => msg.role === "toolResult" && msg.toolName === "codemode",
+  );
+  assert.ok(cmResult && cmResult.role === "toolResult");
+  assert.equal(cmResult.isError, false, JSON.stringify(cmResult.content));
+  const payloadPart = cmResult.content.at(1);
+  assert.ok(payloadPart && payloadPart.type === "text");
+  assert.deepEqual(JSON.parse(payloadPart.text), {
+    provider: "deepseek",
+    firstUrl: "https://nodejs.org/en/blog/release/v26.0.0",
+    omitted: 1,
+    pageTitle: "Node 26 Guide",
+    rawBody: "# Node 26\n\nBody without wrapper header.",
+  });
 });

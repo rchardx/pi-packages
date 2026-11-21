@@ -47,6 +47,16 @@ or use sleep loops. If nothing independent remains, end the turn and wait for th
 notification. See [Delivery to the root session](#delivery-to-the-root-session)
 for how hosts observe these updates.
 
+`subagent`, `subagent_list`, `subagent_send` (root and child), and
+`subagent_cancel` declare an `outputSchema` and set `structuredContent`
+(`{ id, role? }`, `{ agents }` with `{ id, role?, elapsedMs, task }` where
+`task` is a single-line summary up to 120 characters, `{ to }`, and
+`{ id, status, report, requests, tokens }`) for Codemode scripts. Root and child
+`subagent_wait` use `exposure: "model-only"` (without an `outputSchema`) because
+queued messages and completion reports are delivered at turn boundaries: they
+remain directly declared to the model even in `codemode.mode: "only"` and are
+not callable from scripts.
+
 ### Inspect running subagents
 
 While children are running, Pi's status area shows `subagents: N running`. The

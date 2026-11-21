@@ -191,6 +191,10 @@ web_fetch({ url: "https://example.com/article" })
   contain `provider`, optional `model`, `title`, `truncated`, optional
   `outputTokenLimitReached`, and optional `fullOutputPath`; no original
   `contentType` is returned.
+- `web_fetch` declares an `outputSchema` and sets `structuredContent`
+  (`{ provider, model?, url, title, content, outputTokenLimitReached? }`)
+  so Codemode scripts receive the extracted page text directly without parsing
+  the model-facing header.
 
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
 may be incomplete, include navigation/comments, or lose links, code formatting,
@@ -239,9 +243,13 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
 
 Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
 before applying `count`. All-invalid results are distinguished from an empty
-search. Titles, site names, and dates/ages use single-line whitespace; synthesis,
+search. Titles, site names, and dates/ages use single-line whitespace (empty or
+whitespace-only search titles fall back to the result URL); synthesis,
 summaries, excerpts, and content retain paragraphs. Provider summaries and
 syntheses are not verified quotations, and the extension never visits result URLs.
+`web_search` declares an `outputSchema` and sets `structuredContent`
+(`{ provider, model?, query, synthesis?, results, omittedInvalidUrls, outputTokenLimitReached? }`)
+so Codemode scripts receive structured sources and grounded synthesis directly.
 
 See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/),
 and [Anthropic web search documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool).

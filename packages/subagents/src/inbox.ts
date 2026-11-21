@@ -5,9 +5,53 @@ import {
   MAX_INBOX_MESSAGES,
   MAX_WAIT_SECONDS,
   type RunningAgent,
+  STATUSES,
   validateWaitTimeout,
   WAIT_COALESCE_MS,
 } from "./protocol.ts";
+
+export const SubagentLaunchOutputSchema = Type.Object(
+  {
+    id: Type.String(),
+    role: Type.Optional(Type.String()),
+  },
+  { additionalProperties: false },
+);
+
+export const SubagentCancelOutputSchema = Type.Object(
+  {
+    id: Type.String(),
+    status: Type.Enum([...STATUSES]),
+    report: Type.String(),
+    requests: Type.Number({ minimum: 0 }),
+    tokens: Type.Number({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+export const SubagentListOutputSchema = Type.Object(
+  {
+    agents: Type.Array(
+      Type.Object(
+        {
+          id: Type.String(),
+          role: Type.Optional(Type.String()),
+          elapsedMs: Type.Number({ minimum: 0 }),
+          task: Type.String({
+            description: "Single-line task summary (at most 120 characters).",
+          }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const SubagentSendOutputSchema = Type.Object(
+  { to: Type.String() },
+  { additionalProperties: false },
+);
 
 export type WaitOutcome =
   | { outcome: "woke" | "idle" | "timeout"; waitedMs: number }
