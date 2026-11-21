@@ -1,5 +1,12 @@
 # pi-packages
 
+[![CI](https://img.shields.io/github/actions/workflow/status/rchardx/pi-packages/ci.yml?branch=main&style=flat-square&label=CI&logo=githubactions&logoColor=white)](https://github.com/rchardx/pi-packages/actions/workflows/ci.yml?query=branch%3Amain)
+[![Nightly](https://img.shields.io/github/actions/workflow/status/rchardx/pi-packages/nightly.yml?branch=main&style=flat-square&label=Nightly&logo=githubactions&logoColor=white)](https://github.com/rchardx/pi-packages/actions/workflows/nightly.yml)
+[![Nightly Release](https://img.shields.io/github/release-date-pre/rchardx/pi-packages?style=flat-square&label=Nightly%20Release&logo=github&logoColor=white&color=0969da)](https://github.com/rchardx/pi-packages/releases/tag/nightly)
+[![Pi](https://img.shields.io/github/package-json/dependency-version/rchardx/pi-packages/dev/@earendil-works%2Fpi-coding-agent?style=flat-square&label=Pi&color=6e56cf)](#compatibility)
+[![Node.js](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2Frchardx%2Fpi-packages%2Fmain%2Fpackage.json&query=%24.engines.node&style=flat-square&label=Node.js&logo=nodedotjs&logoColor=white&color=5fa04e)](#compatibility)
+[![License](https://img.shields.io/github/license/rchardx/pi-packages?style=flat-square&label=License&color=0969da)](LICENSE)
+
 Personal [Pi coding agent](https://github.com/earendil-works/pi) packages
 maintained in one npm-workspaces repository. Each capability lives in its own
 [`packages/<capability>/`](packages/README.md) directory.
