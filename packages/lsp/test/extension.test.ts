@@ -8,12 +8,15 @@ import { test, type TestContext } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   createAgentSession,
+  createCodemodeExtension,
   DefaultResourceLoader,
+  type ExtensionFactory,
   type ExtensionUIContext,
   ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import { Check } from "typebox/value";
 
 const lspPackagePath = fileURLToPath(new URL("../", import.meta.url));
 const subagentsPackagePath = fileURLToPath(new URL("../../subagents/", import.meta.url));
@@ -127,6 +130,7 @@ async function createLspSession(
     trusted?: boolean;
     lspConfig?: unknown;
     extraExtensionPaths?: string[];
+    extensionFactories?: ExtensionFactory[];
     modelsJson?: unknown;
   } = {},
 ) {
@@ -157,6 +161,7 @@ async function createLspSession(
     agentDir,
     settingsManager,
     additionalExtensionPaths: [lspPackagePath, ...(options.extraExtensionPaths ?? [])],
+    ...(options.extensionFactories ? { extensionFactories: options.extensionFactories } : {}),
     noExtensions: true,
     noSkills: true,
     noPromptTemplates: true,
@@ -633,4 +638,108 @@ test("/lsp reset reloads lsp.json without starting a model turn and keeps edits 
 
   await session.prompt("Edit app.ts after recovery");
   assert.match(JSON.stringify(requests[3]?.messages), /LSP diagnostics \(1 error\)/u);
+});
+
+test("lsp exposes structuredContent matching outputSchema to codemode scripts across ok and unavailable paths", async (t: TestContext) => {
+  const { modelsJson } = await startScriptedOpenAIServer(t, [
+    {
+      toolCalls: [
+        {
+          name: "codemode",
+          args: {
+            code: `
+              const [diag, def, unavail] = await Promise.all([
+                tools.lsp({ action: "diagnostics", path: "mod.ts" }),
+                tools.lsp({ action: "definition", path: "mod.ts", line: 1, symbol: "greet" }),
+                tools.lsp({ action: "diagnostics", path: "notes.md" }),
+              ]);
+              return { diag, def, unavail };
+            `,
+          },
+        },
+      ],
+    },
+    { reply: "Verified." },
+  ]);
+
+  const { session, cwd } = await createLspSession(t, {
+    mode: "tui",
+    extensionFactories: [createCodemodeExtension({ mode: "on" })],
+    modelsJson,
+    lspConfig: {
+      servers: {
+        typescript: {
+          command: process.execPath,
+          args: [mockServerScript],
+          extensions: [".ts"],
+          rootMarkers: ["tsconfig.json"],
+          languageId: "typescript",
+        },
+      },
+    },
+  });
+  session.setActiveToolsByName(["lsp", "codemode"]);
+  await writeFile(join(cwd, "tsconfig.json"), "{}");
+  await writeFile(
+    join(cwd, "mod.ts"),
+    "export function greet(): number {\n  return TYPE_ERROR;\n}\n",
+  );
+  await writeFile(join(cwd, "notes.md"), "# No server\n");
+
+  const lspTool = session.agent.state.tools.find((tool) => tool.name === "lsp");
+  assert.ok(lspTool?.outputSchema);
+
+  for (const args of [
+    { action: "diagnostics", path: "mod.ts" },
+    { action: "definition", path: "mod.ts", line: 1, symbol: "greet" },
+    { action: "references", path: "mod.ts", line: 1, symbol: "greet" },
+    { action: "hover", path: "mod.ts", line: 1, symbol: "greet" },
+    { action: "diagnostics", path: "notes.md" },
+  ] as const) {
+    const res = await lspTool.execute(`direct-${args.action}-${args.path}`, args);
+    assert.equal(Check(lspTool.outputSchema, res.structuredContent), true);
+  }
+
+  await session.prompt("Run codemode against lsp");
+  const scriptResult = session.messages.find(
+    (msg) => msg.role === "toolResult" && msg.toolName === "codemode",
+  );
+  assert.ok(scriptResult && scriptResult.role === "toolResult");
+  assert.equal(scriptResult.isError, false, JSON.stringify(scriptResult.content));
+  const payloadPart = scriptResult.content.at(1);
+  assert.ok(payloadPart && payloadPart.type === "text");
+  assert.deepEqual(JSON.parse(payloadPart.text), {
+    diag: {
+      status: "ok",
+      action: "diagnostics",
+      server: "typescript",
+      path: "mod.ts",
+      errorCount: 1,
+      warningCount: 0,
+      truncated: false,
+      diagnostics: [
+        {
+          line: 2,
+          column: 10,
+          severity: "error",
+          code: "TS2322",
+          message: "Type 'string' is not assignable to type 'number'.",
+        },
+      ],
+    },
+    def: {
+      status: "ok",
+      action: "definition",
+      server: "typescript",
+      totalCount: 1,
+      truncated: false,
+      locations: [
+        { path: "mod.ts", line: 1, column: 17, preview: "export function greet(): number {" },
+      ],
+    },
+    unavail: {
+      status: "unavailable",
+      reason: 'No language server is configured for "notes.md".',
+    },
+  });
 });

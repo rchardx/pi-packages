@@ -6,6 +6,7 @@ import { Check } from "typebox/value";
 import {
   displayRelativePath,
   isSubpath,
+  LspOutputSchema,
   LspParameters,
   resolveInputPath,
   resolveSymbolColumn,
@@ -78,4 +79,66 @@ test("resolveSymbolColumn handles word boundaries, #N selectors, Unicode UTF-16 
     () => resolveSymbolColumn(line, 4, "missingIdent"),
     /Symbol "missingIdent" not found on line 4/u,
   );
+});
+
+test("LspOutputSchema validates unavailable and per-action ok shapes without extra fields", () => {
+  for (const valid of [
+    { status: "unavailable", reason: "No language server is configured." },
+    {
+      status: "ok",
+      action: "diagnostics",
+      server: "typescript",
+      path: "src/a.ts",
+      errorCount: 1,
+      warningCount: 0,
+      truncated: false,
+      diagnostics: [{ line: 2, column: 5, severity: "error", code: "TS2322", message: "Bad type" }],
+    },
+    {
+      status: "ok",
+      action: "references",
+      server: "typescript",
+      totalCount: 1,
+      truncated: false,
+      locations: [{ path: "src/a.ts", line: 1, column: 10, preview: "export const a = 1;" }],
+    },
+    {
+      status: "ok",
+      action: "hover",
+      server: "typescript",
+      path: "src/a.ts",
+      line: 1,
+      contents: null,
+      truncated: false,
+    },
+  ]) {
+    assert.equal(Check(LspOutputSchema, valid), true, JSON.stringify(valid));
+  }
+
+  for (const invalid of [
+    { status: "unavailable" },
+    { status: "ok", action: "diagnostics", server: "typescript" },
+    {
+      status: "ok",
+      action: "diagnostics",
+      server: "typescript",
+      path: "src/a.ts",
+      errorCount: 0,
+      warningCount: 0,
+      truncated: false,
+      diagnostics: [{ line: 1, column: 1, severity: "hint", message: "Filtered out" }],
+    },
+    {
+      status: "ok",
+      action: "hover",
+      server: "typescript",
+      path: "src/a.ts",
+      line: 1,
+      contents: "type x = number",
+      truncated: false,
+      extra: true,
+    },
+  ]) {
+    assert.equal(Check(LspOutputSchema, invalid), false, JSON.stringify(invalid));
+  }
 });

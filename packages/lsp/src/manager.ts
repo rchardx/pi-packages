@@ -13,6 +13,7 @@ import {
   displayRelativePath,
   isSubpath,
   type LspInput,
+  type LspOutput,
   resolveInputPath,
   singleLine,
 } from "./schema.ts";
@@ -96,9 +97,16 @@ function diagnosticLines(file: string, items: readonly Diagnostic[], limit: numb
   return lines;
 }
 
-async function locationLines(locations: readonly FileLocation[], cwd: string): Promise<string[]> {
+async function formatLocations(
+  locations: readonly FileLocation[],
+  cwd: string,
+): Promise<{
+  lines: string[];
+  items: Array<{ path: string; line: number; column: number; preview?: string }>;
+}> {
   const fileLines = new Map<string, string[]>();
   const lines: string[] = [];
+  const items: Array<{ path: string; line: number; column: number; preview?: string }> = [];
   for (const location of locations.slice(0, MAX_LOCATIONS)) {
     let source = fileLines.get(location.filePath);
     if (!source) {
@@ -109,13 +117,20 @@ async function locationLines(locations: readonly FileLocation[], cwd: string): P
       fileLines.set(location.filePath, source);
     }
     const preview = singleLine(source[location.line - 1] ?? "").slice(0, MAX_PREVIEW_CHARS);
-    const position = `${displayRelativePath(location.filePath, cwd)}:${location.line}:${location.column}`;
+    const relPath = displayRelativePath(location.filePath, cwd);
+    const position = `${relPath}:${location.line}:${location.column}`;
     lines.push(preview ? `- ${position}  ${preview}` : `- ${position}`);
+    items.push({
+      path: relPath,
+      line: location.line,
+      column: location.column,
+      ...(preview ? { preview } : {}),
+    });
   }
   if (locations.length > MAX_LOCATIONS) {
     lines.push(`- … ${locations.length - MAX_LOCATIONS} more not shown`);
   }
-  return lines;
+  return { lines, items };
 }
 
 /** One replaceable generation of language-server state and configuration. */
@@ -304,28 +319,67 @@ export class LspManager {
     trusted: boolean,
     signal?: AbortSignal,
   ): Promise<string> {
+    return (await this.executeResult(input, sessionCwd, trusted, signal)).text;
+  }
+
+  /** Run a read-only query, returning both model-facing text and structured output. */
+  async executeResult(
+    input: LspInput,
+    sessionCwd: string,
+    trusted: boolean,
+    signal?: AbortSignal,
+  ): Promise<{ text: string; structuredContent: LspOutput }> {
+    const unavailable = (reason: string) => ({
+      text: reason,
+      structuredContent: { status: "unavailable" as const, reason },
+    });
     signal?.throwIfAborted();
-    if (!trusted) return "Language servers are disabled in untrusted projects.";
+    if (!trusted) return unavailable("Language servers are disabled in untrusted projects.");
     const pool = this.pool;
     const config = await pool.getConfig();
     const target = await this.resolveTarget(input.path, sessionCwd, config);
-    if ("unavailable" in target) return target.unavailable;
+    if ("unavailable" in target) return unavailable(target.unavailable);
     const client = await pool.clientFor(target, config, signal);
-    if (typeof client === "string") return client;
+    if (typeof client === "string") return unavailable(client);
     const { cwd, filePath, file } = target;
     const id = client.server.id;
 
     if (input.action === "diagnostics") {
       const diagnostics = await client.diagnostics(filePath, QUERY_PUSH_WAIT_MS, { signal });
       if (!diagnostics) {
-        return `${file}: ${id} sent no diagnostics for the current file contents within ${QUERY_PUSH_WAIT_MS / 1000}s.`;
+        return unavailable(
+          `${file}: ${id} sent no diagnostics for the current file contents within ${QUERY_PUSH_WAIT_MS / 1000}s.`,
+        );
       }
       const found = problems(diagnostics);
-      if (found.length === 0) return `${file}: no errors or warnings reported (${id})`;
-      return [
-        `${file}: ${countProblems(found)} (${id})`,
-        ...diagnosticLines(file, found, MAX_QUERY_DIAGNOSTICS),
-      ].join("\n");
+      const errorCount = found.filter((item) => item.severity === "error").length;
+      const warningCount = found.length - errorCount;
+      const structuredContent: LspOutput = {
+        status: "ok",
+        action: "diagnostics",
+        server: id,
+        path: file,
+        errorCount,
+        warningCount,
+        truncated: found.length > MAX_QUERY_DIAGNOSTICS,
+        diagnostics: found.slice(0, MAX_QUERY_DIAGNOSTICS).map((item) => ({
+          line: item.line,
+          column: item.column,
+          severity: item.severity === "error" ? ("error" as const) : ("warning" as const),
+          ...(item.code !== undefined ? { code: item.code } : {}),
+          message: singleLine(item.message),
+        })),
+      };
+      if (found.length === 0) {
+        return { text: `${file}: no errors or warnings reported (${id})`, structuredContent };
+      }
+      return {
+        text: [
+          `${file}: ${countProblems(found)} (${id})`,
+          ...diagnosticLines(file, found, MAX_QUERY_DIAGNOSTICS),
+        ].join("\n"),
+        structuredContent,
+      };
     }
 
     if (input.line === undefined) {
@@ -333,20 +387,59 @@ export class LspManager {
     }
     if (input.action === "hover") {
       const text = await client.hover(filePath, input.line, input.symbol, signal);
-      if (!text) return `No hover information (${id})`;
-      const shown =
-        text.length > MAX_HOVER_CHARS ? `${text.slice(0, MAX_HOVER_CHARS)}\n… truncated` : text;
-      return `${file}:${input.line} (${id})\n\n${shown}`;
+      if (!text) {
+        return {
+          text: `No hover information (${id})`,
+          structuredContent: {
+            status: "ok",
+            action: "hover",
+            server: id,
+            path: file,
+            line: input.line,
+            contents: null,
+            truncated: false,
+          },
+        };
+      }
+      const truncated = text.length > MAX_HOVER_CHARS;
+      const contents = truncated ? text.slice(0, MAX_HOVER_CHARS) : text;
+      const shown = truncated ? `${contents}\n… truncated` : contents;
+      return {
+        text: `${file}:${input.line} (${id})\n\n${shown}`,
+        structuredContent: {
+          status: "ok",
+          action: "hover",
+          server: id,
+          path: file,
+          line: input.line,
+          contents,
+          truncated,
+        },
+      };
     }
     const locations =
       input.action === "definition"
         ? await client.definition(filePath, input.line, input.symbol, signal)
         : await client.references(filePath, input.line, input.symbol, signal);
-    if (locations.length === 0) return `No ${input.action} found (${id})`;
-    return [
-      `${plural(locations.length, input.action === "definition" ? "definition" : "reference")} (${id})`,
-      ...(await locationLines(locations, cwd)),
-    ].join("\n");
+    const { lines, items } = await formatLocations(locations, cwd);
+    const structuredContent: LspOutput = {
+      status: "ok",
+      action: input.action,
+      server: id,
+      totalCount: locations.length,
+      truncated: locations.length > MAX_LOCATIONS,
+      locations: items,
+    };
+    if (locations.length === 0) {
+      return { text: `No ${input.action} found (${id})`, structuredContent };
+    }
+    return {
+      text: [
+        `${plural(locations.length, input.action === "definition" ? "definition" : "reference")} (${id})`,
+        ...lines,
+      ].join("\n"),
+      structuredContent,
+    };
   }
 
   /**

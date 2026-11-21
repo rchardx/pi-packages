@@ -30,13 +30,13 @@ export interface ResolvedCapabilityTarget<P extends WebProviderId = WebProviderI
 // deterministic page-fetch tool, so its providers are search-only. Google is
 // fetch-only: Grounding with Google Search terms require displaying Google's
 // Search Suggestions with the results, which a terminal tool result cannot do.
-const SEARCH_PROVIDERS: readonly SearchProviderId[] = [
+export const SEARCH_PROVIDERS: readonly SearchProviderId[] = [
   "deepseek",
   "anthropic",
   "openai",
   "openai-codex",
 ];
-const FETCH_PROVIDERS: readonly FetchProviderId[] = ["deepseek", "anthropic", "google"];
+export const FETCH_PROVIDERS: readonly FetchProviderId[] = ["deepseek", "anthropic", "google"];
 const CAPABILITY_FIELDS = new Set<string>(["providers", "defaultProvider"]);
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
