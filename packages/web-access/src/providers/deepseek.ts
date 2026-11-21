@@ -1,7 +1,13 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import { DEEPSEEK_API_ORIGIN } from "../auth.ts";
-import { FormattedOutput, prepareOutput, singleLine } from "../output.ts";
+import {
+  type FetchStructuredOutput,
+  FormattedOutput,
+  prepareOutput,
+  type SearchStructuredOutput,
+  singleLine,
+} from "../output.ts";
 import { postJson, type WebToolKind, withDeadline } from "../request.ts";
 import { normalizeFetchUrl, normalizeSourceUrl } from "../url.ts";
 
@@ -81,6 +87,12 @@ export async function fetchDeepSeek(
     const body = output.append(data.content);
     output.sections.push({ heading, metadata: [], body: [body] });
     const result = await prepareOutput(output, "fetch", combined);
+    const structuredContent: FetchStructuredOutput = {
+      provider: "deepseek",
+      url,
+      title,
+      content: data.content,
+    };
     return {
       ...result,
       details: {
@@ -89,6 +101,7 @@ export async function fetchDeepSeek(
         title,
         ...result.details,
       },
+      structuredContent,
     };
   });
 }
@@ -142,22 +155,35 @@ export async function searchDeepSeek(
     if (!entries.length) {
       output.append(omittedInvalidUrls ? "No usable results remain." : "No results found.");
     }
-    entries.forEach((item, index) => {
+    const results = entries.map((item) => {
+      const siteName = item.site_name ? singleLine(item.site_name) : "";
+      const publishedDate = item.date ? singleLine(item.date) : "";
+      const summary = item.summary.trim() || item.snippet.trim();
+      return {
+        title: singleLine(item.title) || item.url,
+        url: item.url,
+        ...(siteName ? { siteName } : {}),
+        ...(publishedDate ? { publishedDate } : {}),
+        ...(summary ? { summary } : {}),
+        ...(needContent && item.content ? { content: item.content } : {}),
+      };
+    });
+    results.forEach((item, index) => {
       if (index) output.append("\n\n");
-      const heading = output.append(`${index + 1}. ${singleLine(item.title)}`);
+      const heading = output.append(`${index + 1}. ${item.title}`);
       output.append("\nURL: ");
       const url = output.append(item.url);
       const metadata = [];
-      if (item.site_name) {
+      if (item.siteName) {
         output.append("\nSite: ");
-        metadata.push(output.append(singleLine(item.site_name)));
+        metadata.push(output.append(item.siteName));
       }
-      if (item.date) {
+      if (item.publishedDate) {
         output.append("\nPublished (provider-reported): ");
-        metadata.push(output.append(singleLine(item.date)));
+        metadata.push(output.append(item.publishedDate));
       }
       output.append("\nProvider summary: ");
-      const body = [output.append(item.summary.trim() || item.snippet.trim() || "Not provided.")];
+      const body = [output.append(item.summary || "Not provided.")];
       if (needContent) {
         output.append("\nPage content (provider-returned):\n");
         body.push(output.append(item.content || "Unavailable for this result."));
@@ -165,6 +191,12 @@ export async function searchDeepSeek(
       output.sections.push({ heading, url, metadata, body });
     });
     const result = await prepareOutput(output, "search", combined);
+    const structuredContent: SearchStructuredOutput = {
+      provider: "deepseek",
+      query: args.query,
+      results,
+      omittedInvalidUrls,
+    };
     return {
       ...result,
       details: {
@@ -176,6 +208,7 @@ export async function searchDeepSeek(
         needContent,
         ...result.details,
       },
+      structuredContent,
     };
   });
 }

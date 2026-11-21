@@ -165,9 +165,11 @@ test("empty results and nullable metadata are valid, not transport failures", as
   assert.match(empty.content[0]?.text ?? "", /No results found/u);
   const result = await searchDeepSeek({ query: "nullable" }, key, undefined, async () =>
     Response.json({
-      results: [{ ...entry, site_name: null, date: null, summary: "", snippet: "" }],
+      results: [{ ...entry, title: "   ", site_name: null, date: null, summary: "", snippet: "" }],
     }),
   );
+  assert.ok((result.content[0]?.text ?? "").includes(`1. ${entry.url}\n`));
+  assert.equal(result.structuredContent.results[0]?.title, entry.url);
   assert.match(result.content[0]?.text ?? "", /Provider summary: Not provided/u);
   assert.doesNotMatch(result.content[0]?.text ?? "", /Site:|Published/u);
 });

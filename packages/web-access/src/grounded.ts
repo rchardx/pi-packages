@@ -1,4 +1,11 @@
-import { FormattedOutput, prepareOutput, singleLine } from "./output.ts";
+import type { FetchProviderId, SearchProviderId } from "./config.ts";
+import {
+  type FetchStructuredOutput,
+  FormattedOutput,
+  prepareOutput,
+  type SearchStructuredOutput,
+  singleLine,
+} from "./output.ts";
 import { normalizeSourceUrl } from "./url.ts";
 
 interface GroundedSource {
@@ -73,7 +80,7 @@ export class SourceCollector {
 }
 
 export interface GroundedSearchOutput {
-  provider: string;
+  provider: SearchProviderId;
   label: string;
   model: string;
   query: string;
@@ -117,9 +124,15 @@ export async function formatGroundedSearch(options: GroundedSearchOutput) {
           : "No results found.",
     );
   }
-  entries.forEach((item, index) => {
+  const results = entries.map((item) => ({
+    title: singleLine(item.title) || item.url,
+    url: item.url,
+    ...(item.pageAge ? { pageAge: item.pageAge } : {}),
+    ...(item.citedText ? { citedText: item.citedText } : {}),
+  }));
+  results.forEach((item, index) => {
     if (index) output.append("\n\n");
-    const heading = output.append(`${index + 1}. ${singleLine(item.title) || item.url}`);
+    const heading = output.append(`${index + 1}. ${item.title}`);
     output.append("\nURL: ");
     const url = output.append(item.url);
     const metadata = [];
@@ -140,6 +153,15 @@ export async function formatGroundedSearch(options: GroundedSearchOutput) {
     options.signal,
     options.outputTokenLimitReached ? { outputTokenLimitReached: true } : {},
   );
+  const structuredContent: SearchStructuredOutput = {
+    provider: options.provider,
+    model,
+    query,
+    ...(synthesis ? { synthesis } : {}),
+    results,
+    omittedInvalidUrls,
+    ...(options.outputTokenLimitReached ? { outputTokenLimitReached: true } : {}),
+  };
   return {
     ...result,
     details: {
@@ -152,11 +174,12 @@ export async function formatGroundedSearch(options: GroundedSearchOutput) {
       needContent,
       ...result.details,
     },
+    structuredContent,
   };
 }
 
 export interface ModelFetchOutput {
-  provider: string;
+  provider: FetchProviderId;
   label: string;
   model: string;
   url: string;
@@ -184,8 +207,17 @@ export async function formatModelFetch(options: ModelFetchOutput) {
     options.signal,
     options.outputTokenLimitReached ? { outputTokenLimitReached: true } : {},
   );
+  const structuredContent: FetchStructuredOutput = {
+    provider: options.provider,
+    model,
+    url,
+    title,
+    content: options.content,
+    ...(options.outputTokenLimitReached ? { outputTokenLimitReached: true } : {}),
+  };
   return {
     ...result,
     details: { provider: options.provider, model, url, title, ...result.details },
+    structuredContent,
   };
 }

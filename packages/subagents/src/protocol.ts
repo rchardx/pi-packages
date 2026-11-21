@@ -33,7 +33,7 @@ export const MAX_ROOT_WAIT_SECONDS = 3600;
 export const WAIT_COALESCE_MS = 25;
 export const MAX_TERMINAL_RECORDS = 256;
 
-const STATUSES = ["completed", "failed", "cancelled", "timed_out", "limit_reached"] as const;
+export const STATUSES = ["completed", "failed", "cancelled", "timed_out", "limit_reached"] as const;
 export type Status = (typeof STATUSES)[number];
 
 export interface Result {
