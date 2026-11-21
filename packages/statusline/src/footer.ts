@@ -10,7 +10,6 @@ import type {
 import { type Component, type TUI, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const PRIORITY_STATUS_KEYS = ["subagents", "background"] as const;
-const MIN_RIGHT_PADDING = 2;
 
 export type FooterTheme = Pick<Theme, "fg">;
 
@@ -157,37 +156,44 @@ export function renderStatuslineRows(
   const cleanSessionName = state.sessionName ? sanitizeStatusText(state.sessionName) : "";
   if (cleanSessionName) pwd = `${pwd} • ${cleanSessionName}`;
 
-  const statuses = orderExtensionStatuses(state.extensionStatuses);
+  const location = theme.fg("dim", pwd);
   const separator = theme.fg("dim", " · ");
-  const line1Segments = [
-    theme.fg("dim", pwd),
-    ...statuses.map((status) => (status.includes("\u001b") ? status : theme.fg("dim", status))),
-  ];
-  const pwdLine = truncateToWidth(line1Segments.join(separator), width, theme.fg("dim", "..."));
+  const ellipsis = theme.fg("dim", "...");
+  const statuses = orderExtensionStatuses(state.extensionStatuses);
+  let pwdLine: string;
+  if (statuses.length === 0) {
+    pwdLine = truncateToWidth(location, width, ellipsis);
+  } else {
+    const statusText = statuses
+      .map((status) => (status.includes("\u001b") ? status : theme.fg("dim", status)))
+      .join(separator);
+    const fullLine = `${location}${separator}${statusText}`;
+    const availableForLocation = width - visibleWidth(separator) - visibleWidth(statusText);
+    if (visibleWidth(fullLine) <= width) {
+      pwdLine = fullLine;
+    } else if (availableForLocation > visibleWidth(ellipsis)) {
+      const truncatedLocation = truncateToWidth(location, availableForLocation, ellipsis);
+      pwdLine = `${truncatedLocation}${separator}${statusText}`;
+    } else {
+      pwdLine = truncateToWidth(statusText, width, ellipsis);
+    }
+  }
+
+  const modelName = state.model?.id ?? "no-model";
+  let modelText = modelName;
+  if (state.model?.reasoning) {
+    const level = state.thinkingLevel || "off";
+    modelText = level === "off" ? `${modelName} • thinking off` : `${modelName} • ${level}`;
+  }
+  if (state.availableProviderCount > 1 && state.model) {
+    modelText = `${modelText} (${state.model.provider})`;
+  }
 
   const { usageTotals, contextUsage } = state;
   const contextWindow = contextUsage?.contextWindow ?? state.model?.contextWindow ?? 0;
   const contextPercentValue = contextUsage?.percent ?? 0;
   const contextPercent =
     contextUsage && contextUsage.percent !== null ? contextPercentValue.toFixed(1) : "?";
-
-  const prefixParts: string[] = [];
-  if (usageTotals.input) prefixParts.push(`↑${formatTokens(usageTotals.input)}`);
-  if (usageTotals.output) prefixParts.push(`↓${formatTokens(usageTotals.output)}`);
-  if (usageTotals.cacheRead) prefixParts.push(`R${formatTokens(usageTotals.cacheRead)}`);
-  if (usageTotals.cacheWrite) prefixParts.push(`W${formatTokens(usageTotals.cacheWrite)}`);
-  if (
-    (usageTotals.cacheRead > 0 || usageTotals.cacheWrite > 0) &&
-    state.latestCacheHitRate !== undefined
-  ) {
-    prefixParts.push(`CH${state.latestCacheHitRate.toFixed(1)}%`);
-  }
-  if (usageTotals.cost || state.model?.usingSubscription) {
-    prefixParts.push(
-      `$${usageTotals.cost.toFixed(3)}${state.model?.usingSubscription ? " (sub)" : ""}`,
-    );
-  }
-
   const autoIndicator = state.autoCompactEnabled ? " (auto)" : "";
   const contextPercentDisplay =
     contextPercent === "?"
@@ -200,48 +206,32 @@ export function renderStatuslineRows(
         ? theme.fg("warning", contextPercentDisplay)
         : theme.fg("dim", contextPercentDisplay);
 
-  const prefixText = prefixParts.join(" ");
-  let statsLeft = prefixText
-    ? `${theme.fg("dim", `${prefixText} `)}${styledContext}`
-    : styledContext;
-  let statsLeftWidth = visibleWidth(statsLeft);
-  if (statsLeftWidth > width) {
-    statsLeft = truncateToWidth(statsLeft, width, theme.fg("dim", "..."));
-    statsLeftWidth = visibleWidth(statsLeft);
+  const line2Segments = [theme.fg("dim", modelText), styledContext];
+  if (usageTotals.cost || state.model?.usingSubscription) {
+    line2Segments.push(
+      theme.fg(
+        "dim",
+        `$${usageTotals.cost.toFixed(3)}${state.model?.usingSubscription ? " (sub)" : ""}`,
+      ),
+    );
   }
 
-  const modelName = state.model?.id ?? "no-model";
-  let rightWithoutProvider = modelName;
-  if (state.model?.reasoning) {
-    const level = state.thinkingLevel || "off";
-    rightWithoutProvider =
-      level === "off" ? `${modelName} • thinking off` : `${modelName} • ${level}`;
+  const tokenParts: string[] = [];
+  if (usageTotals.input) tokenParts.push(`↑${formatTokens(usageTotals.input)}`);
+  if (usageTotals.output) tokenParts.push(`↓${formatTokens(usageTotals.output)}`);
+  if (usageTotals.cacheRead) tokenParts.push(`R${formatTokens(usageTotals.cacheRead)}`);
+  if (usageTotals.cacheWrite) tokenParts.push(`W${formatTokens(usageTotals.cacheWrite)}`);
+  if (
+    (usageTotals.cacheRead > 0 || usageTotals.cacheWrite > 0) &&
+    state.latestCacheHitRate !== undefined
+  ) {
+    tokenParts.push(`CH${state.latestCacheHitRate.toFixed(1)}%`);
   }
-  let rightSide = rightWithoutProvider;
-  if (state.availableProviderCount > 1 && state.model) {
-    rightSide = `(${state.model.provider}) ${rightWithoutProvider}`;
-    if (statsLeftWidth + MIN_RIGHT_PADDING + visibleWidth(rightSide) > width) {
-      rightSide = rightWithoutProvider;
-    }
+  if (tokenParts.length > 0) {
+    line2Segments.push(theme.fg("dim", tokenParts.join(" ")));
   }
 
-  const rightSideWidth = visibleWidth(rightSide);
-  let statsLine: string;
-  if (statsLeftWidth + MIN_RIGHT_PADDING + rightSideWidth <= width) {
-    const padding = " ".repeat(width - statsLeftWidth - rightSideWidth);
-    statsLine = statsLeft + theme.fg("dim", padding + rightSide);
-  } else {
-    const availableForRight = width - statsLeftWidth - MIN_RIGHT_PADDING;
-    if (availableForRight > 0) {
-      const truncatedRight = truncateToWidth(rightSide, availableForRight, "");
-      const padding = " ".repeat(
-        Math.max(0, width - statsLeftWidth - visibleWidth(truncatedRight)),
-      );
-      statsLine = statsLeft + theme.fg("dim", padding + truncatedRight);
-    } else {
-      statsLine = statsLeft;
-    }
-  }
+  const statsLine = truncateToWidth(line2Segments.join(separator), width, ellipsis);
 
   return [pwdLine, statsLine];
 }

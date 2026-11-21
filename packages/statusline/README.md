@@ -10,15 +10,20 @@ separate third line sorted alphabetically by key. This package replaces the
 interactive footer with a fixed two-line layout:
 
 - **Line 1:** working directory (with `~` home shortening), Git branch, optional
-  session name (`• <name>`), and active extension statuses joined by ` · `:
+  session name (`• <name>`), and active extension statuses joined by ` · `.
+  When terminal width is constrained, active statuses are preserved first by
+  truncating the location prefix with `...` (or omitting it when no room remains
+  for a shortened prefix).
+- **Line 2:** left-aligned segments joined by ` · ` in priority order — active
+  model, thinking level, and multi-provider suffix (`(<provider>)`), followed by
+  context-window usage, cost/subscription status, and cumulative token/cache
+  counters — right-truncated with `...` when narrow so active model details and
+  context usage precede cost and cumulative token/cache counters.
 
-  ```text
-  ~/projects/pi-packages (main) · subagents: 2 running · background: 1 running
-  ```
-
-- **Line 2:** cumulative token, cache-hit, cost, and context-window usage on the
-  left, with the active provider, model, and thinking level right-aligned on the
-  right.
+```text
+~/projects/pi-packages (main) · subagents: 2 running · background: 1 running
+claude-opus-4-6 • high (anthropic) · 9.9%/1.0M (auto) · $0.809 · ↑208k ↓25k R1.4M CH97.4%
+```
 
 Extension statuses are ordered with `subagents` first, `background` second, and
 any remaining extension keys sorted alphabetically. Empty or whitespace-only
