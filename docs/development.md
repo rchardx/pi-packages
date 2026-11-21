@@ -86,8 +86,8 @@ ignored build output or caches.
 [`.github/workflows/nightly.yml`](../.github/workflows/nightly.yml) runs daily
 at 08:08 UTC and supports `main`-only manual dispatch with an optional `force`
 boolean (default `false`). One `main` SHA is fixed across all jobs. If that SHA
-already has a published `nightly` prerelease, validation and publishing are
-skipped unless `force` is `true`.
+already has a published `nightly` prerelease and an annotated `nightly` tag
+pointing to it, validation and publishing are skipped unless `force` is `true`.
 
 CI and nightly validation install the Pi development dependencies pinned in the
 root `package.json` with `npm ci`. Installed-tarball smoke logs report the Pi
@@ -103,8 +103,10 @@ changing the release or tag, even when forced. To publish the new head, start a
 fresh run instead of rerunning the old failed jobs. This guard runs from the
 verified commit: do not rerun failed publish jobs from commits predating it.
 
-For a matching SHA, it replaces each package's `pi-<capability>-nightly.tgz`
-asset in place, updates the release notes, publishes the draft on first run, and
-advances the lightweight `nightly` tag last. If publication fails partway
-through and `main` is still at that SHA, rerun the workflow (or dispatch with
-`force: true` for a same-SHA failure) to repair the release.
+For a matching SHA, it creates an annotated `nightly` tag object stamped with
+the publication time, deletes any existing `nightly` release, uploads each
+package's `pi-<capability>-nightly.tgz` archive to a new draft prerelease,
+advances `refs/tags/nightly` to the annotated tag, and publishes the draft last
+so the prerelease date, package archives, and source archives refresh together.
+If publication fails partway through and `main` is still at that SHA, rerun the
+workflow (or dispatch with `force: true`) to repair the release.
