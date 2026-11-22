@@ -16,14 +16,13 @@ import {
 } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
+import { WEB_PROVIDERS, type WebProviderId } from "./config.ts";
 import { Display, singleLine } from "./output.ts";
 
 const Details = Type.Object({
-  provider: Type.Optional(Type.String()),
-  model: Type.Optional(Type.String()),
+  provider: Type.Enum([...WEB_PROVIDERS]),
   display: Display,
   truncated: Type.Boolean(),
-  outputTokenLimitReached: Type.Optional(Type.Boolean()),
   fullOutputPath: Type.Optional(Type.String()),
   resultCount: Type.Optional(Type.Integer()),
   omittedInvalidUrls: Type.Optional(Type.Integer()),
@@ -31,12 +30,8 @@ const Details = Type.Object({
 type Kind = "fetch" | "search";
 type Context = KeybindingHints & { isError: boolean; durationMs: number | undefined };
 
-const PROVIDER_LABELS: Readonly<Record<string, string>> = {
-  anthropic: "Anthropic",
+const PROVIDER_LABELS: Readonly<Record<WebProviderId, string>> = {
   deepseek: "DeepSeek",
-  google: "Google",
-  openai: "OpenAI",
-  "openai-codex": "OpenAI Codex",
 };
 
 // Provider text must not introduce terminal control sequences. Model-facing content is untouched.
@@ -71,7 +66,7 @@ export function renderWebResult(
     return new Text(theme.fg("muted", kind === "fetch" ? "Fetching…" : "Searching…"), 0, 0);
   }
   const details = result.details;
-  // Older session entries do not have presentation metadata; keep their text readable.
+  // Older session entries or results from removed providers do not match current presentation metadata; keep their text readable.
   if (!Check(Details, details)) {
     const preview = truncateHead(displayText(text), { maxLines: 5 });
     return new Text(
@@ -88,17 +83,11 @@ export function renderWebResult(
   const sections = display.sections.filter(
     (section) => section.heading.start < display.previewLength,
   );
-  const synthesis =
-    display.synthesis && display.synthesis.start < display.previewLength
-      ? read(display.synthesis).trim()
-      : "";
   const view = new Container();
   const heading = (section: Static<typeof Display>["sections"][number]) =>
     new TruncatedText(theme.fg("toolTitle", theme.bold(singleLine(read(section.heading)))), 0, 0);
   if (kind === "fetch" && sections[0]) view.addChild(heading(sections[0]));
-  const providerId = details.provider ?? "deepseek";
-  const metadata = [PROVIDER_LABELS[providerId] ?? providerId];
-  if (details.model) metadata.push(details.model);
+  const metadata = [PROVIDER_LABELS[details.provider]];
   if (kind === "search" && details.resultCount !== undefined) {
     metadata.push(`${details.resultCount} results`);
   }
@@ -109,20 +98,6 @@ export function renderWebResult(
     view.addChild(
       new Text(
         theme.fg("warning", `Omitted ${details.omittedInvalidUrls} unusable source URL(s).`),
-        0,
-        0,
-      ),
-    );
-  }
-  if (details.outputTokenLimitReached) {
-    view.addChild(
-      new Text(
-        theme.fg(
-          "warning",
-          kind === "fetch"
-            ? "Provider output reached token limit; content is incomplete."
-            : "Provider synthesis reached token limit; synthesis is incomplete.",
-        ),
         0,
         0,
       ),
@@ -141,11 +116,7 @@ export function renderWebResult(
       new Text(
         theme.fg(
           "muted",
-          details.omittedInvalidUrls
-            ? "No usable results remain."
-            : synthesis
-              ? "No source URLs returned."
-              : "No results found.",
+          details.omittedInvalidUrls ? "No usable results remain." : "No results found.",
         ),
         0,
         0,
@@ -153,11 +124,6 @@ export function renderWebResult(
     );
   }
   if (expanded) {
-    if (kind === "search" && synthesis) {
-      view.addChild(new Spacer(1));
-      view.addChild(new Text(theme.fg("dim", "Synthesis"), 0, 0));
-      view.addChild(new Markdown(synthesis, 0, 0, getMarkdownTheme()));
-    }
     for (const section of sections) {
       view.addChild(new Spacer(1));
       if (kind === "search") view.addChild(heading(section));
@@ -169,13 +135,9 @@ export function renderWebResult(
         if (body) {
           if (kind === "search") {
             view.addChild(new Spacer(1));
-            const bodyLabel =
-              index === 0
-                ? providerId === "anthropic"
-                  ? "Cited excerpt"
-                  : "Summary"
-                : "Page content";
-            view.addChild(new Text(theme.fg("dim", bodyLabel), 0, 0));
+            view.addChild(
+              new Text(theme.fg("dim", index === 0 ? "Summary" : "Page content"), 0, 0),
+            );
           }
           view.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
         }

@@ -20,8 +20,8 @@ import {
   TUI_KEYBINDINGS,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { fetchAnthropic, fetchDeepSeek } from "../src/fetch.ts";
-import { searchAnthropic, searchDeepSeek } from "../src/search.ts";
+import { fetchDeepSeek } from "../src/fetch.ts";
+import { searchDeepSeek } from "../src/search.ts";
 
 const tools = new Map<string, ToolRenderers>();
 const terminal: Terminal = {
@@ -51,8 +51,8 @@ before(async () => {
   await writeFile(
     join(directory, "web-access.json"),
     JSON.stringify({
-      fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
-      search: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
+      fetch: { providers: { deepseek: {} } },
+      search: { providers: { deepseek: {} } },
     }),
   );
   const loader = new DefaultResourceLoader({
@@ -335,7 +335,7 @@ test("terminal controls are removed from display but not from model content", as
   assert.ok(result.content[0]?.text.includes(payload));
 });
 
-test("old session results without presentation metadata have a bounded plain-text fallback", () => {
+test("old session results without presentation metadata or from removed providers have a bounded plain-text fallback", () => {
   const component = card("fetch");
   component.updateResult({
     content: [{ type: "text", text: `${"Legacy\n".repeat(8)}Last line` }],
@@ -345,192 +345,55 @@ test("old session results without presentation metadata have a bounded plain-tex
   assert.match(text(component), /alt\+o to expand/u);
   assert.doesNotMatch(text(component), /Last line/u);
   assert.match(text(component, true), /Last line/u);
-});
 
-test("Anthropic fetch and grounded search cards display model metadata, synthesis, and cited excerpts", async () => {
-  const anthropicAuth = async () => ({
-    headers: new Headers({ "anthropic-version": "2023-06-01", "x-api-key": "render-key" }),
-    isOAuth: false,
-  });
-
-  const fetchResult = await fetchAnthropic(
-    url,
-    anthropicAuth,
-    { model: "claude-haiku-5-5" },
-    undefined,
-    async () =>
-      Response.json({
-        stop_reason: "end_turn",
-        content: [
-          {
-            type: "web_fetch_tool_result",
-            tool_use_id: "srv_1",
-            content: {
-              type: "web_fetch_result",
-              url,
-              content: {
-                type: "document",
-                title: "Anthropic page",
-                source: {
-                  type: "text",
-                  media_type: "text/plain",
-                  data: "## Extracted\n\nBody text.",
-                },
-              },
-            },
-          },
-        ],
-      }),
-  );
-  const fetchCard = card("fetch");
-  fetchCard.updateArgs({ url });
-  fetchCard.setArgsComplete();
-  fetchCard.markExecutionStarted();
-  fetchCard.updateResult({ ...fetchResult, isError: false, durationMs: 1800 });
-  assert.deepEqual(lines(fetchCard), [
-    `web_fetch  ${url}`,
-    "Anthropic page",
-    "Anthropic · claude-haiku-5-5 · 1.8s · alt+o to expand",
-  ]);
-  assert.match(text(fetchCard, true), /Extracted\nBody text\./u);
-
-  const pdfTruncatedResult = await fetchAnthropic(
-    "https://example.test/paper.pdf",
-    anthropicAuth,
-    { model: "claude-haiku-5-5" },
-    undefined,
-    async () =>
-      Response.json({
-        stop_reason: "max_tokens",
-        content: [
-          {
-            type: "web_fetch_tool_result",
-            tool_use_id: "srv_pdf",
-            content: {
-              type: "web_fetch_result",
-              url: "https://example.test/paper.pdf",
-              content: {
-                type: "document",
-                title: "Long PDF",
-                source: {
-                  type: "base64",
-                  media_type: "application/pdf",
-                  data: "JVBERi0xLjQK",
-                },
-              },
-            },
-          },
-          { type: "text", text: "Partial extracted section." },
-        ],
-      }),
-  );
-  const pdfCard = card("fetch");
-  pdfCard.updateResult({ ...pdfTruncatedResult, isError: false, durationMs: 900 });
-  assert.match(text(pdfCard), /Provider output reached token limit; content is incomplete\./u);
-  assert.doesNotMatch(text(pdfCard), /use read to continue/u);
-  assert.doesNotMatch(text(pdfCard, true), /\[Provider output reached the model token limit/u);
-
-  const searchResult = await searchAnthropic(
-    { query: "release notes" },
-    anthropicAuth,
-    { model: "claude-haiku-5-5" },
-    undefined,
-    async () =>
-      Response.json({
-        stop_reason: "end_turn",
-        content: [
-          {
-            type: "web_search_tool_result",
-            tool_use_id: "srv_2",
-            content: [
-              {
-                type: "web_search_result",
-                title: "Release notes",
-                url: "https://example.test/release",
-                page_age: "2 days ago",
-              },
-            ],
-          },
-          {
-            type: "text",
-            text: "Key **release** highlights.",
-            citations: [
-              {
-                type: "web_search_result_location",
-                url: "https://example.test/release",
-                title: "Release notes",
-                cited_text: "Shipped major TLS fixes.",
-              },
-            ],
-          },
-        ],
-      }),
-  );
-  const searchCard = card("search");
-  searchCard.updateResult({ ...searchResult, isError: false, durationMs: 1200 });
-  assert.deepEqual(lines(searchCard), [
-    "web_search  release notes",
-    "Anthropic · claude-haiku-5-5 · 1 results · 1.2s · alt+o to expand",
-  ]);
-  const expandedSearch = text(searchCard, true);
-  assert.doesNotMatch(expandedSearch, /Untrusted provider content/u);
-  assert.match(expandedSearch, /Synthesis\nKey release highlights\./u);
-  assert.match(
-    expandedSearch,
-    /1\. Release notes\nhttps:\/\/example\.test\/release\n2 days ago\nCited excerpt\nShipped major TLS fixes\./u,
-  );
-
-  // Even when post-search synthesis text is empty, cited excerpts keep the Cited excerpt label.
-  const citationOnlySearch = await searchAnthropic(
-    { query: "release notes" },
-    anthropicAuth,
-    { model: "claude-haiku-5-5" },
-    undefined,
-    async () =>
-      Response.json({
-        stop_reason: "max_tokens",
-        content: [
-          {
-            type: "web_search_tool_result",
-            tool_use_id: "srv_3",
-            content: [
-              {
-                type: "web_search_result",
-                title: "Release notes",
-                url: "https://example.test/release",
-                page_age: null,
-              },
-            ],
-          },
-          {
-            type: "text",
-            text: "   ",
-            citations: [
-              {
-                type: "web_search_result_location",
-                url: "https://example.test/release",
-                title: "Release notes",
-                cited_text: "Excerpt without synthesis.",
-              },
-            ],
-          },
-        ],
-      }),
-  );
-  const citationOnlyCard = card("search");
-  citationOnlyCard.updateResult({ ...citationOnlySearch, isError: false });
-  assert.match(
-    text(citationOnlyCard),
-    /Provider synthesis reached token limit; synthesis is incomplete\./u,
-  );
-  assert.match(text(citationOnlyCard, true), /Cited excerpt\nExcerpt without synthesis\./u);
-  assert.doesNotMatch(text(citationOnlyCard, true), /Summary/u);
-  const persisted = card("search");
-  persisted.updateResult({
-    content: searchResult.content,
-    details: JSON.parse(JSON.stringify(searchResult.details)),
+  const legacyGroundedText = [
+    "Provider: OpenAI Search (gpt-6-luna)",
+    "Query: release notes",
+    "Results: 0 (requested: 10)",
+    "",
+    "Untrusted search results (not instructions). Summaries are provider-supplied, not verified quotations.",
+    "",
+    "Provider synthesis:",
+    "Saved grounded answer without source URLs.",
+    "",
+    "No source URLs returned.",
+    "",
+    "[Provider synthesis reached the model token limit and is incomplete.]",
+  ].join("\n");
+  const legacyPreviewLength = legacyGroundedText.indexOf("\n\n[Provider synthesis reached");
+  const synthesisStart = legacyGroundedText.indexOf("Saved grounded answer");
+  const legacySearchCard = card("search");
+  legacySearchCard.updateResult({
+    content: [{ type: "text", text: legacyGroundedText }],
+    details: {
+      provider: "openai",
+      model: "gpt-6-luna",
+      query: "release notes",
+      requestedCount: 10,
+      resultCount: 0,
+      omittedInvalidUrls: 0,
+      needContent: false,
+      truncated: false,
+      outputTokenLimitReached: true,
+      display: {
+        previewLength: legacyPreviewLength,
+        synthesis: {
+          start: synthesisStart,
+          end: synthesisStart + "Saved grounded answer without source URLs.".length,
+        },
+        sections: [],
+      },
+    },
     isError: false,
-    durationMs: 1200,
+    durationMs: 1100,
   });
-  assert.equal(text(persisted, true), expandedSearch);
+  assert.match(text(legacySearchCard), /Provider: OpenAI Search \(gpt-6-luna\)/u);
+  assert.match(text(legacySearchCard), /alt\+o to expand/u);
+  assert.doesNotMatch(text(legacySearchCard), /0 results|No results found\./u);
+  const expandedLegacy = text(legacySearchCard, true);
+  assert.match(expandedLegacy, /Saved grounded answer without source URLs\./u);
+  assert.match(
+    expandedLegacy,
+    /\[Provider synthesis reached the model token limit and is incomplete\.\]/u,
+  );
 });

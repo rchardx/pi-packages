@@ -3,33 +3,23 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 export type Capability = "search" | "fetch";
-// The authority for which providers implement each capability. OpenAI has no
-// deterministic page-fetch tool, so its providers are search-only. Google is
-// fetch-only: Grounding with Google Search terms require displaying Google's
-// Search Suggestions with the results, which a terminal tool result cannot do.
-export const SEARCH_PROVIDERS = ["deepseek", "anthropic", "openai", "openai-codex"] as const;
-export const FETCH_PROVIDERS = ["deepseek", "anthropic", "google"] as const;
-export type SearchProviderId = (typeof SEARCH_PROVIDERS)[number];
-export type FetchProviderId = (typeof FETCH_PROVIDERS)[number];
-export type WebProviderId = SearchProviderId | FetchProviderId;
+export const WEB_PROVIDERS = ["deepseek"] as const;
+export type WebProviderId = (typeof WEB_PROVIDERS)[number];
 
-export interface ProviderConfig {
-  readonly model?: string;
-}
+export type ProviderConfig = Readonly<Record<string, never>>;
 
-export interface CapabilityConfig<P extends WebProviderId = WebProviderId> {
-  providers: Partial<Record<P, ProviderConfig>>;
-  defaultProvider?: P;
+export interface CapabilityConfig {
+  providers: Partial<Record<WebProviderId, ProviderConfig>>;
+  defaultProvider?: WebProviderId;
 }
 
 export interface Config {
-  search?: CapabilityConfig<SearchProviderId>;
-  fetch?: CapabilityConfig<FetchProviderId>;
+  search?: CapabilityConfig;
+  fetch?: CapabilityConfig;
 }
 
-export interface ResolvedCapabilityTarget<P extends WebProviderId = WebProviderId> {
-  provider: P;
-  model?: string;
+export interface ResolvedCapabilityTarget {
+  provider: WebProviderId;
 }
 
 const CAPABILITY_FIELDS = new Set<string>(["providers", "defaultProvider"]);
@@ -38,11 +28,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function supportedProvider<P extends WebProviderId>(
-  supported: readonly P[],
-  value: unknown,
-): P | undefined {
-  return supported.find((id) => id === value);
+function supportedProvider(value: unknown): WebProviderId | undefined {
+  return WEB_PROVIDERS.find((id) => id === value);
 }
 
 function parseProviderEntry(
@@ -53,34 +40,15 @@ function parseProviderEntry(
   if (!isPlainObject(value)) {
     throw new Error(`${capability}.providers.${provider} must be a JSON object.`);
   }
-  if (provider === "deepseek") {
-    if (Object.keys(value).length > 0) {
-      throw new Error(
-        `${capability}.providers.deepseek must be {}; DeepSeek uses standalone endpoints and accepts no options.`,
-      );
-    }
-    return {};
+  if (Object.keys(value).length > 0) {
+    throw new Error(
+      `${capability}.providers.${provider} must be {}; standalone tool endpoints accept no options.`,
+    );
   }
-  for (const key of Object.keys(value)) {
-    if (key !== "model") {
-      throw new Error(
-        `Unknown field in ${capability}.providers.${provider}: only model is supported.`,
-      );
-    }
-  }
-  if (!("model" in value)) return {};
-  const { model } = value;
-  if (typeof model !== "string" || model.length === 0 || /[\s\p{Cc}]/u.test(model)) {
-    throw new Error(`${capability}.providers.${provider}.model must be a non-empty model ID.`);
-  }
-  return { model };
+  return {};
 }
 
-function parseCapabilityConfig<P extends WebProviderId>(
-  capability: Capability,
-  supportedIds: readonly P[],
-  value: unknown,
-): CapabilityConfig<P> {
+function parseCapabilityConfig(capability: Capability, value: unknown): CapabilityConfig {
   if (!isPlainObject(value)) {
     throw new Error(
       `${capability} must be an object with a providers map; omit ${capability} to disable it.`,
@@ -105,10 +73,10 @@ function parseCapabilityConfig<P extends WebProviderId>(
       `${capability}.providers must enable at least one provider; omit ${capability} to disable it.`,
     );
   }
-  const supported = supportedIds.join(", ");
-  const providers: CapabilityConfig<P>["providers"] = {};
+  const supported = WEB_PROVIDERS.join(", ");
+  const providers: CapabilityConfig["providers"] = {};
   for (const [id, entry] of providerEntries) {
-    const provider = supportedProvider(supportedIds, id);
+    const provider = supportedProvider(id);
     if (!provider) {
       throw new Error(
         `Unsupported ${capability} provider "${id}"; supported providers are ${supported}.`,
@@ -119,16 +87,10 @@ function parseCapabilityConfig<P extends WebProviderId>(
   if (!("defaultProvider" in value)) {
     return { providers };
   }
-  const { defaultProvider } = value;
-  const provider = supportedProvider(supportedIds, defaultProvider);
+  const provider = supportedProvider(value.defaultProvider);
   if (!provider) {
     throw new Error(
       `${capability}.defaultProvider must be one of the supported providers (${supported}).`,
-    );
-  }
-  if (!Object.hasOwn(providers, provider)) {
-    throw new Error(
-      `${capability}.defaultProvider "${provider}" must also be enabled in ${capability}.providers.`,
     );
   }
   return { providers, defaultProvider: provider };
@@ -140,10 +102,8 @@ export function parseConfig(value: unknown): Config {
   }
   const config: Config = {};
   for (const [key, setting] of Object.entries(value)) {
-    if (key === "search") {
-      config.search = parseCapabilityConfig(key, SEARCH_PROVIDERS, setting);
-    } else if (key === "fetch") {
-      config.fetch = parseCapabilityConfig(key, FETCH_PROVIDERS, setting);
+    if (key === "search" || key === "fetch") {
+      config[key] = parseCapabilityConfig(key, setting);
     } else {
       throw new Error("Unknown configuration field; only search and fetch are supported.");
     }
@@ -151,11 +111,10 @@ export function parseConfig(value: unknown): Config {
   return config;
 }
 
-export function resolveCapabilityTarget<P extends WebProviderId>(
+export function resolveCapabilityTarget(
   capability: Capability,
-  setting: CapabilityConfig<P> | undefined,
-  activeProvider: string | undefined,
-): ResolvedCapabilityTarget<P> {
+  setting: CapabilityConfig | undefined,
+): ResolvedCapabilityTarget {
   if (!setting) {
     throw new Error(
       capability === "search"
@@ -163,23 +122,7 @@ export function resolveCapabilityTarget<P extends WebProviderId>(
         : "Fetch is disabled. Configure fetch.providers in the user web-access.json to authorize URL disclosure and provider charges.",
     );
   }
-  const select = (provider: P): ResolvedCapabilityTarget<P> => {
-    const model = setting.providers[provider]?.model;
-    return model ? { provider, model } : { provider };
-  };
-  const active = Object.keys(setting.providers).find((id): id is P => id === activeProvider);
-  if (active) return select(active);
-  if (setting.defaultProvider) {
-    return select(setting.defaultProvider);
-  }
-  if (activeProvider) {
-    throw new Error(
-      `Active model provider "${activeProvider}" is not enabled in ${capability}.providers, and ${capability}.defaultProvider is not set in web-access.json.`,
-    );
-  }
-  throw new Error(
-    `No active model is selected to match ${capability}.providers, and ${capability}.defaultProvider is not set in web-access.json.`,
-  );
+  return { provider: setting.defaultProvider ?? "deepseek" };
 }
 
 // User configuration only, re-read per invocation. Never let project settings
