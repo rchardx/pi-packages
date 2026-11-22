@@ -24,7 +24,7 @@ function searchDeepSeek(
   signal?: AbortSignal,
   request?: typeof fetch,
 ) {
-  return searchWithCredentials(args, async () => toHeaders(apiKey), signal, request);
+  return searchWithCredentials(args, () => toHeaders(apiKey), signal, request);
 }
 const entry = {
   title: "API guide",
@@ -89,18 +89,16 @@ test("sends only search arguments, preserves operators and provider order, and d
 test("passes resolved HTTP authentication without mutating it and owns the JSON content type", async () => {
   const headers = new Headers({
     Authorization: "Bearer header-key",
-    "X-Auth": "extra",
     "Content-Type": "application/x-chat",
   });
   await searchWithCredentials(
     { query: "API" },
-    async () => headers,
+    () => headers,
     undefined,
     async (_url, init) => {
       assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
         authorization: "Bearer header-key",
         "content-type": "application/json",
-        "x-auth": "extra",
       });
       return response([]);
     },
@@ -108,21 +106,28 @@ test("passes resolved HTTP authentication without mutating it and owns the JSON 
   assert.equal(headers.get("Content-Type"), "application/x-chat");
 });
 
-test("returns requested content, falls back to snippets, and identifies unavailable content", async () => {
+test("returns requested content, falls back to snippets, omits empty summary placeholders when content is requested, and identifies unavailable content", async () => {
   const result = await searchDeepSeek(
-    { query: "API", count: 2, need_content: true },
+    { query: "API", count: 3, need_content: true },
     key,
     undefined,
     async (_url, init) => {
-      assert.equal(init?.body, '{"query":"API","count":2,"need_content":true}');
-      return response([entry, { ...entry, summary: "  ", content: "", site_name: "", date: "" }]);
+      assert.equal(init?.body, '{"query":"API","count":3,"need_content":true}');
+      return response([
+        entry,
+        { ...entry, summary: "  ", content: "", site_name: "", date: "" },
+        { ...entry, summary: "", snippet: "", content: "Only body.", site_name: "", date: "" },
+      ]);
     },
   );
   const text = result.content[0]?.text ?? "";
   assert.ok(text.includes(entry.content));
   assert.ok(text.includes(entry.snippet));
+  assert.ok(text.includes("Only body."));
+  assert.doesNotMatch(text, /Not provided\./u);
   assert.match(text, /Unavailable for this result/u);
   assert.equal(result.details.needContent, true);
+  assert.deepEqual(result.details.display.sections[2]?.bodyLabels, ["Page content"]);
 });
 
 test("single-line result metadata does not add structural lines while summaries and content retain paragraphs", async () => {
@@ -541,81 +546,9 @@ test("the total deadline aborts the outbound request without retries", async (t)
   assert.equal(calls, 1);
 });
 
-test("cancellation stops waiting for Pi credentials and prevents late requests", async () => {
-  let finish: ((key: string) => void) | undefined;
-  const credential = new Promise<string>((resolve) => {
-    finish = resolve;
-  });
-  const controller = new AbortController();
-  let calls = 0;
-  const pending = searchWithCredentials(
-    { query: "API" },
-    () => credential.then(toHeaders),
-    controller.signal,
-    async () => {
-      calls++;
-      return response();
-    },
-  );
-  const rejected = assert.rejects(pending, /caller cancelled/u);
-  controller.abort(new Error("caller cancelled"));
-  await rejected;
-  assert.ok(finish);
-  finish(key);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(calls, 0);
-});
-
-test("cancellation racing credential completion sends no HTTP request", async (t) => {
-  const controller = new AbortController();
-  let calls = 0;
-  const request = await localTransport(t, (_incoming, reply) => {
-    calls++;
-    reply.writeHead(200, { "content-type": "application/json" }).end('{"results":[]}');
-  });
-  await assert.rejects(
-    searchWithCredentials(
-      { query: "API" },
-      async () => {
-        queueMicrotask(() => controller.abort(new Error("caller cancelled")));
-        return toHeaders(key);
-      },
-      controller.signal,
-      request,
-    ),
-    /caller cancelled/u,
-  );
-  assert.equal(calls, 0);
-});
-
-test("a late credential rejection remains handled after cancellation", async () => {
-  let fail: ((reason: Error) => void) | undefined;
-  const credential = new Promise<Headers>((_resolve, reject) => {
-    fail = reject;
-  });
-  const controller = new AbortController();
-  let calls = 0;
-  const pending = searchWithCredentials(
-    { query: "API" },
-    () => credential,
-    controller.signal,
-    async () => {
-      calls++;
-      return response();
-    },
-  );
-  const rejected = assert.rejects(pending, /caller cancelled/u);
-  controller.abort(new Error("caller cancelled"));
-  await rejected;
-  assert.ok(fail);
-  fail(new Error("late secret-manager failure"));
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(calls, 0);
-});
-
 test("backend query errors and pre-cancellation do not resolve credentials", async () => {
   let resolutions = 0;
-  const resolveKey = async () => {
+  const resolveKey = () => {
     resolutions++;
     return toHeaders(key);
   };
@@ -624,60 +557,18 @@ test("backend query errors and pre-cancellation do not resolve credentials", asy
     /1–128 Unicode/u,
   );
   await assert.rejects(
+    searchWithCredentials({ query: "API", mode: "deep" }, resolveKey),
+    /DeepSeek Search does not support mode "deep"/u,
+  );
+  await assert.rejects(
+    searchWithCredentials({ query: "API", max_age_hours: 24 }, resolveKey),
+    /DeepSeek Search does not support max_age_hours/u,
+  );
+  await assert.rejects(
     searchWithCredentials({ query: "API" }, resolveKey, AbortSignal.abort(new Error("cancelled"))),
     /cancelled/u,
   );
   assert.equal(resolutions, 0);
-});
-
-test("credential resolution consumes the network deadline rather than resetting it", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  let finish: ((key: string) => void) | undefined;
-  const credential = new Promise<string>((resolve) => {
-    finish = resolve;
-  });
-  let started: (() => void) | undefined;
-  const requestStarted = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const pending = searchWithCredentials(
-    { query: "API" },
-    () => credential.then(toHeaders),
-    undefined,
-    async (_url, init) => {
-      const signal = init?.signal;
-      assert.ok(signal);
-      started?.();
-      return new Promise<Response>((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      });
-    },
-  );
-  const rejected = assert.rejects(pending, /timed out after 120 seconds/u);
-  t.mock.timers.tick(60_000);
-  assert.ok(finish);
-  finish(key);
-  await requestStarted;
-  t.mock.timers.tick(60_000);
-  await rejected;
-});
-
-test("the same total deadline bounds credential resolution", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  let calls = 0;
-  const pending = searchWithCredentials(
-    { query: "API" },
-    () => new Promise(() => {}),
-    undefined,
-    async () => {
-      calls++;
-      return response();
-    },
-  );
-  const rejected = assert.rejects(pending, /timed out after 120 seconds/u);
-  t.mock.timers.tick(120_000);
-  await rejected;
-  assert.equal(calls, 0);
 });
 
 test("the deadline also covers a stalled response body", async (t) => {

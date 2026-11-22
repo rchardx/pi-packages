@@ -20,8 +20,8 @@ import {
   TUI_KEYBINDINGS,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { fetchDeepSeek } from "../src/fetch.ts";
-import { searchDeepSeek } from "../src/search.ts";
+import { fetchDeepSeek, fetchExa } from "../src/fetch.ts";
+import { searchDeepSeek, searchExa } from "../src/search.ts";
 
 const tools = new Map<string, ToolRenderers>();
 const terminal: Terminal = {
@@ -90,7 +90,7 @@ after(async () => {
 });
 
 const url = "https://example.test/article";
-const credentials = async () => new Headers({ Authorization: "Bearer render-fixture" });
+const credentials = () => new Headers({ Authorization: "Bearer render-fixture" });
 const fetched = (title = "An article", content = "# Body heading\n\nA **bold** paragraph.") =>
   fetchDeepSeek(url, credentials, undefined, async () => Response.json({ title, content }));
 const source = (title: string, index = 1) => ({
@@ -182,7 +182,7 @@ test("Pi uses readable headers during argument streaming and the same fetch summ
   assert.deepEqual(lines(restored, true), expanded);
 });
 
-test("search uses a two-line collapsed summary and adds numbered results, sources, dates, summaries and optional content on expansion", async () => {
+test("search uses singular/plural result counts, adds sources and optional content on expansion, and preserves legacy sections without bodyLabels", async () => {
   const component = card("search");
   const result = await searched([
     source("First", 1),
@@ -206,13 +206,31 @@ test("search uses a two-line collapsed summary and adds numbered results, source
     expanded,
     /Provider summary:|Page content \(provider-returned\):|Untrusted provider content|file:\/\/\/private/u,
   );
-  const cleanResult = await searched([source("First", 1), source("Second", 2)], false);
-  component.updateResult({ ...cleanResult, isError: false, durationMs: 500 });
+
+  // Persisted session sections created before bodyLabels was introduced keep Summary / Page content labels.
+  const legacyDetails = {
+    ...result.details,
+    display: {
+      ...result.details.display,
+      sections: result.details.display.sections.map(({ bodyLabels: _omitted, ...rest }) => rest),
+    },
+  };
+  const legacyCard = card("search");
+  legacyCard.updateResult({
+    content: result.content,
+    details: legacyDetails,
+    isError: false,
+    durationMs: 800,
+  });
+  assert.equal(text(legacyCard, true), expanded);
+
+  const singleResult = await searched([source("Only", 1)], false);
+  component.updateResult({ ...singleResult, isError: false, durationMs: 500 });
   assert.deepEqual(lines(component), [
     "web_search  release notes",
-    "DeepSeek · 2 results · 0.5s · alt+o to expand",
+    "DeepSeek · 1 result · 0.5s · alt+o to expand",
   ]);
-  assert.doesNotMatch(text(component, true), /Page for First/u);
+  assert.doesNotMatch(text(component, true), /Page for Only/u);
 });
 
 test("search model text remains unchanged, including provider text resembling output labels", async () => {
@@ -396,4 +414,75 @@ test("old session results without presentation metadata or from removed provider
     expandedLegacy,
     /\[Provider synthesis reached the model token limit and is incomplete\.\]/u,
   );
+});
+
+test("Exa fetch and search cards display mode, compact ISO dates, and distinguish summaries from full page content", async () => {
+  const exaAuth = () => new Headers({ "x-api-key": "exa-render-key" });
+  const exaFetched = await fetchExa(url, exaAuth, { maxAgeHours: 24 }, undefined, async () =>
+    Response.json({ results: [{ url, title: "Exa page", text: "## Heading\n\nBody." }] }),
+  );
+  const fetchCard = card("fetch");
+  fetchCard.updateArgs({ url });
+  fetchCard.setArgsComplete();
+  fetchCard.markExecutionStarted();
+  fetchCard.updateResult({ ...exaFetched, isError: false, durationMs: 600 });
+  assert.deepEqual(lines(fetchCard), [
+    `web_fetch  ${url}`,
+    "Exa page",
+    "Exa · 0.6s · alt+o to expand",
+  ]);
+
+  const highlightSearch = await searchExa(
+    { query: "release notes", mode: "deep-lite" },
+    exaAuth,
+    {},
+    undefined,
+    async () =>
+      Response.json({
+        results: [
+          {
+            url: "https://example.test/exa-1",
+            title: "Exa result",
+            publishedDate: "2026-10-01T00:00:00.000Z",
+            highlights: ["Key highlight snippet."],
+          },
+        ],
+      }),
+  );
+  assert.equal(
+    highlightSearch.structuredContent.results[0]?.publishedDate,
+    "2026-10-01T00:00:00.000Z",
+  );
+  assert.match(highlightSearch.content[0]?.text ?? "", /2026-10-01T00:00:00\.000Z/u);
+  const searchCard = card("search");
+  searchCard.updateResult({ ...highlightSearch, isError: false, durationMs: 1400 });
+  assert.deepEqual(lines(searchCard), [
+    "web_search  release notes",
+    "Exa · deep-lite · 1 result · 1.4s · alt+o to expand",
+  ]);
+  const expandedHighlight = text(searchCard, true);
+  assert.match(expandedHighlight, /1\. Exa result\nhttps:\/\/example\.test\/exa-1\n2026-10-01\n/u);
+  assert.doesNotMatch(expandedHighlight, /T00:00:00\.000Z/u);
+  assert.match(expandedHighlight, /Summary\nKey highlight snippet\./u);
+  assert.doesNotMatch(expandedHighlight, /Page content/u);
+
+  const fullTextSearch = await searchExa(
+    { query: "release notes", need_content: true },
+    exaAuth,
+    {},
+    undefined,
+    async () =>
+      Response.json({
+        results: [
+          {
+            url: "https://example.test/exa-1",
+            title: "Exa result",
+            text: "Full body from Exa.",
+          },
+        ],
+      }),
+  );
+  searchCard.updateResult({ ...fullTextSearch, isError: false, durationMs: 900 });
+  assert.match(text(searchCard, true), /Page content\nFull body from Exa\./u);
+  assert.doesNotMatch(text(searchCard, true), /\nSummary\n/u);
 });

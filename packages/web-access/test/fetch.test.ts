@@ -15,7 +15,7 @@ import {
 import { fixture } from "./_server.ts";
 
 const key = "fetch-test-only-key";
-const credentials = async () => new Headers({ Authorization: `Bearer ${key}` });
+const credentials = () => new Headers({ Authorization: `Bearer ${key}` });
 const url = "https://example.test/article";
 const page = { title: "An article", content: "# An article\n\nProvider Markdown.\n" };
 const response = () => Response.json(page);
@@ -30,16 +30,15 @@ async function localTransport(t: TestContext, handler: RequestListener): Promise
   };
 }
 
-test("sends only a normalized URL to the fixed Fetch endpoint, with Pi headers and no redirects", async () => {
+test("sends only a normalized URL to the fixed Fetch endpoint, owning JSON Content-Type and refusing redirects", async () => {
   const headers = new Headers({
-    authorization: "Custom auth",
-    "X-Provider": "value",
+    authorization: `Bearer ${key}`,
     "content-type": "text/plain",
   });
   let calls = 0;
   const result = await fetchDeepSeek(
     " HTTPS://EXAMPLE.test:443/article#private-fragment ",
-    async () => headers,
+    () => headers,
     undefined,
     async (endpoint, init) => {
       calls++;
@@ -48,8 +47,7 @@ test("sends only a normalized URL to the fixed Fetch endpoint, with Pi headers a
       assert.equal(init?.redirect, "error");
       assert.equal(init?.body, '{"url":"https://example.test/article"}');
       assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
-        authorization: "Custom auth",
-        "x-provider": "value",
+        authorization: `Bearer ${key}`,
         "content-type": "application/json",
       });
       return response();
@@ -71,7 +69,7 @@ test("sends only a normalized URL to the fixed Fetch endpoint, with Pi headers a
   assert.match(text, /Untrusted provider-returned web content/u);
   assert.match(text, /completeness is not guaranteed/u);
   assert.ok(text.endsWith(page.content));
-  assert.doesNotMatch(text, /private-fragment|Custom auth|Content-Type:/u);
+  assert.doesNotMatch(text, /private-fragment|fetch-test-only-key|Content-Type:/u);
 });
 
 test("preserves provider Markdown and paragraphs without local HTML extraction, with single-line titles", async () => {
@@ -87,7 +85,13 @@ test("preserves provider Markdown and paragraphs without local HTML extraction, 
 });
 
 test("the registered fetch schema bounds input and disallows per-call credentials or provider selection", () => {
-  for (const args of [{ url }, { url: `https://example.test/${"a".repeat(8192 - 21)}` }]) {
+  for (const args of [
+    { url },
+    { url, max_age_hours: -1 },
+    { url, max_age_hours: 0 },
+    { url, max_age_hours: 720 },
+    { url: `https://example.test/${"a".repeat(8192 - 21)}` },
+  ]) {
     assert.equal(Check(FetchParameters, args), true);
   }
   for (const args of [
@@ -95,11 +99,33 @@ test("the registered fetch schema bounds input and disallows per-call credential
     { url: "" },
     { url: null },
     { url: "x".repeat(8193) },
+    { url, max_age_hours: -2 },
+    { url, max_age_hours: 721 },
+    { url, max_age_hours: 1.5 },
     { url, apiKey: key },
     { url, provider: "other" },
   ]) {
     assert.equal(Check(FetchParameters, args), false);
   }
+});
+
+test("DeepSeek Fetch rejects max_age_hours and pre-cancellation before resolving credentials", async () => {
+  let resolutions = 0;
+  const countAuth = () => {
+    resolutions++;
+    return credentials();
+  };
+  await assert.rejects(
+    fetchDeepSeek(url, countAuth, undefined, async () => response(), { maxAgeHours: 0 }),
+    /DeepSeek Fetch does not support max_age_hours/u,
+  );
+  await assert.rejects(
+    fetchDeepSeek(url, countAuth, AbortSignal.abort(new Error("cancelled")), async () =>
+      response(),
+    ),
+    /cancelled/u,
+  );
+  assert.equal(resolutions, 0);
 });
 
 for (const input of [
@@ -119,7 +145,7 @@ for (const input of [
     await assert.rejects(
       fetchDeepSeek(
         input,
-        async () => {
+        () => {
           resolutions++;
           return credentials();
         },
@@ -217,34 +243,10 @@ test("closes HTTP streams exceeding the cumulative decoded response limit", {
   await closed;
 });
 
-test("credential waiting has a 60-second deadline and late rejection is handled", async (t) => {
-  assert.equal(FETCH_TIMEOUT_MS, 60_000);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  let reject: (error: Error) => void = () => {};
-  const pending = new Promise<Headers>((_resolve, fail) => {
-    reject = fail;
-  });
-  let calls = 0;
-  const result = fetchDeepSeek(
-    url,
-    () => pending,
-    undefined,
-    async () => {
-      calls++;
-      return response();
-    },
-  );
-  const rejected = assert.rejects(result, /DeepSeek Fetch timed out after 60 seconds/u);
-  t.mock.timers.tick(60_000);
-  await rejected;
-  reject(new Error("late credential error"));
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(calls, 0);
-});
-
-test("credential resolution does not reset the deadline for the HTTP body", {
+test("enforces a 60-second total deadline across stalled requests and response bodies", {
   timeout: 5000,
 }, async (t) => {
+  assert.equal(FETCH_TIMEOUT_MS, 60_000);
   t.mock.timers.enable({ apis: ["setTimeout"] });
   let closed: Promise<unknown[]> | undefined;
   const request = await localTransport(t, (_incoming, reply) => {
@@ -252,20 +254,12 @@ test("credential resolution does not reset the deadline for the HTTP body", {
     reply.writeHead(200, { "content-type": "application/json" }).flushHeaders();
   });
   await assert.rejects(
-    fetchDeepSeek(
-      url,
-      async () => {
-        t.mock.timers.tick(30_000);
-        return credentials();
-      },
-      undefined,
-      async (endpoint, init) => {
-        const response = await request(endpoint, init);
-        t.mock.timers.tick(30_000);
-        return response;
-      },
-    ),
-    /timed out after 60 seconds/u,
+    fetchDeepSeek(url, credentials, undefined, async (endpoint, init) => {
+      const reply = await request(endpoint, init);
+      t.mock.timers.tick(FETCH_TIMEOUT_MS);
+      return reply;
+    }),
+    /DeepSeek Fetch timed out after 60 seconds/u,
   );
   assert.ok(closed);
   await closed;

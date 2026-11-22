@@ -21,6 +21,7 @@ import { Display, singleLine } from "./output.ts";
 
 const Details = Type.Object({
   provider: Type.Enum([...WEB_PROVIDERS]),
+  mode: Type.Optional(Type.String()),
   display: Display,
   truncated: Type.Boolean(),
   fullOutputPath: Type.Optional(Type.String()),
@@ -32,6 +33,7 @@ type Context = KeybindingHints & { isError: boolean; durationMs: number | undefi
 
 const PROVIDER_LABELS: Readonly<Record<WebProviderId, string>> = {
   deepseek: "DeepSeek",
+  exa: "Exa",
 };
 
 // Provider text must not introduce terminal control sequences. Model-facing content is untouched.
@@ -39,6 +41,13 @@ function displayText(value: string): string {
   return stripTerminalSequences(value).replace(/[\p{Cc}]/gu, (character) =>
     character === "\n" || character === "\t" ? character : "",
   );
+}
+
+function compactMetadataItem(value: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/u.exec(
+    value,
+  );
+  return match?.[1] ?? value;
 }
 
 export function renderWebCall(kind: Kind, value: unknown, theme: Theme) {
@@ -88,8 +97,9 @@ export function renderWebResult(
     new TruncatedText(theme.fg("toolTitle", theme.bold(singleLine(read(section.heading)))), 0, 0);
   if (kind === "fetch" && sections[0]) view.addChild(heading(sections[0]));
   const metadata = [PROVIDER_LABELS[details.provider]];
+  if (kind === "search" && details.mode) metadata.push(singleLine(displayText(details.mode)));
   if (kind === "search" && details.resultCount !== undefined) {
-    metadata.push(`${details.resultCount} results`);
+    metadata.push(`${details.resultCount} ${details.resultCount === 1 ? "result" : "results"}`);
   }
   if (context.durationMs !== undefined) metadata.push(`${(context.durationMs / 1000).toFixed(1)}s`);
   metadata.push(context.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand"));
@@ -128,16 +138,18 @@ export function renderWebResult(
       view.addChild(new Spacer(1));
       if (kind === "search") view.addChild(heading(section));
       if (section.url) view.addChild(new Text(theme.fg("muted", read(section.url)), 0, 0));
-      const sectionMetadata = section.metadata.map(read).filter(Boolean).join(" · ");
+      const sectionMetadata = section.metadata
+        .map((range) => compactMetadataItem(read(range)))
+        .filter(Boolean)
+        .join(" · ");
       if (sectionMetadata) view.addChild(new Text(theme.fg("dim", sectionMetadata), 0, 0));
       for (const [index, range] of section.body.entries()) {
         const body = read(range);
         if (body) {
           if (kind === "search") {
+            const label = section.bodyLabels?.[index] ?? (index > 0 ? "Page content" : "Summary");
             view.addChild(new Spacer(1));
-            view.addChild(
-              new Text(theme.fg("dim", index === 0 ? "Summary" : "Page content"), 0, 0),
-            );
+            view.addChild(new Text(theme.fg("dim", label), 0, 0));
           }
           view.addChild(new Markdown(body, 0, 0, getMarkdownTheme()));
         }

@@ -23,8 +23,9 @@ All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
   `multiSelect`, plus automatic `Other…` free-text input) with a custom TUI
   prompt and RPC dialog fallback.
 - **[web-access](web-access/README.md):** provides opt-in hosted `web_fetch` and
-  `web_search` backed by DeepSeek's standalone tool endpoints, independent of
-  the active chat model and without fallback.
+  `web_search` across standalone tool endpoints (**Exa** and **DeepSeek**) using
+  dedicated environment API keys, independent of Pi's chat-model registry and
+  without cross-provider fallback.
 - **[background](background/README.md):** replaces `bash` with a same-named
   override that supports explicit `background: true` and automatic backgrounding
   after a configurable threshold (default `120s` when no explicit `timeout` is
