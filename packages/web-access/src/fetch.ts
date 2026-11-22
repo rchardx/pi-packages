@@ -6,6 +6,8 @@ import { EXA_MAX_FETCH_URL_CHARACTERS, fetchExa } from "./providers/exa.ts";
 import { fetchParallel, PARALLEL_MIN_MAX_AGE_SECONDS } from "./providers/parallel.ts";
 import { MAX_FETCH_URL_CHARACTERS } from "./url.ts";
 
+export const MAX_FETCH_OBJECTIVE_CHARACTERS = 1000;
+
 export {
   EXA_MAX_FETCH_URL_CHARACTERS,
   FETCH_TIMEOUT_MS,
@@ -24,6 +26,14 @@ export const FetchParameters = Type.Object(
       maxLength: MAX_FETCH_URL_CHARACTERS,
       description: "Absolute public HTTP(S) URL",
     }),
+    objective: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: MAX_FETCH_OBJECTIVE_CHARACTERS,
+        description:
+          "Optional natural-language focus to extract relevant excerpts instead of full page content (Exa and Parallel)",
+      }),
+    ),
     max_age_hours: Type.Optional(
       Type.Integer({
         minimum: MIN_MAX_AGE_HOURS,
@@ -44,19 +54,19 @@ export function executeFetch(
 ) {
   switch (target.provider) {
     case "deepseek":
-      return fetchDeepSeek(
-        args.url,
-        resolveDeepSeekHeaders,
-        signal,
-        request,
-        args.max_age_hours !== undefined ? { maxAgeHours: args.max_age_hours } : {},
-      );
+      return fetchDeepSeek(args.url, resolveDeepSeekHeaders, signal, request, {
+        ...(args.max_age_hours !== undefined ? { maxAgeHours: args.max_age_hours } : {}),
+        ...(args.objective !== undefined ? { objective: args.objective } : {}),
+      });
     case "exa": {
       const maxAgeHours = args.max_age_hours ?? target.options.maxAgeHours;
       return fetchExa(
         args.url,
         resolveExaHeaders,
-        maxAgeHours !== undefined ? { maxAgeHours } : {},
+        {
+          ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
+          ...(args.objective !== undefined ? { objective: args.objective } : {}),
+        },
         signal,
         request,
       );
@@ -66,7 +76,10 @@ export function executeFetch(
       return fetchParallel(
         args.url,
         resolveParallelHeaders,
-        maxAgeHours !== undefined ? { maxAgeHours } : {},
+        {
+          ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
+          ...(args.objective !== undefined ? { objective: args.objective } : {}),
+        },
         signal,
         request,
       );

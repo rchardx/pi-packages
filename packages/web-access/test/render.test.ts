@@ -463,8 +463,8 @@ test("Exa fetch and search cards display mode, compact ISO dates, and distinguis
   const expandedHighlight = text(searchCard, true);
   assert.match(expandedHighlight, /1\. Exa result\nhttps:\/\/example\.test\/exa-1\n2026-10-01\n/u);
   assert.doesNotMatch(expandedHighlight, /T00:00:00\.000Z/u);
-  assert.match(expandedHighlight, /Summary\nKey highlight snippet\./u);
-  assert.doesNotMatch(expandedHighlight, /Page content/u);
+  assert.match(expandedHighlight, /Highlights\nKey highlight snippet\./u);
+  assert.doesNotMatch(expandedHighlight, /Page content|\nSummary\n/u);
 
   const fullTextSearch = await searchExa(
     { query: "release notes", need_content: true },
@@ -502,8 +502,65 @@ test("Exa fetch and search cards display mode, compact ISO dates, and distinguis
     "Parallel · 0.5s · alt+o to expand",
   ]);
 
+  const focusedFetched = await fetchParallel(
+    url,
+    parallelAuth,
+    { objective: "authentication headers" },
+    undefined,
+    async () =>
+      Response.json({
+        results: [
+          {
+            url,
+            title: "Parallel auth",
+            publish_date: "2026-10-05T00:00:00.000Z",
+            excerpts: ["Send `x-api-key` in every request."],
+            full_content: null,
+          },
+        ],
+        errors: [],
+      }),
+  );
+  const focusedCallCard = card("fetch", { url, objective: "authentication headers" });
+  focusedCallCard.updateResult({ ...focusedFetched, isError: false, durationMs: 400 });
+  assert.deepEqual(lines(focusedCallCard), [
+    `web_fetch  ${url}  authentication headers`,
+    "Parallel auth",
+    "Parallel · excerpts · 0.4s · alt+o to expand",
+  ]);
+  const expandedFocused = text(focusedCallCard, true);
+  assert.match(expandedFocused, /2026-10-05 · Objective: authentication headers\nSend x-api-key/u);
+
+  // Full-content fallback to excerpts without objective still labels the card as excerpts.
+  const fallbackFetched = await fetchParallel(url, parallelAuth, {}, undefined, async () =>
+    Response.json({
+      results: [
+        {
+          url,
+          title: "Fallback page",
+          publish_date: "2026-09-20",
+          excerpts: ["Fallback excerpt."],
+          full_content: null,
+        },
+      ],
+      errors: [],
+    }),
+  );
+  fetchCard.updateResult({ ...fallbackFetched, isError: false, durationMs: 300 });
+  assert.deepEqual(lines(fetchCard), [
+    `web_fetch  ${url}`,
+    "Fallback page",
+    "Parallel · excerpts · 0.3s · alt+o to expand",
+  ]);
+  assert.match(text(fetchCard, true), /2026-09-20\nFallback excerpt\./u);
+
   const parallelSearched = await searchParallel(
-    { query: "release notes" },
+    {
+      query: "release notes",
+      include_domains: ["nodejs.org", "github.com", "parallel.ai"],
+      exclude_domains: ["nodejs.org/dist"],
+      after_date: "2025-01-01",
+    },
     parallelAuth,
     {},
     undefined,
@@ -519,10 +576,17 @@ test("Exa fetch and search cards display mode, compact ISO dates, and distinguis
         ],
       }),
   );
-  searchCard.updateResult({ ...parallelSearched, isError: false, durationMs: 700 });
-  assert.deepEqual(lines(searchCard), [
-    "web_search  release notes",
+  const filteredSearchCard = card("search", {
+    query: "release notes",
+    include_domains: ["nodejs.org", "github.com", "parallel.ai"],
+    exclude_domains: ["nodejs.org/dist"],
+    after_date: "2025-01-01",
+  });
+  filteredSearchCard.updateResult({ ...parallelSearched, isError: false, durationMs: 700 });
+  assert.deepEqual(lines(filteredSearchCard), [
+    "web_search  release notes  nodejs.org, github.com +1 · -nodejs.org/dist · ≥2025-01-01",
     "Parallel · fast · 1 result · 0.7s · alt+o to expand",
   ]);
-  assert.match(text(searchCard, true), /Summary\nParallel Markdown excerpt\./u);
+  assert.match(text(filteredSearchCard, true), /Excerpts\nParallel Markdown excerpt\./u);
+  assert.doesNotMatch(text(filteredSearchCard, true), /\nSummary\n/u);
 });

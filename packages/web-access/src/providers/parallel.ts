@@ -17,7 +17,7 @@ import {
   singleLine,
 } from "../output.ts";
 import { postJson, type WebToolKind, withDeadline } from "../request.ts";
-import { normalizeFetchUrl, normalizeSourceUrl } from "../url.ts";
+import { normalizeFetchUrl, normalizeSearchFilters, normalizeSourceUrl } from "../url.ts";
 import {
   DEFAULT_SEARCH_COUNT,
   FETCH_TIMEOUT_MS,
@@ -53,6 +53,7 @@ const ExtractErrorSchema = Type.Object({
 const ExtractResultSchema = Type.Object({
   url: Type.Optional(Type.String()),
   title: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  publish_date: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   excerpts: Type.Array(Type.String()),
   full_content: Type.Optional(Type.Union([Type.String(), Type.Null()])),
 });
@@ -79,7 +80,10 @@ function toFetchPolicy(maxAgeHours: number): { max_age_seconds: number } {
   };
 }
 
-function parallelExtractFailureMessage(errors: Static<typeof ExtractResponse>["errors"]): string {
+function parallelExtractFailureMessage(
+  errors: Static<typeof ExtractResponse>["errors"],
+  hasObjective: boolean,
+): string {
   const failed = errors[0];
   const status = failed?.http_status_code ?? undefined;
   const errorType = failed?.error_type;
@@ -97,13 +101,16 @@ function parallelExtractFailureMessage(errors: Static<typeof ExtractResponse>["e
       ? `Parallel Fetch could not retrieve the target page (upstream HTTP ${status}).`
       : "Parallel Fetch could not retrieve usable page content.";
   }
+  if (hasObjective) {
+    return "Parallel Fetch found no excerpts matching the requested objective.";
+  }
   return "Parallel Fetch returned no readable page content.";
 }
 
 export async function fetchParallel(
   input: string,
   resolveHeaders: () => Headers = resolveParallelHeaders,
-  options: ParallelFetchConfig = {},
+  options: ParallelFetchConfig & { objective?: string } = {},
   signal?: AbortSignal,
   request: typeof fetch = globalThis.fetch,
 ) {
@@ -115,15 +122,29 @@ export async function fetchParallel(
         "Parallel Fetch does not support cache-only mode (-1); omit max_age_hours or use 0 or a positive hour limit.",
       );
     }
+    const objective = options.objective !== undefined ? singleLine(options.objective) : undefined;
+    if (objective === "") {
+      throw new Error(
+        "Parallel Fetch objective must not be blank; omit objective for full page content.",
+      );
+    }
+    const fetchPolicy = maxAgeHours !== undefined ? toFetchPolicy(maxAgeHours) : undefined;
+    const advancedSettings =
+      objective !== undefined
+        ? fetchPolicy
+          ? { fetch_policy: fetchPolicy }
+          : undefined
+        : {
+            full_content: true,
+            ...(fetchPolicy ? { fetch_policy: fetchPolicy } : {}),
+          };
     const data = await postJson({
       endpoint: `${PARALLEL_API_ORIGIN}/v1/extract`,
       resolveHeaders,
       body: {
         urls: [url],
-        advanced_settings: {
-          full_content: true,
-          ...(maxAgeHours !== undefined ? { fetch_policy: toFetchPolicy(maxAgeHours) } : {}),
-        },
+        ...(objective !== undefined ? { objective } : {}),
+        ...(advancedSettings ? { advanced_settings: advancedSettings } : {}),
       },
       signal: combined,
       maxBytes: MAX_RESPONSE_BYTES,
@@ -138,22 +159,30 @@ export async function fetchParallel(
       .map((part) => part.trim())
       .filter(Boolean)
       .join("\n\n");
-    const content = page?.full_content?.trim() ? page.full_content : excerptsText;
+    const fullContent = page?.full_content?.trim() ? page.full_content : "";
+    const isExcerpts = objective !== undefined || !fullContent;
+    const content = isExcerpts ? excerptsText : fullContent;
     if (!content) {
-      throw new Error(parallelExtractFailureMessage(data.errors));
+      throw new Error(parallelExtractFailureMessage(data.errors, objective !== undefined));
     }
     const title = singleLine(page?.title ?? "");
+    const publishedDate = page?.publish_date ? singleLine(page.publish_date) : "";
     const result = await formatFetchOutput({
       headerLabel: LABELS.fetch,
       url,
       title,
+      ...(publishedDate ? { publishedDate } : {}),
       content,
+      ...(objective !== undefined ? { objective } : {}),
+      ...(isExcerpts ? { excerpts: true } : {}),
       signal: combined,
     });
     const structuredContent: FetchStructuredOutput = {
       provider: "parallel",
       url,
       title,
+      ...(publishedDate ? { publishedDate } : {}),
+      ...(objective !== undefined ? { objective } : {}),
       content,
     };
     return {
@@ -162,6 +191,9 @@ export async function fetchParallel(
         provider: "parallel",
         url,
         title,
+        ...(publishedDate ? { publishedDate } : {}),
+        ...(objective !== undefined ? { objective } : {}),
+        ...(isExcerpts ? { excerpts: true } : {}),
         ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
         ...result.details,
       },
@@ -201,11 +233,24 @@ export async function searchParallel(
         `Parallel Search requires 1–${PARALLEL_MAX_QUERY_CHARACTERS} Unicode characters; shorten the search terms.`,
       );
     }
+    const filters = normalizeSearchFilters(args, LABELS.search, {
+      allowBareExtensions: true,
+      allowPathPrefixes: mode !== "turbo",
+      stripWwwOnConflict: true,
+    });
     const maxAgeHours = args.max_age_hours ?? options.maxAgeHours;
     const count = args.count ?? DEFAULT_SEARCH_COUNT;
     // Omitting fetch_policy returns cached index results without live site fetches (covering -1).
     const fetchPolicy =
       maxAgeHours !== undefined && maxAgeHours >= 0 ? toFetchPolicy(maxAgeHours) : undefined;
+    const sourcePolicy =
+      filters.includeDomains || filters.excludeDomains || filters.afterDate
+        ? {
+            ...(filters.includeDomains ? { include_domains: filters.includeDomains } : {}),
+            ...(filters.excludeDomains ? { exclude_domains: filters.excludeDomains } : {}),
+            ...(filters.afterDate ? { after_date: filters.afterDate } : {}),
+          }
+        : undefined;
     const data = await postJson({
       endpoint: `${PARALLEL_API_ORIGIN}/v1/search`,
       resolveHeaders,
@@ -214,6 +259,7 @@ export async function searchParallel(
         search_queries: [trimmedQuery],
         advanced_settings: {
           max_results: count,
+          ...(sourcePolicy ? { source_policy: sourcePolicy } : {}),
           ...(fetchPolicy ? { fetch_policy: fetchPolicy } : {}),
         },
       },
@@ -253,7 +299,9 @@ export async function searchParallel(
       omittedInvalidUrls,
       results,
       includeSummary: true,
+      summaryLabel: "Excerpts",
       includeContent: false,
+      filters,
       signal: combined,
     });
     const structuredContent: SearchStructuredOutput = {
@@ -268,6 +316,9 @@ export async function searchParallel(
         provider: "parallel",
         mode,
         ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
+        ...(filters.includeDomains ? { includeDomains: filters.includeDomains } : {}),
+        ...(filters.excludeDomains ? { excludeDomains: filters.excludeDomains } : {}),
+        ...(filters.afterDate ? { afterDate: filters.afterDate } : {}),
         query: args.query,
         requestedCount: count,
         resultCount: entries.length,

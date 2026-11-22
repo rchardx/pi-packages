@@ -3,9 +3,11 @@
 Two independent, opt-in Pi tools backed by standalone hosted web-tool endpoints
 (**Exa**, **Parallel**, and **DeepSeek**):
 
-- `web_fetch` returns a page title and Markdown or plain-text content.
+- `web_fetch` returns a page title and Markdown or plain-text content (or
+  targeted excerpts when `objective` is set).
 - `web_search` returns ordered sources alongside provider-supplied summaries
-  (or extractive excerpts/highlights) and optional page content.
+  (or extractive excerpts/highlights), optional page content, and structured
+  domain/date filters.
 
 Neither tool invokes the other, and neither routes through a chat-model
 generation turn or Pi's chat-model provider registry.
@@ -74,8 +76,8 @@ Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
 ```
 
 Each entry under `providers` independently authorizes possible provider charges,
-use of the corresponding environment API key, and query or URL disclosure to
-that provider:
+use of the corresponding environment API key, and disclosure of queries, source
+filters, URLs, or fetch objectives to that provider:
 
 - `exa` accepts optional `mode` (`"lite"`, `"auto"`, `"deep-lite"`, or `"deep"`,
   default `"auto"`; search only) and `maxAgeHours` (integer `-1` to `720`: `0`
@@ -124,6 +126,7 @@ target-site access rules.
 
 ```typescript
 web_fetch({ url: "https://example.com/article" })
+web_fetch({ url: "https://example.com/api-reference", objective: "rate limits and authentication headers" })
 web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
 ```
 
@@ -131,6 +134,11 @@ web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
   Input and normalized URLs are limited to **8,192 characters** (**2,048
   characters** after normalization on **Exa**). Normalization removes fragments
   and may expand non-ASCII paths through escaping.
+- `objective` (optional string, **1–1,000 characters**, non-blank) focuses
+  extraction on relevant excerpts rather than downloading full page content on
+  providers that support targeted extraction (`exa` and `parallel`). Passing
+  `objective` when `deepseek` is active fails explicitly before reading
+  credentials.
 - `max_age_hours` (optional integer `-1` to `720`) overrides the configured
   freshness target on providers that support cache control (`exa` and
   `parallel`). On **Exa**, `0` requests a live fetch (reusing fetches within 60
@@ -140,18 +148,22 @@ web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
   `1`–`720` sets `maxAgeHours * 3600` seconds, while `-1` fails explicitly
   before reading credentials. Passing `max_age_hours` when `deepseek` is active
   also fails explicitly before reading credentials.
-- **Exa** sends `{ "urls": [url], "text": true }` (plus `maxAgeHours` when set)
-  to `POST https://api.exa.ai/contents` and returns a single-line title and
-  extracted Markdown/text. Crawl errors reported in `statuses` (such as
-  restricted sources, HTTP 404, `CRAWL_HTTP_<status>`, or timeouts) and
-  cache-only misses fail with sanitized diagnostics; `max_age_hours` does not
-  change Exa's per-page rate.
+- **Exa** sends `{ "urls": [url], "text": true }` by default, or
+  `{ "urls": [url], "highlights": { "query": objective } }` when `objective` is
+  set (plus `maxAgeHours` when set), to `POST https://api.exa.ai/contents` and
+  returns a single-line title and extracted Markdown/text or joined highlights.
+  Crawl errors reported in `statuses` (such as restricted sources, HTTP 404,
+  `CRAWL_HTTP_<status>`, or timeouts), cache-only misses, and empty objective
+  matches fail with sanitized diagnostics; `max_age_hours` does not change Exa's
+  per-page rate.
 - **Parallel** sends `{ "urls": [url], "advanced_settings": { "full_content": true } }`
-  (plus `advanced_settings.fetch_policy` when `max_age_hours` / `maxAgeHours` is
-  set) to `POST https://api.parallel.ai/v1/extract` and returns a single-line
-  title and extracted Markdown (`full_content`, falling back to `excerpts` if
-  `full_content` is `null`). Entries in `errors` fail with sanitized diagnostics
-  without exposing raw upstream error bodies.
+  by default, or `{ "urls": [url], "objective": objective }` when `objective` is
+  set (plus `advanced_settings.fetch_policy` when `max_age_hours` /
+  `maxAgeHours` is set), to `POST https://api.parallel.ai/v1/extract` and
+  returns a single-line title and extracted Markdown (`full_content` with
+  `excerpts` fallback by default, or joined `excerpts` when `objective` is set).
+  Entries in `errors` and empty objective matches fail with sanitized
+  diagnostics without exposing raw upstream error bodies.
 - **DeepSeek** sends `{ "url": "..." }` to `POST https://api.deepseek.com/v1/tools/fetch`
   and returns a single-line title and provider Markdown, preserving paragraphs.
   HTTP 403 indicates a service security-policy rejection; HTTP 404 indicates no
@@ -159,11 +171,13 @@ web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
 - Empty titles are valid; invalid schemas or whitespace-only content fail.
 - The model-facing `Requested URL` and `details.url` identify the normalized
   **requested URL**, not a verified final redirect destination. Details also
-  contain `provider`, `title`, `truncated`, optional `maxAgeHours`, and optional
+  contain `provider`, `title`, `truncated`, optional `publishedDate`, optional
+  `objective`, optional `excerpts`, optional `maxAgeHours`, and optional
   `fullOutputPath`; no original `contentType` is returned.
 - `web_fetch` declares an `outputSchema` and sets `structuredContent`
-  (`{ provider, url, title, content }`) so Codemode scripts receive the
-  extracted page text directly without parsing the model-facing header.
+  (`{ provider, url, title, publishedDate?, objective?, content }`) so Codemode
+  scripts receive the extracted page text or excerpts directly without parsing
+  the model-facing header.
 
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
 may be incomplete, include navigation/comments, or lose links, code formatting,
@@ -175,9 +189,9 @@ and [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/).
 ## Search
 
 ```typescript
-web_search({ query: "Node.js release notes site:nodejs.org" })
+web_search({ query: "Node.js release notes", include_domains: ["nodejs.org"], after_date: "2025-01-01" })
 web_search({ query: "React Server Components caching", mode: "deep", max_age_hours: 24 })
-web_search({ query: "TypeScript releases site:github.com", count: 5, need_content: true })
+web_search({ query: "TypeScript releases", include_domains: ["github.com/microsoft/TypeScript"], count: 5, need_content: true })
 ```
 
 - `count` defaults to **10**, with an allowed range of **1–50** (public
@@ -188,23 +202,36 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
   optionally override configured defaults per call. Passing a mode belonging to
   another provider, or passing `mode` / `max_age_hours` when `deepseek` is
   active, fails explicitly before reading credentials.
+- `include_domains` and `exclude_domains` (**1–100 entries** each) accept bare
+  domains (`"nodejs.org"`) and domain/path prefixes
+  (`"github.com/nodejs/node"`), plus bare domain extensions (`".edu"`) on
+  **Parallel**. Hostnames are normalized to lowercase and trailing slashes are
+  trimmed, while schemes, wildcards, ports, queries, fragments, IP literals, and
+  identical entries across both lists fail explicitly before reading
+  credentials. Parallel `mode: "turbo"` supports bare domains and bare domain
+  extensions only (rejecting domain/path prefixes before reading credentials).
+  `after_date` accepts a valid `YYYY-MM-DD` calendar date and keeps results
+  published on or after that date. Passing structured filters when `deepseek` is
+  active also fails explicitly before reading credentials.
 - **Exa** sends `query`, `type` (from `mode`, default `"auto"`), `numResults`
-  (`count`), and a single content view in `contents` (`{ "highlights": true }`
-  when `need_content` is `false`, or `{ "text": true }` when `need_content` is
-  `true`, plus `maxAgeHours` when applicable) to `POST https://api.exa.ai/search`
-  rather than downloading both views at once. Exa's base rate for the selected
-  `mode` covers up to 10 results, with per-result charges above 10 returned
-  results; `max_age_hours` does not change request pricing. A per-call
-  `mode: "lite"` override ignores a configured `maxAgeHours` default, while
-  passing `max_age_hours` when the effective `mode` is `"lite"` fails
-  explicitly.
+  (`count`), optional `includeDomains`, `excludeDomains`, and
+  `startPublishedDate` (`<after_date>T00:00:00.000Z`), and a single content view
+  in `contents` (`{ "highlights": true }` when `need_content` is `false`, or
+  `{ "text": true }` when `need_content` is `true`, plus `maxAgeHours` when
+  applicable) to `POST https://api.exa.ai/search` rather than downloading both
+  views at once. Exa's base rate for the selected `mode` covers up to 10
+  results, with per-result charges above 10 returned results; `max_age_hours`
+  does not change request pricing. A per-call `mode: "lite"` override ignores a
+  configured `maxAgeHours` default, while passing `max_age_hours` when the
+  effective `mode` is `"lite"` fails explicitly.
 - **Parallel** sends `mode` (default `"fast"`), `search_queries: [query.trim()]`
   (**1–200 Unicode characters** after trimming), and `advanced_settings`
-  (`max_results: count`, plus `fetch_policy: { max_age_seconds }` when
-  `maxAgeHours >= 0`, using a 600-second minimum for `0` and omitting
-  `fetch_policy` when omitted or `-1` so retrieval stays on Parallel's cached
-  index) to `POST https://api.parallel.ai/v1/search`. Parallel's base rate for
-  the selected `mode` (`turbo`/`fast` vs `basic`/`advanced`) covers up to 10
+  (`max_results: count`, optional `source_policy: { include_domains, exclude_domains, after_date }`,
+  and `fetch_policy: { max_age_seconds }` when `maxAgeHours >= 0`, using a
+  600-second minimum for `0` and omitting `fetch_policy` when omitted or `-1` so
+  retrieval stays on Parallel's cached index) to
+  `POST https://api.parallel.ai/v1/search`. Parallel's base rate for the
+  selected `mode` (`turbo`/`fast` vs `basic`/`advanced`) covers up to 10
   results, with per-result charges above 10. Parallel Search returns Markdown
   `excerpts` as summaries and rejects `need_content: true` explicitly before
   reading credentials (use `web_fetch` for full page text).
@@ -231,15 +258,20 @@ and [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/).
 ## Tool cards in Pi
 
 Cards display lowercase **`web_fetch`** and **`web_search`** headers matching
-the tool names. Calls show the URL or query, with a compact result summary
-(fetched page title for Fetch, plus provider, search mode when applicable,
-result count for Search, and Pi-reported execution time).
+the tool names. Calls show the URL or query (plus dim inline hints when a fetch
+`objective` or search domain/date filters are set), with a compact result
+summary (fetched page title for Fetch, plus provider, `excerpts` when Fetch
+returned targeted or fallback excerpts, search mode when applicable, result
+count for Search, and Pi-reported execution time).
 
 Use Pi's expand-tools shortcut (normally `ctrl+o`) to reveal Markdown content,
-numbered search results, source URLs, compact publication dates, summaries, and
-optional page content. The title and summary keep the same style in both views;
-the shortcut hint follows your keybindings. Errors, omitted-source notices, and
-full-output file paths remain visible on current provider cards when collapsed.
+compact Fetch publication dates and objectives when present, numbered search
+results, source URLs, compact publication dates, provider-accurate body labels
+(`Summary` on DeepSeek, `Highlights` on Exa, `Excerpts` on Parallel, and
+`Page content` when `need_content` is `true`), and optional page content. The
+title and summary keep the same style in both views; the shortcut hint follows
+your keybindings. Errors, omitted-source notices, and full-output file paths
+remain visible on current provider cards when collapsed.
 
 Expansion only reveals the existing bounded preview: it does not fetch again or
 read the full-output file. Use `read` for that file. Presentation metadata in
@@ -270,11 +302,13 @@ saved text on expansion.
   continue with `read`. Directories are 0700 and files 0600 on POSIX. Failed writes
   are cleaned up; successful files remain until removed or OS temporary cleanup.
   Search files contain selected results and omission notices, not discarded entries.
-- The selected provider receives only the query or normalized URL (including
-  path/query) and request source IP, never conversation or repository content.
-  Inputs and returned content enter the Pi conversation; do not include secrets.
-  Results are untrusted data, not instructions, and full output files do not
-  prove complete page retrieval. Browser cookies are never reused.
+- The selected provider receives only the query (plus any domain/date filters
+  and mode/freshness options) or normalized URL (including path/query, plus any
+  `objective` and freshness option) and request source IP, never implicit
+  conversation or repository content. Inputs and returned content enter the Pi
+  conversation; do not include secrets. Results are untrusted data, not
+  instructions, and full output files do not prove complete page retrieval.
+  Browser cookies are never reused.
 
 Cancellation cannot undo provider charges or server-side tool usage.
 

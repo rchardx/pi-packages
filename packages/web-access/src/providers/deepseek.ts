@@ -55,6 +55,9 @@ export interface SearchInput {
   need_content?: boolean;
   mode?: SearchMode;
   max_age_hours?: number;
+  include_domains?: string[];
+  exclude_domains?: string[];
+  after_date?: string;
 }
 
 export async function fetchDeepSeek(
@@ -62,10 +65,13 @@ export async function fetchDeepSeek(
   resolveHeaders: () => Headers = resolveDeepSeekHeaders,
   signal?: AbortSignal,
   request: typeof fetch = globalThis.fetch,
-  options: { maxAgeHours?: number } = {},
+  options: { maxAgeHours?: number; objective?: string } = {},
 ) {
   return withDeadline(LABELS.fetch, FETCH_TIMEOUT_MS, signal, async (combined) => {
     const url = normalizeFetchUrl(input, LABELS.fetch);
+    if (options.objective !== undefined) {
+      throw new Error("DeepSeek Fetch does not support objective; omit objective.");
+    }
     if (options.maxAgeHours !== undefined) {
       throw new Error("DeepSeek Fetch does not support max_age_hours; omit max_age_hours.");
     }
@@ -123,6 +129,15 @@ export async function searchDeepSeek(
     }
     if (args.max_age_hours !== undefined) {
       throw new Error("DeepSeek Search does not support max_age_hours; omit max_age_hours.");
+    }
+    if (
+      args.include_domains !== undefined ||
+      args.exclude_domains !== undefined ||
+      args.after_date !== undefined
+    ) {
+      throw new Error(
+        "DeepSeek Search does not support include_domains, exclude_domains, or after_date; omit structured filters or use query operators such as site:.",
+      );
     }
     // This is a backend constraint, not a universal limit on the public tool schema.
     if (!args.query.trim() || [...args.query].length > DEEPSEEK_MAX_QUERY_CHARACTERS) {

@@ -17,7 +17,7 @@ import {
   singleLine,
 } from "../output.ts";
 import { postJson, type WebToolKind, withDeadline } from "../request.ts";
-import { normalizeFetchUrl, normalizeSourceUrl } from "../url.ts";
+import { normalizeFetchUrl, normalizeSearchFilters, normalizeSourceUrl } from "../url.ts";
 import {
   DEFAULT_SEARCH_COUNT,
   FETCH_TIMEOUT_MS,
@@ -57,7 +57,9 @@ const StatusEntrySchema = Type.Object({
 const ContentItemSchema = Type.Object({
   url: Type.Optional(Type.String()),
   title: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  publishedDate: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   text: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  highlights: Type.Optional(Type.Union([Type.Array(Type.String()), Type.Null()])),
 });
 
 const ContentsResponse = Type.Object({
@@ -80,6 +82,8 @@ const SearchResponse = Type.Object({
 function exaCrawlFailureMessage(
   statuses: Static<typeof ContentsResponse>["statuses"],
   maxAgeHours: number | undefined,
+  hasPage: boolean,
+  hasObjective: boolean,
 ): string {
   const failed = statuses?.find((entry) => entry.status === "error" || Boolean(entry.error));
   const tag = failed?.error?.tag;
@@ -105,8 +109,11 @@ function exaCrawlFailureMessage(
       ? `Exa Fetch could not retrieve the target page (upstream HTTP ${status}).`
       : "Exa Fetch could not retrieve usable page content.";
   }
-  if (maxAgeHours === -1) {
+  if (maxAgeHours === -1 && (!hasObjective || !hasPage)) {
     return "Exa Fetch found no cached content for the requested URL (max_age_hours: -1); pass max_age_hours: 0 (or a positive hour limit) to allow a live fetch.";
+  }
+  if (hasObjective) {
+    return "Exa Fetch found no excerpts matching the requested objective.";
   }
   return "Exa Fetch returned no readable page content.";
 }
@@ -114,19 +121,25 @@ function exaCrawlFailureMessage(
 export async function fetchExa(
   input: string,
   resolveHeaders: () => Headers = resolveExaHeaders,
-  options: ExaFetchConfig = {},
+  options: ExaFetchConfig & { objective?: string } = {},
   signal?: AbortSignal,
   request: typeof fetch = globalThis.fetch,
 ) {
   return withDeadline(LABELS.fetch, FETCH_TIMEOUT_MS, signal, async (combined) => {
     const url = normalizeFetchUrl(input, LABELS.fetch, EXA_MAX_FETCH_URL_CHARACTERS);
+    const objective = options.objective !== undefined ? singleLine(options.objective) : undefined;
+    if (objective === "") {
+      throw new Error(
+        "Exa Fetch objective must not be blank; omit objective for full page content.",
+      );
+    }
     const maxAgeHours = options.maxAgeHours;
     const data = await postJson({
       endpoint: `${EXA_API_ORIGIN}/contents`,
       resolveHeaders,
       body: {
         urls: [url],
-        text: true,
+        ...(objective !== undefined ? { highlights: { query: objective } } : { text: true }),
         ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
       },
       signal: combined,
@@ -138,22 +151,45 @@ export async function fetchExa(
       throw new Error("Exa Fetch returned an invalid page schema.");
     }
     const page = data.results[0];
-    if (!page?.text?.trim()) {
-      throw new Error(exaCrawlFailureMessage(data.statuses, maxAgeHours));
+    const content =
+      objective !== undefined
+        ? (page?.highlights ?? [])
+            .map((part) => part.trim())
+            .filter(Boolean)
+            .join("\n\n")
+        : page?.text?.trim()
+          ? page.text
+          : "";
+    if (!content) {
+      throw new Error(
+        exaCrawlFailureMessage(
+          data.statuses,
+          maxAgeHours,
+          page !== undefined,
+          objective !== undefined,
+        ),
+      );
     }
-    const title = singleLine(page.title ?? "");
+    const title = singleLine(page?.title ?? "");
+    const publishedDate = page?.publishedDate ? singleLine(page.publishedDate) : "";
+    const isExcerpts = objective !== undefined;
     const result = await formatFetchOutput({
       headerLabel: LABELS.fetch,
       url,
       title,
-      content: page.text,
+      ...(publishedDate ? { publishedDate } : {}),
+      content,
+      ...(objective !== undefined ? { objective } : {}),
+      ...(isExcerpts ? { excerpts: true } : {}),
       signal: combined,
     });
     const structuredContent: FetchStructuredOutput = {
       provider: "exa",
       url,
       title,
-      content: page.text,
+      ...(publishedDate ? { publishedDate } : {}),
+      ...(objective !== undefined ? { objective } : {}),
+      content,
     };
     return {
       ...result,
@@ -161,6 +197,9 @@ export async function fetchExa(
         provider: "exa",
         url,
         title,
+        ...(publishedDate ? { publishedDate } : {}),
+        ...(objective !== undefined ? { objective } : {}),
+        ...(isExcerpts ? { excerpts: true } : {}),
         ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
         ...result.details,
       },
@@ -198,6 +237,7 @@ export async function searchExa(
         'Exa Search mode "lite" uses cached content only and cannot be combined with max_age_hours.',
       );
     }
+    const filters = normalizeSearchFilters(args, LABELS.search);
     // Per-call mode="lite" ignores a configured maxAgeHours default so cached fast-path overrides work.
     const maxAgeHours = mode === "lite" ? undefined : (callMaxAge ?? options.maxAgeHours);
     const count = args.count ?? DEFAULT_SEARCH_COUNT;
@@ -213,6 +253,9 @@ export async function searchExa(
         query: args.query,
         type: mode,
         numResults: count,
+        ...(filters.includeDomains ? { includeDomains: filters.includeDomains } : {}),
+        ...(filters.excludeDomains ? { excludeDomains: filters.excludeDomains } : {}),
+        ...(filters.afterDate ? { startPublishedDate: `${filters.afterDate}T00:00:00.000Z` } : {}),
         contents,
       },
       signal: combined,
@@ -253,7 +296,9 @@ export async function searchExa(
       omittedInvalidUrls,
       results,
       includeSummary: !needContent,
+      summaryLabel: "Highlights",
       includeContent: needContent,
+      filters,
       signal: combined,
     });
     const structuredContent: SearchStructuredOutput = {
@@ -268,6 +313,9 @@ export async function searchExa(
         provider: "exa",
         mode,
         ...(maxAgeHours !== undefined ? { maxAgeHours } : {}),
+        ...(filters.includeDomains ? { includeDomains: filters.includeDomains } : {}),
+        ...(filters.excludeDomains ? { excludeDomains: filters.excludeDomains } : {}),
+        ...(filters.afterDate ? { afterDate: filters.afterDate } : {}),
         query: args.query,
         requestedCount: count,
         resultCount: entries.length,

@@ -22,10 +22,12 @@ All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
   through 1–4 multiple-choice questions (2–5 options each, optional
   `multiSelect`, plus automatic `Other…` free-text input) with a custom TUI
   prompt and RPC dialog fallback.
-- **[web-access](web-access/README.md):** provides opt-in hosted `web_fetch` and
-  `web_search` across standalone tool endpoints (**Exa**, **Parallel**, and
-  **DeepSeek**) using dedicated environment API keys, independent of Pi's
-  chat-model registry and without cross-provider fallback.
+- **[web-access](web-access/README.md):** provides opt-in hosted `web_fetch`
+  (full-page or `objective`-focused excerpt extraction) and `web_search` (with
+  structured domain and publication-date filters) across standalone tool
+  endpoints (**Exa**, **Parallel**, and **DeepSeek**) using dedicated
+  environment API keys, independent of Pi's chat-model registry and without
+  cross-provider fallback.
 - **[background](background/README.md):** replaces `bash` with a same-named
   override that supports explicit `background: true` and automatic backgrounding
   after a configurable threshold (default `120s` when no explicit `timeout` is

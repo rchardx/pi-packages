@@ -15,10 +15,12 @@ import {
 } from "./providers/deepseek.ts";
 import { searchExa } from "./providers/exa.ts";
 import { PARALLEL_MAX_QUERY_CHARACTERS, searchParallel } from "./providers/parallel.ts";
+import { MAX_DOMAIN_FILTERS } from "./url.ts";
 
 export {
   DEEPSEEK_MAX_QUERY_CHARACTERS,
   DEFAULT_SEARCH_COUNT,
+  MAX_DOMAIN_FILTERS,
   MAX_RESPONSE_BYTES as MAX_SEARCH_RESPONSE_BYTES,
   PARALLEL_MAX_QUERY_CHARACTERS,
   SEARCH_TIMEOUT_MS,
@@ -33,7 +35,8 @@ export const SearchParameters = Type.Object(
   {
     query: Type.String({
       minLength: 1,
-      description: "Concise search terms with optional operators such as site:nodejs.org",
+      description:
+        "Concise search terms; prefer include_domains, exclude_domains, or after_date over inline operators when supported",
     }),
     count: Type.Optional(
       Type.Integer({
@@ -60,6 +63,29 @@ export const SearchParameters = Type.Object(
         maximum: MAX_MAX_AGE_HOURS,
         description:
           "Optional content freshness target in hours when supported (0 requests a live fetch on Exa or a 600-second freshness window on Parallel, -1 uses cached/indexed content only, 1–720 sets target max cache age)",
+      }),
+    ),
+    include_domains: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        maxItems: MAX_DOMAIN_FILTERS,
+        description:
+          'Optional domain or domain/path allowlist such as ["nodejs.org", "github.com/nodejs/node"] (Exa and Parallel)',
+      }),
+    ),
+    exclude_domains: Type.Optional(
+      Type.Array(Type.String({ minLength: 1 }), {
+        minItems: 1,
+        maxItems: MAX_DOMAIN_FILTERS,
+        description:
+          'Optional domain or domain/path blocklist such as ["reddit.com", "youtube.com/shorts"] (Exa and Parallel)',
+      }),
+    ),
+    after_date: Type.Optional(
+      Type.String({
+        pattern: "^\\d{4}-\\d{2}-\\d{2}$",
+        description:
+          "Optional publication start date in YYYY-MM-DD format; keeps results published on or after this date (Exa and Parallel)",
       }),
     ),
   },
