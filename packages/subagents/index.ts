@@ -6,6 +6,7 @@ import type {
   SessionBoundaryDraft,
   ToolInfo,
 } from "@earendil-works/pi-coding-agent";
+import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parentOptions } from "./src/cli.ts";
 import {
@@ -31,6 +32,7 @@ import {
   formatMessage,
   MESSAGE_TYPE,
   NOTIFICATION_TYPE,
+  oneLine,
   type ResultDetails,
   renderMessageNotification,
   renderNotification,
@@ -60,7 +62,7 @@ import {
   renderWaitCall,
   renderWaitResult,
 } from "./src/render.ts";
-import { Tasks } from "./src/tasks.ts";
+import { type Task, Tasks } from "./src/tasks.ts";
 
 export interface ResolvedRole {
   name: string;
@@ -219,6 +221,37 @@ function assertPersistentHostMode(ctx: ExtensionContext): void {
   }
 }
 
+function completeSubagentArgs(prefix: string, running: readonly Task[]): AutocompleteItem[] | null {
+  if (running.length === 0) return null;
+  const [subcommand, agentId, ...rest] = prefix.trimStart().split(/\s+/u);
+  if (rest.length > 0) return null;
+  if (agentId === undefined) {
+    return "stop".startsWith(subcommand ?? "")
+      ? [
+          {
+            value: "stop ",
+            label: "stop",
+            description: `Stop a running subagent (${running.length} running)`,
+          },
+        ]
+      : null;
+  }
+  if (subcommand !== "stop") return null;
+  const now = Date.now();
+  const items = running
+    .filter((child) => child.id.startsWith(agentId))
+    .map((child) => ({
+      value: `stop ${child.id}`,
+      label: child.id,
+      description: [
+        ...(child.role ? [child.role] : []),
+        formatDuration(now - child.startedAt),
+        oneLine(child.task),
+      ].join(" · "),
+    }));
+  return items.length > 0 ? items : null;
+}
+
 export default function subagents(pi: ExtensionAPI) {
   // Capability defaults to false in a child. This is not a permanent depth policy.
   if (process.env[CHILD_ENV] === "1") return;
@@ -286,9 +319,11 @@ export default function subagents(pi: ExtensionAPI) {
         undefined,
         () => {
           updateStatus();
-          if ((tasks?.runningCount() ?? 0) === 0) mailbox.wake();
         },
         deliverToMain,
+        () => {
+          if ((tasks?.unsettledCount() ?? 0) === 0) mailbox.wake();
+        },
       );
     }
     return tasks;
@@ -334,27 +369,54 @@ export default function subagents(pi: ExtensionAPI) {
   pi.registerMessageRenderer<MessageEnvelope>(MESSAGE_TYPE, renderMessageNotification);
 
   pi.registerCommand("subagents", {
-    description: "Show running subagents with elapsed time and tasks",
-    handler: async (_args, ctx) => {
+    description: "Show running subagents (or stop <id>)",
+    getArgumentCompletions: (prefix) => completeSubagentArgs(prefix, tasks?.runningTasks() ?? []),
+    handler: async (args, ctx) => {
       currentCtx = ctx;
-      const running = tasks?.runningTasks() ?? [];
-      const now = Date.now();
-      const rows = running.map((child) => {
-        const header = child.role
-          ? `${child.id}  ${child.role}  running  ${formatDuration(now - child.startedAt)}`
-          : `${child.id}  running  ${formatDuration(now - child.startedAt)}`;
-        const body = sanitizeDisplayText(bounded(child.task.trim(), 512))
-          .split("\n")
-          .map((line) => `  ${line}`)
-          .join("\n");
-        return `${header}\n${body}`;
-      });
-      ctx.ui.notify(
-        rows.length === 0
-          ? "No subagents running."
-          : `Subagents · ${rows.length} running\n\n${rows.join("\n\n")}`,
-        "info",
-      );
+      const trimmed = args.trim();
+      if (trimmed === "") {
+        const running = tasks?.runningTasks() ?? [];
+        const now = Date.now();
+        const rows = running.map((child) => {
+          const header = child.role
+            ? `${child.id}  ${child.role}  running  ${formatDuration(now - child.startedAt)}`
+            : `${child.id}  running  ${formatDuration(now - child.startedAt)}`;
+          const body = sanitizeDisplayText(bounded(child.task.trim(), 512))
+            .split("\n")
+            .map((line) => `  ${line}`)
+            .join("\n");
+          return `${header}\n${body}`;
+        });
+        ctx.ui.notify(
+          rows.length === 0
+            ? "No subagents running."
+            : `Subagents · ${rows.length} running\n\n${rows.join("\n\n")}`,
+          "info",
+        );
+        return;
+      }
+
+      const [subcommand, id, ...rest] = trimmed.split(/\s+/u);
+      if (subcommand !== "stop") {
+        ctx.ui.notify(
+          `Unknown /subagents subcommand "${oneLine(subcommand ?? "", 64)}". Usage: /subagents [stop <id>]`,
+          "error",
+        );
+        return;
+      }
+      if (!id || rest.length > 0) {
+        ctx.ui.notify("Usage: /subagents stop <id>", "error");
+        return;
+      }
+
+      const stopped = await tasks?.stop(id);
+      if (!stopped) {
+        ctx.ui.notify(`No running subagent ${oneLine(id, 64)} in this session.`, "error");
+        return;
+      }
+      if (sessionClosed) return;
+      const roleTag = stopped.role ? ` (${stopped.role})` : "";
+      ctx.ui.notify(`Stopped subagent ${stopped.id}${roleTag}: ${oneLine(stopped.task)}`, "info");
     },
   });
 
@@ -532,7 +594,7 @@ export default function subagents(pi: ExtensionAPI) {
       const outcome = await mailbox.waitForUpdates(
         timeoutSeconds,
         signal,
-        () => tasks?.runningCount() ?? 0,
+        () => tasks?.unsettledCount() ?? 0,
         all === true,
       );
       return {

@@ -41,6 +41,7 @@ export class Tasks {
   private readonly start: StartChild;
   private readonly onChange: () => void;
   private readonly deliverToMain: (envelope: MessageEnvelope) => DeliveryAck;
+  private readonly onSettled: () => void;
 
   constructor(
     notify: (task: Task, result: Result) => void,
@@ -50,11 +51,13 @@ export class Tasks {
       accepted: false,
       reason: "finished",
     }),
+    onSettled: () => void = () => {},
   ) {
     this.notify = notify;
     this.start = start;
     this.onChange = onChange;
     this.deliverToMain = deliverToMain;
+    this.onSettled = onSettled;
   }
 
   runningTasks(): Task[] {
@@ -66,6 +69,12 @@ export class Tasks {
 
   runningCount(): number {
     return this.runningTasks().length;
+  }
+
+  /** Handed-off children whose process has not yet settled, including those stopping. */
+  unsettledCount(): number {
+    if (this.closed) return 0;
+    return [...this.records.values()].filter((task) => task.handedOff && !task.result).length;
   }
 
   list(now = Date.now()): RunningAgent[] {
@@ -159,10 +168,7 @@ export class Tasks {
     }
     task.execution = execution;
     const abort = () => {
-      const wasRunning = task.handedOff && !task.result && !task.cancelRequested;
-      task.cancelRequested = true;
-      if (wasRunning && !this.closed) this.onChange();
-      void execution.cancel();
+      void this.requestCancel(task, execution);
     };
     signal?.addEventListener("abort", abort, { once: true });
     void execution.done.then((result) => {
@@ -170,7 +176,10 @@ export class Tasks {
       task.result = result;
       delete task.execution;
       if (wasRunning && !this.closed) this.onChange();
-      if (task.handedOff && !this.closed && !task.cancelRequested) this.notify(task, result);
+      if (task.handedOff && !this.closed) {
+        this.onSettled();
+        if (!task.cancelRequested) this.notify(task, result);
+      }
       this.prune();
     });
     try {
@@ -192,6 +201,13 @@ export class Tasks {
     }
   }
 
+  private requestCancel(task: Task, execution: Execution): Promise<Result> {
+    const wasRunning = task.handedOff && !task.result && !task.cancelRequested;
+    task.cancelRequested = true;
+    if (wasRunning && !this.closed) this.onChange();
+    return execution.cancel();
+  }
+
   /** The result carries the ID the task is recorded under, without the caller's padding. */
   async cancel(rawId: string): Promise<Result & { id: string }> {
     const id = rawId.trim();
@@ -199,10 +215,21 @@ export class Tasks {
     if (!task) throw unknownSubagent(id);
     if (task.result) return { id, ...task.result };
     if (!task.execution) throw new Error("Subagent has no running execution.");
-    const wasRunning = task.handedOff && !task.cancelRequested;
-    task.cancelRequested = true;
-    if (wasRunning && !this.closed) this.onChange();
-    return { id, ...(await task.execution.cancel()) };
+    return { id, ...(await this.requestCancel(task, task.execution)) };
+  }
+
+  /**
+   * Stop a running handed-off subagent owned by this session. Claims cancellation
+   * synchronously and returns undefined when unknown, not running, or already stopping.
+   */
+  async stop(id: string): Promise<Task | undefined> {
+    if (this.closed) return undefined;
+    const task = this.records.get(id);
+    if (!task?.handedOff || task.result || task.cancelRequested || !task.execution) {
+      return undefined;
+    }
+    await this.requestCancel(task, task.execution);
+    return task;
   }
 
   async shutdown(): Promise<void> {

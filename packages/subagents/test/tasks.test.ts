@@ -278,3 +278,124 @@ test("messages route between the root session and its children only", async () =
   await assert.rejects(tasks.sendToChild(idA, "late"), /owning session has ended/u);
   assert.throws(() => fromA("late"), /owning session has ended/u);
 });
+
+test("stop claims cancellation synchronously, requires an exact running UUID, and settles once", async () => {
+  function slowCancelFake() {
+    const ready = deferred<void>();
+    const done = deferred<Result>();
+    let cancelCalls = 0;
+    const execution: Execution = {
+      ready: ready.promise,
+      done: done.promise,
+      run() {},
+      async deliver() {
+        return { accepted: true };
+      },
+      cancel() {
+        cancelCalls++;
+        ready.reject(new Error("cancelled"));
+        return done.promise;
+      },
+    };
+    void ready.promise.catch(() => {});
+    return { execution, ready, done, cancelCalls: () => cancelCalls };
+  }
+
+  const startupChild = slowCancelFake();
+  const childA = slowCancelFake();
+  const childB = slowCancelFake();
+  const queue = [startupChild, childA, childB];
+  let spawned = 0;
+  let changes = 0;
+  let settled = 0;
+  const notifications: Result[] = [];
+  const tasks = new Tasks(
+    (_task, result) => notifications.push(result),
+    () => {
+      const next = queue[spawned++];
+      assert.ok(next);
+      return next.execution;
+    },
+    () => {
+      changes++;
+    },
+    undefined,
+    () => {
+      settled++;
+    },
+  );
+
+  // An unhanded startup cannot be stopped via stop().
+  const pendingStartup = tasks.launch({ ...launch, task: "Starting" });
+  const startupId = [...tasks.records.keys()][0];
+  assert.ok(startupId);
+  assert.equal(await tasks.stop(startupId), undefined);
+  assert.equal(startupChild.cancelCalls(), 0);
+  startupChild.ready.resolve();
+  assert.equal(await pendingStartup, startupId);
+
+  childA.ready.resolve();
+  childB.ready.resolve();
+  const idA = await tasks.launch({ ...launch, role: "explorer", task: "Inspect target" });
+  const idB = await tasks.launch({ ...launch, task: "Keep running" });
+  assert.equal(tasks.runningCount(), 3);
+  assert.equal(tasks.unsettledCount(), 3);
+  assert.equal(changes, 3);
+
+  const other = new Tasks(() => {});
+  for (const invalid of ["unknown", idA.slice(0, 8), "explorer", ` ${idA} `]) {
+    assert.equal(await tasks.stop(invalid), undefined);
+  }
+  assert.equal(await other.stop(idA), undefined);
+  assert.equal(changes, 3);
+  assert.equal(settled, 0);
+
+  // Stopping claims cancellation synchronously while awaiting OS teardown.
+  const stoppingA = tasks.stop(idA);
+  assert.equal(tasks.runningCount(), 2);
+  assert.equal(tasks.unsettledCount(), 3, "unsettledCount includes stopping children");
+  assert.equal(changes, 4);
+  assert.equal(settled, 0);
+  assert.deepEqual(
+    tasks.list().map((entry) => entry.id),
+    [startupId, idB],
+  );
+  assert.equal(await tasks.stop(idA), undefined, "concurrent stop on stopping ID fails cleanly");
+  assert.equal(changes, 4, "rejected concurrent stop emits no extra status transition");
+  await assert.rejects(tasks.sendToChild(idA, "late"), /no longer running/u);
+
+  const cancelledResult: Result = {
+    status: "cancelled",
+    report: "Cancelled; existing filesystem changes were not reverted.",
+    requests: 1,
+    tokens: 10,
+  };
+  childA.done.resolve(cancelledResult);
+  const stoppedA = await stoppingA;
+  assert.equal(stoppedA?.id, idA);
+  assert.equal(stoppedA?.role, "explorer");
+  assert.equal(changes, 4, "done settlement after stop emits no duplicate running-count change");
+  assert.equal(settled, 1);
+  assert.equal(tasks.unsettledCount(), 2);
+  assert.deepEqual(notifications, []);
+  await assert.rejects(
+    tasks.sendToChild(idA, "after-stop"),
+    /already finished \(cancelled\) and cannot receive messages/u,
+  );
+  assert.deepEqual(await tasks.cancel(idA), { id: idA, ...cancelledResult });
+  assert.equal(await tasks.stop(idA), undefined, "already-cancelled ID cannot be stopped again");
+
+  // Sibling children remain untouched and still deliver their completion results.
+  childB.done.resolve(completed);
+  await setImmediate();
+  assert.deepEqual(notifications, [completed]);
+  assert.equal(tasks.runningCount(), 1);
+  assert.equal(tasks.unsettledCount(), 1);
+  assert.equal(await tasks.stop(idB), undefined, "already-completed ID cannot be stopped");
+
+  const shuttingDown = tasks.shutdown();
+  startupChild.done.resolve(cancelledResult);
+  await shuttingDown;
+  assert.equal(await tasks.stop(startupId), undefined);
+  assert.equal(tasks.unsettledCount(), 0);
+});
