@@ -689,6 +689,7 @@ async function parentSession(
   discover = false,
   extensions: string[] = [],
   tools: string[] = [],
+  mode: "tui" | "rpc" = "rpc",
 ) {
   let api: ExtensionAPI | undefined;
   const settingsManager = SettingsManager.inMemory();
@@ -732,14 +733,16 @@ async function parentSession(
     session.dispose();
   });
   const notices: string[] = [];
+  const notifications: { message: string; type: "info" | "warning" | "error" | undefined }[] = [];
   const statuses = new Map<string, string>();
   const statusUpdates: { key: string; text: string | undefined }[] = [];
   await session.bindExtensions({
-    mode: "rpc",
+    mode,
     uiContext: {
       ...session.extensionRunner.createContext().ui,
-      notify: (message) => {
+      notify: (message, type) => {
         notices.push(message);
+        notifications.push({ message, type });
       },
       setStatus: (key, text) => {
         statusUpdates.push({ key, text });
@@ -753,7 +756,7 @@ async function parentSession(
   assert.ok(tool);
   assert.ok(cancelTool);
   assert.ok(api);
-  return { session, tool, cancelTool, api, notices, statuses, statusUpdates };
+  return { session, tool, cancelTool, api, notices, notifications, statuses, statusUpdates };
 }
 
 type Session = Awaited<ReturnType<typeof createAgentSession>>["session"];
@@ -1479,6 +1482,17 @@ async function communicationFixture(t: TestContext) {
           { id: "wait-main", name: "subagent_wait", args: { timeoutSeconds: 10 } },
         ]);
       }
+      return;
+    }
+
+    if (transcript.includes("Delegated task:\\n\\nSLEEP_AND_WRITE_PID")) {
+      respondToolCalls([
+        {
+          id: "sleep-pid",
+          name: "bash",
+          args: { command: "echo $$ > shell.pid.tmp && mv shell.pid.tmp shell.pid && sleep 60" },
+        },
+      ]);
       return;
     }
 
@@ -2750,4 +2764,445 @@ test("subagent tools declare outputSchema and return matching structuredContent"
   assert.equal(parsedPayload.listedCount, 1);
   assert.equal(typeof parsedPayload.sentTo, "string");
   assert.equal(parsedPayload.cancelledStatus, "cancelled");
+});
+
+for (const mode of ["tui", "rpc"] as const) {
+  test(`/subagents stop <id> stops only the target child, reaps its process group, and validates inputs in ${mode}`, {
+    timeout: 45_000,
+  }, async (t) => {
+    const { dir, holdChild, releaseChild, mainRequests } = await communicationFixture(t);
+    const { session, tool, cancelTool, notifications, statuses } = await parentSession(
+      t,
+      dir,
+      false,
+      [],
+      ["grep", "find", "ls", "subagent_list", "subagent_send", "subagent_wait"],
+      mode,
+    );
+    const sendTool = session.agent.state.tools.find((entry) => entry.name === "subagent_send");
+    assert.ok(sendTool);
+    const updates = deliveredUpdates(session);
+
+    holdChild();
+    const first = await tool.execute("sleep-child", { task: "SLEEP_AND_WRITE_PID" });
+    const second = await tool.execute("sibling-child", {
+      task: "HELD_THEN_DONE",
+      role: "explorer",
+    });
+    const firstId = (first.details as { id?: string }).id;
+    const secondId = (second.details as { id?: string }).id;
+    assert.ok(firstId && secondId);
+    assert.equal(statuses.get("subagents"), "subagents: 2 running");
+
+    let pid: number | undefined;
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      try {
+        pid = Number(await readFile(join(dir, "shell.pid"), "utf8"));
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    assert.ok(pid);
+    process.kill(pid, 0);
+
+    const initialMessages = [...session.messages];
+    const invalidInputs = [
+      [
+        "/subagents list",
+        /^Unknown \/subagents subcommand "list"\. Usage: \/subagents \[stop <id>\]$/u,
+      ],
+      ["/subagents stop", /^Usage: \/subagents stop <id>$/u],
+      [`/subagents stop ${firstId} extra`, /^Usage: \/subagents stop <id>$/u],
+      ["/subagents stop not-a-uuid", /^No running subagent not-a-uuid in this session\.$/u],
+      [
+        `/subagents stop ${firstId.slice(0, 8)}`,
+        new RegExp(`^No running subagent ${firstId.slice(0, 8)} in this session\\.$`, "u"),
+      ],
+      ["/subagents stop explorer", /^No running subagent explorer in this session\.$/u],
+    ] as const;
+
+    for (const [input, expected] of invalidInputs) {
+      await session.prompt(input);
+      const latest = notifications.at(-1);
+      assert.equal(latest?.type, "error", input);
+      assert.match(latest?.message ?? "", expected, input);
+    }
+    assert.equal(statuses.get("subagents"), "subagents: 2 running");
+    assert.deepEqual(session.messages, initialMessages);
+    assert.equal(mainRequests(), 0);
+    process.kill(pid, 0);
+
+    // Stop only the first child while the parent session is idle.
+    await session.prompt(`/subagents   stop   ${firstId}  `);
+    assert.equal(statuses.get("subagents"), "subagents: 1 running");
+    assert.equal(notifications.at(-1)?.type, "info");
+    assert.equal(notifications.at(-1)?.message, `Stopped subagent ${firstId}: SLEEP_AND_WRITE_PID`);
+    assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+    assert.deepEqual(session.messages, initialMessages);
+    assert.equal(mainRequests(), 0, "user-stopped child must not wake an idle parent");
+    assert.equal(updates.seen.length, 0);
+
+    await assert.rejects(
+      sendTool.execute("send-stopped", { to: firstId, message: "Too late." }),
+      /already finished \(cancelled\) and cannot receive messages/u,
+    );
+    const lookupCancelled = await cancelTool.execute("lookup-stopped", { id: firstId });
+    assert.ok(record(lookupCancelled.details));
+    assert.equal(lookupCancelled.details.status, "cancelled");
+
+    await session.prompt(`/subagents stop ${firstId}`);
+    assert.equal(notifications.at(-1)?.type, "error");
+    assert.equal(notifications.at(-1)?.message, `No running subagent ${firstId} in this session.`);
+
+    // The sibling continues unaffected and still delivers its subagent:result notification.
+    releaseChild();
+    const siblingResult = await updates.next("subagent:result", 0);
+    await session.waitForIdle();
+    assert.equal(updates.seen.length, 1);
+    assert.ok(record(siblingResult.details));
+    assert.equal(siblingResult.details.id, secondId);
+    assert.equal(siblingResult.details.status, "completed");
+    assert.equal(statuses.has("subagents"), false);
+
+    await session.prompt(`/subagents stop ${secondId}`);
+    assert.equal(notifications.at(-1)?.type, "error");
+    assert.equal(notifications.at(-1)?.message, `No running subagent ${secondId} in this session.`);
+  });
+}
+
+test("/subagents stop <id> wakes subagent_wait cleanly and settles once when racing completion", {
+  timeout: 45_000,
+}, async (t) => {
+  const { dir, releaseMain, holdChild, releaseChild } = await communicationFixture(t);
+  const { session, tool, cancelTool, notifications, statuses, statusUpdates } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["grep", "find", "ls", "subagent_list", "subagent_send", "subagent_wait"],
+    "tui",
+  );
+  const waitTool = session.agent.state.tools.find((entry) => entry.name === "subagent_wait");
+  assert.ok(waitTool);
+  const updates = deliveredUpdates(session);
+
+  // 1. Stopping the last running child resolves an active subagent_wait without enqueuing subagent:result.
+  const busy = session.prompt("HOLD_MAIN");
+  holdChild();
+  const started = await tool.execute("wait-target", {
+    task: "HELD_THEN_DONE",
+    role: "explorer",
+  });
+  const targetId = (started.details as { id?: string }).id;
+  assert.ok(targetId);
+  const waiting = waitTool.execute("await-last", { all: true, timeoutSeconds: 30 });
+  await session.prompt(`/subagents stop ${targetId}`);
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.equal(
+    notifications.at(-1)?.message,
+    `Stopped subagent ${targetId} (explorer): HELD_THEN_DONE`,
+  );
+  const waitResult = await waiting;
+  assert.ok(record(waitResult.details));
+  assert.equal(waitResult.details.outcome, "idle");
+  releaseChild();
+  releaseMain();
+  await busy;
+  await session.waitForIdle();
+  assert.equal(updates.seen.length, 0);
+  assert.equal(statuses.has("subagents"), false);
+
+  // 2. Racing natural completion against /subagents stop <id> settles once without drift or duplicate delivery.
+  holdChild();
+  const raced = await tool.execute("race-target", { task: "HELD_THEN_DONE" });
+  const racedId = (raced.details as { id?: string }).id;
+  assert.ok(racedId);
+  const statusFrom = statusUpdates.length;
+  const noticesFrom = notifications.length;
+  const updatesFrom = updates.seen.length;
+
+  releaseChild();
+  await session.prompt(`/subagents stop ${racedId}`);
+  const lookup = await cancelTool.execute("race-check", { id: racedId });
+  await session.waitForIdle();
+
+  assert.equal(statuses.has("subagents"), false);
+  assert.deepEqual(statusUpdates.slice(statusFrom), [{ key: "subagents", text: undefined }]);
+  const raceNotices = notifications.slice(noticesFrom);
+  assert.equal(raceNotices.length, 1);
+  const raceUpdates = updates.seen.slice(updatesFrom);
+  assert.ok(record(lookup.details));
+  if (raceNotices[0]?.type === "info") {
+    assert.equal(raceUpdates.length, 0);
+    assert.equal(lookup.details.status, "cancelled");
+  } else {
+    assert.equal(raceNotices[0]?.type, "error");
+    assert.equal(raceUpdates.length, 1);
+    assert.equal(raceUpdates[0]?.customType, "subagent:result");
+    assert.equal(lookup.details.status, "completed");
+  }
+});
+
+test("/subagents stop <id> rejects a child already stopping on timeout without swallowing its report", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, holdChild, releaseChild } = await communicationFixture(t);
+  const sigtermFlag = join(dir, "child-sigterm.flag");
+  const releaseFlag = join(dir, "child-release.flag");
+  const spawnDescendantFlag = join(dir, "spawn-descendant.flag");
+  const inheritDescendantFlag = join(dir, "inherit-descendant.flag");
+  const leaderPidFile = join(dir, "leader.pid");
+  const descendantPidFile = join(dir, "descendant.pid");
+  const inheritedPidFile = join(dir, "inherited.pid");
+  const holdShutdownExt = join(dir, "hold-shutdown.mjs");
+  await writeFile(
+    holdShutdownExt,
+    `import { spawn } from "node:child_process";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
+export default function (pi) {
+  pi.registerTool({
+    name: "hold_shutdown",
+    label: "Hold",
+    description: "Fixture",
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+  });
+  pi.on("session_start", () => {
+    if (process.env.PI_SUBAGENTS_CHILD !== "1") return;
+    if (existsSync(${JSON.stringify(inheritDescendantFlag)})) {
+      writeFileSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, String(process.pid));
+      renameSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, ${JSON.stringify(leaderPidFile)});
+      spawn(
+        process.execPath,
+        [
+          "-e",
+          'const fs = require("node:fs"); process.on("SIGTERM", () => { setTimeout(() => process.exit(0), 5000); }); fs.writeFileSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, ${JSON.stringify(inheritedPidFile)}); setInterval(() => {}, 1000);',
+        ],
+        { stdio: "inherit" },
+      ).unref();
+      return;
+    }
+    if (!existsSync(${JSON.stringify(spawnDescendantFlag)})) return;
+    spawn(
+      process.execPath,
+      [
+        "-e",
+        'const fs = require("node:fs"); process.on("SIGTERM", () => { setTimeout(() => process.exit(0), 5000); }); fs.writeFileSync(${JSON.stringify(`${descendantPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${descendantPidFile}.tmp`)}, ${JSON.stringify(descendantPidFile)}); setInterval(() => {}, 1000);',
+      ],
+      { stdio: "ignore" },
+    ).unref();
+    process.on("SIGTERM", () => process.exit(0));
+  });
+  pi.on("session_shutdown", async () => {
+    if (
+      process.env.PI_SUBAGENTS_CHILD !== "1" ||
+      existsSync(${JSON.stringify(spawnDescendantFlag)}) ||
+      existsSync(${JSON.stringify(inheritDescendantFlag)})
+    ) {
+      return;
+    }
+    writeFileSync(${JSON.stringify(sigtermFlag)}, "");
+    const until = Date.now() + 1500;
+    while (!existsSync(${JSON.stringify(releaseFlag)}) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  });
+}
+`,
+  );
+  await writeFile(join(dir, "subagents.json"), JSON.stringify({ deadlineSeconds: 1.5 }));
+
+  const { session, tool, cancelTool, notifications, statuses, statusUpdates } = await parentSession(
+    t,
+    dir,
+    false,
+    [holdShutdownExt],
+    ["hold_shutdown"],
+    "tui",
+  );
+  const updates = deliveredUpdates(session);
+
+  holdChild();
+  const started = await tool.execute("timeout-target", { task: "HELD_THEN_DONE" });
+  const childId = (started.details as { id?: string }).id;
+  assert.ok(childId);
+  const statusFrom = statusUpdates.length;
+
+  const waitDeadline = Date.now() + 10_000;
+  while (Date.now() < waitDeadline) {
+    try {
+      await readFile(sigtermFlag);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  await readFile(sigtermFlag);
+
+  await session.prompt(`/subagents stop ${childId}`);
+  assert.equal(notifications.at(-1)?.type, "error");
+  assert.equal(notifications.at(-1)?.message, `Subagent ${childId} is already stopping.`);
+
+  await writeFile(releaseFlag, "");
+  const timedOutUpdate = await updates.next("subagent:result", 0);
+  await session.waitForIdle();
+  releaseChild();
+
+  assert.ok(record(timedOutUpdate.details));
+  assert.equal(timedOutUpdate.details.id, childId);
+  assert.equal(timedOutUpdate.details.status, "timed_out");
+  assert.equal(statuses.has("subagents"), false);
+  assert.deepEqual(statusUpdates.slice(statusFrom), [{ key: "subagents", text: undefined }]);
+  const lookup = await cancelTool.execute("lookup-timed-out", { id: childId });
+  assert.ok(record(lookup.details));
+  assert.equal(lookup.details.status, "timed_out");
+
+  // Even if the direct child exits immediately on SIGTERM, /subagents stop waits until same-group descendants are reaped.
+  await writeFile(join(dir, "subagents.json"), JSON.stringify({ deadlineSeconds: 1800 }));
+  await writeFile(spawnDescendantFlag, "");
+  holdChild();
+  const groupRun = await tool.execute("group-target", { task: "HELD_THEN_DONE" });
+  const groupId = (groupRun.details as { id?: string }).id;
+  assert.ok(groupId);
+  let descendantPid: number | undefined;
+  const pidDeadline = Date.now() + 10_000;
+  while (Date.now() < pidDeadline) {
+    try {
+      descendantPid = Number(await readFile(descendantPidFile, "utf8"));
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  assert.ok(descendantPid);
+  process.kill(descendantPid, 0);
+
+  await session.prompt(`/subagents stop ${groupId}`);
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.equal(notifications.at(-1)?.message, `Stopped subagent ${groupId}: HELD_THEN_DONE`);
+  assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
+  releaseChild();
+
+  // If a child finishes and exits 0 while a stdio-inheriting descendant holds pipes open,
+  // /subagents stop reports not_found instead of overwriting completed with cancelled.
+  await rm(spawnDescendantFlag, { force: true });
+  await writeFile(inheritDescendantFlag, "");
+  holdChild();
+  const completedWithDescendant = await tool.execute("inherit-target", { task: "HELD_THEN_DONE" });
+  const completedId = (completedWithDescendant.details as { id?: string }).id;
+  assert.ok(completedId);
+  let leaderPid: number | undefined;
+  let inheritedPid: number | undefined;
+  const inheritDeadline = Date.now() + 10_000;
+  while (Date.now() < inheritDeadline) {
+    try {
+      leaderPid = Number(await readFile(leaderPidFile, "utf8"));
+      inheritedPid = Number(await readFile(inheritedPidFile, "utf8"));
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  assert.ok(leaderPid && inheritedPid);
+  const updatesBeforeCompleted = updates.seen.length;
+  releaseChild();
+  const leaderExitDeadline = Date.now() + 10_000;
+  while (Date.now() < leaderExitDeadline) {
+    try {
+      process.kill(leaderPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    } catch (error) {
+      assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
+      break;
+    }
+  }
+  assert.throws(() => process.kill(leaderPid, 0), { code: "ESRCH" });
+  process.kill(inheritedPid, 0);
+
+  await session.prompt(`/subagents stop ${completedId}`);
+  assert.equal(notifications.at(-1)?.type, "error");
+  assert.equal(
+    notifications.at(-1)?.message,
+    `No running subagent ${completedId} in this session.`,
+  );
+
+  const completedUpdate = await updates.next("subagent:result", updatesBeforeCompleted);
+  await session.waitForIdle();
+  assert.ok(record(completedUpdate.details));
+  assert.equal(completedUpdate.details.id, completedId);
+  assert.equal(completedUpdate.details.status, "completed");
+  assert.throws(() => process.kill(inheritedPid, 0), { code: "ESRCH" });
+});
+
+test("/subagents provides case-sensitive two-stage argument completions", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, holdChild, releaseChild } = await communicationFixture(t);
+  const { session, tool } = await parentSession(t, dir, false, [], ["grep", "find", "ls"], "tui");
+  const command = session.extensionRunner.getCommand("subagents");
+  assert.ok(command?.getArgumentCompletions);
+  assert.equal(command.description, "Show running subagents (or stop <id>)");
+
+  assert.equal(await command.getArgumentCompletions(""), null);
+  assert.equal(await command.getArgumentCompletions("s"), null);
+  assert.equal(await command.getArgumentCompletions("stop "), null);
+
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+
+  holdChild();
+  const first = await tool.execute("ac-1", {
+    task: "HELD_THEN_DONE\nwith second line",
+    role: "explorer",
+  });
+  const second = await tool.execute("ac-2", { task: "HELD_THEN_DONE" });
+  const firstId = (first.details as { id?: string }).id;
+  const secondId = (second.details as { id?: string }).id;
+  assert.ok(firstId && secondId);
+  now += 83_000;
+
+  assert.deepEqual(await command.getArgumentCompletions(""), [
+    { value: "stop ", label: "stop", description: "Stop a running subagent (2 running)" },
+  ]);
+  assert.deepEqual(await command.getArgumentCompletions("s"), [
+    { value: "stop ", label: "stop", description: "Stop a running subagent (2 running)" },
+  ]);
+  assert.equal(await command.getArgumentCompletions("S"), null);
+  assert.equal(await command.getArgumentCompletions("cancel"), null);
+
+  const stage2 = await command.getArgumentCompletions("stop ");
+  assert.deepEqual(stage2, [
+    {
+      value: `stop ${firstId}`,
+      label: firstId,
+      description: "explorer · 1m23s · HELD_THEN_DONE ⏎ with second line",
+    },
+    {
+      value: `stop ${secondId}`,
+      label: secondId,
+      description: "1m23s · HELD_THEN_DONE",
+    },
+  ]);
+
+  assert.deepEqual(
+    (await command.getArgumentCompletions(`stop ${firstId.slice(0, 8)}`))?.map(
+      (item) => item.label,
+    ),
+    [firstId],
+  );
+  assert.equal(await command.getArgumentCompletions("stop A"), null);
+  assert.equal(await command.getArgumentCompletions("stop -"), null);
+  assert.equal(await command.getArgumentCompletions(`stop ${firstId} extra`), null);
+
+  await session.prompt(`/subagents stop ${firstId}`);
+  assert.deepEqual(
+    (await command.getArgumentCompletions("stop "))?.map((item) => item.label),
+    [secondId],
+  );
+
+  releaseChild();
+  await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+  assert.equal(await command.getArgumentCompletions("s"), null);
 });

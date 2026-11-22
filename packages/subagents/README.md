@@ -57,7 +57,7 @@ queued messages and completion reports are delivered at turn boundaries: they
 remain directly declared to the model even in `codemode.mode: "only"` and are
 not callable from scripts.
 
-### Inspect running subagents
+### Inspect and stop running subagents
 
 While children are running, Pi's status area shows `subagents: N running`. The
 count updates when a child finishes startup, completes, fails, is cancelled, or
@@ -82,6 +82,21 @@ With no running children it displays `No subagents running.` Tool calls
 render compact lowercase summaries when collapsed; expanding reveals full IDs,
 metadata, and sanitized Markdown task, message, or report bodies without
 changing model-facing messages.
+
+To stop one running child owned by the current session, enter:
+
+```text
+/subagents stop 550e8400-e29b-41d4-a716-446655440000
+```
+
+In interactive TUI mode, argument completion suggests `stop` and running full
+UUIDs with optional role, elapsed duration, and a single-line task preview.
+Stopping a child terminates its process group, records `cancelled` status in
+this session, updates the `subagents` status indicator, and confirms the stop
+without emitting `subagent:result` or waking an idle parent (an active
+`subagent_wait` resolves cleanly once no children remain running or stopping).
+Missing arguments or unknown, stopping, or finished IDs report an error
+notification and leave running children untouched.
 
 ### Live session communication
 
@@ -262,16 +277,20 @@ Print and JSON parents are rejected. A child itself uses headless JSON mode so
 background-shell extensions do not accidentally return before their commands finish.
 
 - After successful launch, parent turn completion or Esc does not stop the child.
-- `subagent_cancel` stops the child and waits for cleanup. It accepts only IDs
-  owned by the current root session and does not resume finished tasks.
+- `subagent_cancel` and `/subagents stop <id>` stop a child owned by the current
+  root session and wait for cleanup; `/subagents stop <id>` requires a currently
+  running UUID, whereas `subagent_cancel` also returns retained terminal records.
+  Neither resumes finished tasks or reverts file changes.
 - Quit, new session, resume, fork, and reload cancel the root session's children.
 - Children detect parent IPC disconnection and request termination; they are not
   independent services intended to survive the parent.
-- Termination sends SIGTERM and allows Pi to clean up tools/extensions, then sends
-  SIGKILL to the process group after two seconds. Extensions that hang, detach
-  their own processes, or ignore the host lifecycle are not fully containable.
-- Explicit cancellation reports through the cancel tool without an additional
-  completion wake-up. Shutdown cancellation never wakes a replacement session.
+- Termination (and post-exit process-group cleanup if a child leaves same-group
+  descendants running) sends SIGTERM, then sends SIGKILL to the process group
+  after two seconds. Extensions that hang, detach their own processes, or ignore
+  the host lifecycle are not fully containable.
+- Explicit cancellation (`subagent_cancel` or `/subagents stop <id>`) never
+  emits a `subagent:result` wake-up. Shutdown cancellation never wakes a
+  replacement session.
 
 | Limit | Default |
 | --- | --- |

@@ -42,26 +42,26 @@ export class Mailbox extends Waitable {
   }
 
   /**
-   * Wait for an update, or with `all` until no subagent is running. Completion results
-   * then stay queued; a message from a subagent still ends the wait, because its sender
-   * may be waiting on an answer.
+   * Wait for an update, or with `all` until no subagent remains unsettled. Completion
+   * results then stay queued; a message from a subagent still ends the wait, because its
+   * sender may be waiting on an answer.
    */
   async waitForUpdates(
     timeoutSeconds: number | undefined,
     signal: AbortSignal | undefined,
-    running: () => number,
+    unsettled: () => number,
     all: boolean,
   ): Promise<WaitOutcome> {
     const result = await this.wait(
       timeoutSeconds,
       signal,
-      () => running() > 0,
+      () => unsettled() > 0,
       all ? () => this.updates.some((entry) => entry.bounded) : undefined,
     );
-    // The last subagent's result is queued just after the wake for nothing running.
+    // The last subagent's result is queued just after the wake for nothing unsettled.
     if (result.outcome === "idle" && this.hasQueued())
       return { outcome: "woke", waitedMs: result.waitedMs };
-    return all && result.outcome === "timeout" ? { ...result, running: running() } : result;
+    return all && result.outcome === "timeout" ? { ...result, running: unsettled() } : result;
   }
 
   take(): Update | undefined {

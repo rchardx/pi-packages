@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type TestContext, test } from "node:test";
 import type { Launch } from "../src/protocol.ts";
 import { startChild } from "../src/runner.ts";
 
@@ -21,6 +24,18 @@ function script(body: string) {
     "-e",
     `process.stdin.resume(); process.send({type:'hello'}); process.on('message',m=>{if(m.type==='configure'){${body}}});`,
   ];
+}
+
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      if (Date.now() >= deadline) assert.fail(`Timed out waiting for ${path}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
 }
 
 test("IPC handshake starts only after handoff and drains large stdout", async () => {
@@ -83,7 +98,10 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
   await execution.ready;
   execution.run();
   await afterProgress;
-  const cancelled = await execution.cancel();
+  const pendingCancel = execution.tryCancel();
+  assert.equal(pendingCancel.accepted, true);
+  assert.deepEqual(execution.tryCancel(), { accepted: false, reason: "stopping" });
+  const cancelled = await pendingCancel.done;
   assert.deepEqual(cancelled, {
     status: "cancelled",
     report:
@@ -91,27 +109,41 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
     requests: 2,
     tokens: 45,
   });
+  assert.deepEqual(execution.tryCancel(), { accepted: false, reason: "finished" });
   assert.deepEqual(await execution.cancel(), cancelled);
 });
 
-test("deadline timeout preserves child progress and SIGTERM flush", async () => {
+test("deadline timeout preserves child progress, rejects tryCancel during SIGTERM flush, and keeps timed_out", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-runner-timeout-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const sigtermFlag = join(dir, "sigterm.flag");
+  const releaseFlag = join(dir, "release.flag");
   const timedOut = startChild(launch, {
     args: script(
-      `process.send({type:'ready'});
+      `const fs = require('node:fs');
+       process.send({type:'ready'});
        process.on('SIGTERM', () => {
-         process.send(
-           {type:'progress', progress:{requests:3, tokens:90, partial:'Last assistant message:\\nHalfway done.'}},
-           () => process.send({type:'result', result:{status:'cancelled', report:'aborted', requests:3, tokens:95}}, () => process.exit(143))
-         );
+         fs.writeFileSync(${JSON.stringify(sigtermFlag)}, '');
+         const poll = setInterval(() => {
+           if (!fs.existsSync(${JSON.stringify(releaseFlag)})) return;
+           clearInterval(poll);
+           process.send(
+             {type:'progress', progress:{requests:3, tokens:90, partial:'Last assistant message:\\nHalfway done.'}},
+             () => process.send({type:'result', result:{status:'cancelled', report:'aborted', requests:3, tokens:95}}, () => process.exit(143))
+           );
+         }, 10);
        });
        setInterval(()=>{},1000);`,
     ),
     // The deadline counts from spawn; leave room for a slow child to report ready first.
     deadlineMs: 1_000,
-    graceMs: 500,
+    graceMs: 2_000,
   });
   await timedOut.ready;
   timedOut.run();
+  await waitForFile(sigtermFlag);
+  assert.deepEqual(timedOut.tryCancel(), { accepted: false, reason: "stopping" });
+  await writeFile(releaseFlag, "");
   assert.deepEqual(await timedOut.done, {
     status: "timed_out",
     report: "Child execution deadline exceeded.\n\nLast assistant message:\nHalfway done.",
@@ -119,6 +151,176 @@ test("deadline timeout preserves child progress and SIGTERM flush", async () => 
     tokens: 95,
   });
 });
+
+if (process.platform !== "win32") {
+  test("process-group cleanup reaps descendants, locks exit before close, and ignores EPERM", async (t: TestContext) => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-runner-pgroup-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+
+    // 1. Descendant ignores SIGTERM for 5s while direct child exits immediately: cancel escalates at graceMs.
+    const stubbornPidFile = join(dir, "stubborn.pid");
+    const stubborn = startChild(launch, {
+      args: script(
+        `const { spawn } = require('node:child_process');
+         spawn(process.execPath, [
+           '-e',
+           'const fs=require("node:fs"); process.on("SIGTERM",()=>{ setTimeout(()=>process.exit(0),5000); }); fs.writeFileSync(${JSON.stringify(`${stubbornPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${stubbornPidFile}.tmp`)}, ${JSON.stringify(stubbornPidFile)}); setInterval(()=>{},1000);'
+         ], { stdio: 'ignore' });
+         process.on('SIGTERM', () => process.exit(0));
+         process.send({type:'ready'});
+         setInterval(()=>{},1000);`,
+      ),
+      graceMs: 150,
+    });
+    t.after(() => stubborn.cancel());
+    await stubborn.ready;
+    stubborn.run();
+    const stubbornPid = Number(await waitForFile(stubbornPidFile));
+    assert.ok(stubbornPid > 0);
+    process.kill(stubbornPid, 0);
+
+    const startedAt = performance.now();
+    const stubbornClaim = stubborn.tryCancel();
+    assert.equal(stubbornClaim.accepted, true);
+    const cancelled = await stubbornClaim.done;
+    assert.equal(cancelled.status, "cancelled");
+    assert.ok(performance.now() - startedAt >= 120);
+    assert.throws(() => process.kill(stubbornPid, 0), { code: "ESRCH" });
+
+    // 2. Descendant exits cleanly on SIGTERM after direct child exits: resolves before graceMs without SIGKILL wait.
+    const gracefulPidFile = join(dir, "graceful.pid");
+    const graceful = startChild(launch, {
+      args: script(
+        `const { spawn } = require('node:child_process');
+         spawn(process.execPath, [
+           '-e',
+           'const fs=require("node:fs"); process.on("SIGTERM",()=>{ setTimeout(()=>process.exit(0),60); }); fs.writeFileSync(${JSON.stringify(`${gracefulPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${gracefulPidFile}.tmp`)}, ${JSON.stringify(gracefulPidFile)}); setInterval(()=>{},1000);'
+         ], { stdio: 'ignore' });
+         process.on('SIGTERM', () => process.exit(0));
+         process.send({type:'ready'});
+         setInterval(()=>{},1000);`,
+      ),
+      graceMs: 2_000,
+    });
+    t.after(() => graceful.cancel());
+    await graceful.ready;
+    graceful.run();
+    const gracefulPid = Number(await waitForFile(gracefulPidFile));
+    assert.ok(gracefulPid > 0);
+    const gracefulStart = performance.now();
+    const gracefulClaim = graceful.tryCancel();
+    assert.equal(gracefulClaim.accepted, true);
+    const gracefulCancelled = await gracefulClaim.done;
+    assert.equal(gracefulCancelled.status, "cancelled");
+    assert.ok(performance.now() - gracefulStart < 1_000);
+    assert.throws(() => process.kill(gracefulPid, 0), { code: "ESRCH" });
+
+    // 3. Direct child completes and exits 0 while a stdio-inheriting descendant holds pipes open:
+    //    exit locks completion, rejects late tryCancel as "finished", and reaps the descendant so close settles.
+    const leaderPidFile = join(dir, "leader.pid");
+    const inheritedPidFile = join(dir, "inherited.pid");
+    const inherited = startChild(launch, {
+      args: script(
+        `const fs = require('node:fs');
+         const { spawn } = require('node:child_process');
+         fs.writeFileSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, String(process.pid));
+         fs.renameSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, ${JSON.stringify(leaderPidFile)});
+         process.send({type:'ready'});
+         process.on('message', m => {
+           if (m.type !== 'run') return;
+           spawn(process.execPath, [
+             '-e',
+             'const fs=require("node:fs"); process.on("SIGTERM",()=>{ setTimeout(()=>process.exit(0),5000); }); fs.writeFileSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, ${JSON.stringify(inheritedPidFile)}); setInterval(()=>{},1000);'
+           ], { stdio: 'inherit' });
+           const waitDesc = setInterval(() => {
+             if (!fs.existsSync(${JSON.stringify(inheritedPidFile)})) return;
+             clearInterval(waitDesc);
+             process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+           }, 10);
+         });`,
+      ),
+      graceMs: 150,
+    });
+    t.after(() => inherited.cancel());
+    await inherited.ready;
+    inherited.run();
+    const leaderPid = Number(await waitForFile(leaderPidFile));
+    const inheritedPid = Number(await waitForFile(inheritedPidFile));
+    const exitDeadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        process.kill(leaderPid, 0);
+        if (Date.now() >= exitDeadline) assert.fail("Timed out waiting for leader exit");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } catch (error) {
+        assert.deepEqual((error as NodeJS.ErrnoException).code, "ESRCH");
+        break;
+      }
+    }
+    process.kill(inheritedPid, 0);
+    assert.deepEqual(inherited.tryCancel(), { accepted: false, reason: "finished" });
+    assert.deepEqual(await inherited.done, success);
+    assert.throws(() => process.kill(inheritedPid, 0), { code: "ESRCH" });
+
+    // 4. Descendant closing inherited pipes on first SIGTERM does not receive a duplicate SIGTERM on close.
+    const cleanupPidFile = join(dir, "cleanup-once.pid");
+    const cleanupDoneFile = join(dir, "cleanup-once.done");
+    const singleSigterm = startChild(launch, {
+      args: script(
+        `const fs = require('node:fs');
+         const { spawn } = require('node:child_process');
+         process.send({type:'ready'});
+         process.on('message', m => {
+           if (m.type !== 'run') return;
+           spawn(process.execPath, [
+             '-e',
+             'const fs=require("node:fs"); let count=0; process.on("SIGTERM",()=>{ if(++count>1) process.exit(1); fs.closeSync(1); fs.closeSync(2); setTimeout(()=>{ fs.writeFileSync(${JSON.stringify(`${cleanupDoneFile}.tmp`)}, String(count)); fs.renameSync(${JSON.stringify(`${cleanupDoneFile}.tmp`)}, ${JSON.stringify(cleanupDoneFile)}); process.exit(0); }, 200); }); fs.writeFileSync(${JSON.stringify(`${cleanupPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${cleanupPidFile}.tmp`)}, ${JSON.stringify(cleanupPidFile)}); setInterval(()=>{},1000);'
+           ], { stdio: ['ignore', 'inherit', 'inherit'] });
+           const waitDesc = setInterval(() => {
+             if (!fs.existsSync(${JSON.stringify(cleanupPidFile)})) return;
+             clearInterval(waitDesc);
+             process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+           }, 10);
+         });`,
+      ),
+      graceMs: 2_000,
+    });
+    t.after(() => singleSigterm.cancel());
+    await singleSigterm.ready;
+    singleSigterm.run();
+    const cleanupPid = Number(await waitForFile(cleanupPidFile));
+    assert.deepEqual(await singleSigterm.done, success);
+    assert.equal(await waitForFile(cleanupDoneFile), "1");
+    assert.throws(() => process.kill(cleanupPid, 0), { code: "ESRCH" });
+
+    // 5. EPERM on process-group signals neither crashes the parent nor stalls settlement.
+    const realKill = process.kill.bind(process);
+    const killMock = t.mock.method(process, "kill", (pid: number, signal?: string | number) => {
+      if (pid < 0) {
+        throw Object.assign(new Error("Operation not permitted"), { code: "EPERM" });
+      }
+      return realKill(pid, signal);
+    });
+    try {
+      const epermChild = startChild(launch, {
+        args: script(
+          `process.send({type:'ready'});
+           process.on('message', m => {
+             if (m.type === 'run') process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+           });`,
+        ),
+        graceMs: 2_000,
+      });
+      await epermChild.ready;
+      epermChild.run();
+      const epermStart = performance.now();
+      assert.deepEqual(await epermChild.done, success);
+      assert.ok(performance.now() - epermStart < 1_000);
+    } finally {
+      killMock.mock.restore();
+    }
+  });
+}
 
 test("unexpected crash preserves prior child progress and stderr", async () => {
   const crashed = startChild(launch, {

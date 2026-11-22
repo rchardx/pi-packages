@@ -40,6 +40,10 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
   const done = deferred<Result>();
   const received: MessageEnvelope[] = [];
   let runs = 0;
+  let state: "running" | "stopping" | "finished" = "running";
+  void done.promise.then(() => {
+    state = "finished";
+  });
   const execution: Execution = {
     ready: ready.promise,
     done: done.promise,
@@ -51,7 +55,12 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
       received.push(envelope);
       return { accepted: true };
     },
+    tryCancel() {
+      if (state !== "running") return { accepted: false, reason: state };
+      return { accepted: true, done: execution.cancel() };
+    },
     cancel() {
+      if (state === "running") state = "stopping";
       ready.reject(new Error("cancelled"));
       done.resolve({ ...completed, status: "cancelled" });
       return done.promise;
@@ -277,4 +286,191 @@ test("messages route between the root session and its children only", async () =
   assert.deepEqual(tasks.list(), []);
   await assert.rejects(tasks.sendToChild(idA, "late"), /owning session has ended/u);
   assert.throws(() => fromA("late"), /owning session has ended/u);
+});
+
+test("stop claims cancellation synchronously, preserves in-flight timeouts, and settles once", async () => {
+  function slowCancelFake() {
+    const ready = deferred<void>();
+    const done = deferred<Result>();
+    let cancelCalls = 0;
+    let state: "running" | "stopping" | "finished" = "running";
+    void done.promise.then(() => {
+      state = "finished";
+    });
+    const execution: Execution = {
+      ready: ready.promise,
+      done: done.promise,
+      run() {},
+      async deliver() {
+        return { accepted: true };
+      },
+      tryCancel() {
+        if (state !== "running") return { accepted: false, reason: state };
+        return { accepted: true, done: execution.cancel() };
+      },
+      cancel() {
+        if (state === "running") state = "stopping";
+        cancelCalls++;
+        ready.reject(new Error("cancelled"));
+        return done.promise;
+      },
+    };
+    void ready.promise.catch(() => {});
+    return {
+      execution,
+      ready,
+      done,
+      cancelCalls: () => cancelCalls,
+      beginTimeout() {
+        state = "stopping";
+      },
+      beginPostExitDrain() {
+        state = "finished";
+      },
+    };
+  }
+
+  const startupChild = slowCancelFake();
+  const childA = slowCancelFake();
+  const childB = slowCancelFake();
+  const timeoutChild = slowCancelFake();
+  const queue = [startupChild, childA, childB, timeoutChild];
+  let spawned = 0;
+  let changes = 0;
+  let settled = 0;
+  const notifications: Result[] = [];
+  const tasks = new Tasks(
+    (_task, result) => notifications.push(result),
+    () => {
+      const next = queue[spawned++];
+      assert.ok(next);
+      return next.execution;
+    },
+    () => {
+      changes++;
+    },
+    undefined,
+    () => {
+      settled++;
+    },
+  );
+
+  // An unhanded startup cannot be stopped via stop().
+  const pendingStartup = tasks.launch({ ...launch, task: "Starting" });
+  const startupId = [...tasks.records.keys()][0];
+  assert.ok(startupId);
+  assert.deepEqual(await tasks.stop(startupId), { status: "not_found" });
+  assert.equal(startupChild.cancelCalls(), 0);
+  startupChild.ready.resolve();
+  assert.equal(await pendingStartup, startupId);
+
+  childA.ready.resolve();
+  childB.ready.resolve();
+  timeoutChild.ready.resolve();
+  const idA = await tasks.launch({ ...launch, role: "explorer", task: "Inspect target" });
+  const idB = await tasks.launch({ ...launch, task: "Keep running" });
+  const idTimeout = await tasks.launch({ ...launch, task: "Timing out" });
+  assert.equal(tasks.runningCount(), 4);
+  assert.equal(tasks.unsettledCount(), 4);
+  assert.equal(changes, 4);
+
+  const other = new Tasks(() => {});
+  for (const invalid of ["unknown", idA.slice(0, 8), "explorer", ` ${idA} `]) {
+    assert.deepEqual(await tasks.stop(invalid), { status: "not_found" });
+  }
+  assert.deepEqual(await other.stop(idA), { status: "not_found" });
+  assert.equal(changes, 4);
+  assert.equal(settled, 0);
+
+  // Stopping claims cancellation synchronously while awaiting OS teardown.
+  const stoppingA = tasks.stop(idA);
+  assert.equal(tasks.runningCount(), 3);
+  assert.equal(tasks.unsettledCount(), 4, "unsettledCount includes stopping children");
+  assert.equal(changes, 5);
+  assert.equal(settled, 0);
+  assert.deepEqual(
+    tasks.list().map((entry) => entry.id),
+    [startupId, idB, idTimeout],
+  );
+  assert.deepEqual(
+    await tasks.stop(idA),
+    { status: "stopping" },
+    "concurrent stop on stopping ID reports stopping",
+  );
+  assert.equal(changes, 5, "rejected concurrent stop emits no extra status transition");
+  await assert.rejects(tasks.sendToChild(idA, "late"), /no longer running/u);
+
+  const cancelledResult: Result = {
+    status: "cancelled",
+    report: "Cancelled; existing filesystem changes were not reverted.",
+    requests: 1,
+    tokens: 10,
+  };
+  childA.done.resolve(cancelledResult);
+  const stoppedA = await stoppingA;
+  assert.equal(stoppedA.status, "stopped");
+  assert.equal(stoppedA.task.id, idA);
+  assert.equal(stoppedA.task.role, "explorer");
+  assert.equal(changes, 5, "done settlement after stop emits no duplicate running-count change");
+  assert.equal(settled, 1);
+  assert.equal(tasks.unsettledCount(), 3);
+  assert.deepEqual(notifications, []);
+  await assert.rejects(
+    tasks.sendToChild(idA, "after-stop"),
+    /already finished \(cancelled\) and cannot receive messages/u,
+  );
+  assert.deepEqual(await tasks.cancel(idA), { id: idA, ...cancelledResult });
+  assert.deepEqual(
+    await tasks.stop(idA),
+    { status: "not_found" },
+    "already-cancelled ID cannot be stopped again",
+  );
+
+  // A child already stopping from a runner timeout rejects stop() and preserves its timed_out report.
+  timeoutChild.beginTimeout();
+  assert.deepEqual(await tasks.stop(idTimeout), { status: "stopping" });
+  assert.equal(
+    changes,
+    5,
+    "rejected stop during timeout grace does not claim running-count transition",
+  );
+  const timedOutResult: Result = {
+    status: "timed_out",
+    report: "Child execution deadline exceeded.",
+    requests: 1,
+    tokens: 10,
+  };
+  timeoutChild.done.resolve(timedOutResult);
+  await setImmediate();
+  assert.equal(changes, 6);
+  assert.equal(settled, 2);
+  assert.deepEqual(notifications, [timedOutResult]);
+  assert.deepEqual(await tasks.cancel(idTimeout), { id: idTimeout, ...timedOutResult });
+
+  // Sibling children remain untouched and still deliver their completion results, even if stop()
+  // races post-exit pipe/group drain before close settles.
+  childB.beginPostExitDrain();
+  assert.deepEqual(
+    await tasks.stop(idB),
+    { status: "not_found" },
+    "post-exit drain reports not_found rather than stopping and keeps natural completion",
+  );
+  childB.done.resolve(completed);
+  await setImmediate();
+  assert.deepEqual(notifications, [timedOutResult, completed]);
+  assert.equal(tasks.runningCount(), 1);
+  assert.equal(tasks.unsettledCount(), 1);
+  assert.equal(settled, 3);
+  assert.deepEqual(
+    await tasks.stop(idB),
+    { status: "not_found" },
+    "already-completed ID cannot be stopped",
+  );
+
+  const shuttingDown = tasks.shutdown();
+  startupChild.done.resolve(cancelledResult);
+  await shuttingDown;
+  assert.equal(settled, 4, "shutdown fires onSettled once unsettled children finish reaping");
+  assert.deepEqual(await tasks.stop(startupId), { status: "not_found" });
+  assert.equal(tasks.unsettledCount(), 0);
 });

@@ -24,6 +24,11 @@ export interface Task {
   result?: Result;
 }
 
+export type StopOutcome =
+  | { status: "stopped"; task: Task }
+  | { status: "stopping" }
+  | { status: "not_found" };
+
 /** Names what the model passed and what is accepted; a truncated card ID is the usual cause. */
 function unknownSubagent(id: string): Error {
   return new Error(
@@ -41,6 +46,7 @@ export class Tasks {
   private readonly start: StartChild;
   private readonly onChange: () => void;
   private readonly deliverToMain: (envelope: MessageEnvelope) => DeliveryAck;
+  private readonly onSettled: () => void;
 
   constructor(
     notify: (task: Task, result: Result) => void,
@@ -50,11 +56,13 @@ export class Tasks {
       accepted: false,
       reason: "finished",
     }),
+    onSettled: () => void = () => {},
   ) {
     this.notify = notify;
     this.start = start;
     this.onChange = onChange;
     this.deliverToMain = deliverToMain;
+    this.onSettled = onSettled;
   }
 
   runningTasks(): Task[] {
@@ -66,6 +74,12 @@ export class Tasks {
 
   runningCount(): number {
     return this.runningTasks().length;
+  }
+
+  /** Handed-off children whose process has not yet settled, including those stopping. */
+  unsettledCount(): number {
+    if (this.closed) return 0;
+    return [...this.records.values()].filter((task) => task.handedOff && !task.result).length;
   }
 
   list(now = Date.now()): RunningAgent[] {
@@ -159,9 +173,7 @@ export class Tasks {
     }
     task.execution = execution;
     const abort = () => {
-      const wasRunning = task.handedOff && !task.result && !task.cancelRequested;
-      task.cancelRequested = true;
-      if (wasRunning && !this.closed) this.onChange();
+      this.claimCancel(task);
       void execution.cancel();
     };
     signal?.addEventListener("abort", abort, { once: true });
@@ -170,7 +182,10 @@ export class Tasks {
       task.result = result;
       delete task.execution;
       if (wasRunning && !this.closed) this.onChange();
-      if (task.handedOff && !this.closed && !task.cancelRequested) this.notify(task, result);
+      if (task.handedOff && !this.closed) {
+        this.onSettled();
+        if (!task.cancelRequested) this.notify(task, result);
+      }
       this.prune();
     });
     try {
@@ -192,6 +207,12 @@ export class Tasks {
     }
   }
 
+  private claimCancel(task: Task): void {
+    const wasRunning = task.handedOff && !task.result && !task.cancelRequested;
+    task.cancelRequested = true;
+    if (wasRunning && !this.closed) this.onChange();
+  }
+
   /** The result carries the ID the task is recorded under, without the caller's padding. */
   async cancel(rawId: string): Promise<Result & { id: string }> {
     const id = rawId.trim();
@@ -199,18 +220,38 @@ export class Tasks {
     if (!task) throw unknownSubagent(id);
     if (task.result) return { id, ...task.result };
     if (!task.execution) throw new Error("Subagent has no running execution.");
-    const wasRunning = task.handedOff && !task.cancelRequested;
-    task.cancelRequested = true;
-    if (wasRunning && !this.closed) this.onChange();
+    this.claimCancel(task);
     return { id, ...(await task.execution.cancel()) };
+  }
+
+  /**
+   * Stop a running handed-off subagent owned by this session. Claims cancellation only
+   * when the runner accepts it, preserving in-flight timeout/error reports.
+   */
+  async stop(id: string): Promise<StopOutcome> {
+    if (this.closed) return { status: "not_found" };
+    const task = this.records.get(id);
+    if (!task?.handedOff || task.result || !task.execution) {
+      return { status: "not_found" };
+    }
+    if (task.cancelRequested) return { status: "stopping" };
+    const claim = task.execution.tryCancel();
+    if (!claim.accepted) {
+      return { status: claim.reason === "stopping" ? "stopping" : "not_found" };
+    }
+    this.claimCancel(task);
+    await claim.done;
+    return { status: "stopped", task };
   }
 
   async shutdown(): Promise<void> {
     const hadRunning = this.runningCount() > 0;
+    const hadUnsettled = this.unsettledCount() > 0;
     this.closed = true;
     if (hadRunning) this.onChange();
     await Promise.allSettled([...this.records.values()].map((task) => task.execution?.cancel()));
     this.records.clear();
+    if (hadUnsettled) this.onSettled();
   }
 
   private prune() {

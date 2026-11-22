@@ -22,11 +22,20 @@ import {
   type Status,
 } from "./protocol.ts";
 
+const GROUP_POLL_MS = 20;
+const POST_KILL_POLLS = 10;
+
+export type CancelClaim =
+  | { accepted: true; done: Promise<Result> }
+  | { accepted: false; reason: "stopping" | "finished" };
+
 export interface Execution {
   ready: Promise<void>;
   done: Promise<Result>;
   run(): void;
   deliver(envelope: MessageEnvelope): Promise<DeliveryAck>;
+  /** Claims cancellation when the child is still running; reports why otherwise. */
+  tryCancel(): CancelClaim;
   cancel(): Promise<Result>;
 }
 
@@ -83,9 +92,12 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   let progress: Progress | undefined;
   let reason: { status: Status; report: string } | undefined;
   let stderr = "";
+  let exited = false;
   let settled = false;
   let started = false;
   let force: NodeJS.Timeout | undefined;
+  let forceKilled = false;
+  let groupTerminating = false;
   const pendingDeliveries = new Map<string, (ack: DeliveryAck) => void>();
 
   const failPendingDeliveries = () => {
@@ -101,16 +113,36 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       if (process.platform === "win32") child.kill(signal);
       else process.kill(-child.pid, signal);
     } catch (error) {
-      if (!record(error) || error.code !== "ESRCH") throw error;
+      if (!record(error) || (error.code !== "ESRCH" && error.code !== "EPERM")) throw error;
     }
   };
-  const stop = (status: Status, report: string) => {
-    if (settled || reason) return;
+  const isGroupAlive = (): boolean => {
+    if (!child.pid || process.platform === "win32") return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      if (record(error) && (error.code === "ESRCH" || error.code === "EPERM")) return false;
+      throw error;
+    }
+  };
+  const terminateGroup = () => {
+    if (groupTerminating) return;
+    groupTerminating = true;
+    kill("SIGTERM");
+    force = setTimeout(() => {
+      force = undefined;
+      forceKilled = true;
+      kill("SIGKILL");
+    }, options.graceMs ?? STOP_GRACE_MS);
+  };
+  const stop = (status: Status, report: string): boolean => {
+    if (settled || exited || reason) return false;
     reason = { status, report };
     failPendingDeliveries();
     readyReject(new Error(report));
-    kill("SIGTERM");
-    force = setTimeout(() => kill("SIGKILL"), options.graceMs ?? STOP_GRACE_MS);
+    terminateGroup();
+    return true;
   };
   const startup = setTimeout(
     () => stop("timed_out", "Child startup timed out."),
@@ -135,10 +167,12 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     if (message.type === "result") {
       failPendingDeliveries();
       if (isResult(message.result)) result = message.result;
-      else if (!reason) stop("failed", "Invalid child result.");
+      else if (!stop("failed", "Invalid child result.")) {
+        reason ??= { status: "failed", report: "Invalid child result." };
+      }
       return;
     }
-    if (reason) return;
+    if (reason || exited) return;
     switch (message.type) {
       case "hello":
         send({
@@ -208,12 +242,18 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   child.on("error", (error) => {
     reason ??= { status: "failed", report: bounded(error.message) };
   });
+  child.on("exit", () => {
+    exited = true;
+    failPendingDeliveries();
+    clearTimeout(startup);
+    clearTimeout(deadline);
+    if (isGroupAlive()) terminateGroup();
+  });
   child.on("close", (code) => {
     settled = true;
     failPendingDeliveries();
     clearTimeout(startup);
     clearTimeout(deadline);
-    clearTimeout(force);
     const detail = stderr.trim();
     readyReject(
       new Error(
@@ -227,40 +267,73 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     );
     const requests = result?.requests ?? progress?.requests ?? 0;
     const tokens = result?.tokens ?? progress?.tokens ?? 0;
-    if (reason)
+    let finalResult: Result;
+    if (reason) {
       // A result sent during the grace window supplies the final counts only: its report
       // carries the child's own headline, which would duplicate this one.
-      doneResolve({
+      finalResult = {
         status: reason.status,
         report: formatIncompleteReport(reason.report, progress?.partial),
         requests,
         tokens,
-      });
-    else if (code === 0 && result) doneResolve(result);
-    else {
+      };
+    } else if (code === 0 && result) {
+      finalResult = result;
+    } else {
       const crashHeadline = detail
         ? `Child exited without successful teardown (exit ${code}).\n${detail}`
         : `Child exited without successful teardown (exit ${code}).`;
-      doneResolve({
+      finalResult = {
         status: "failed",
         report: formatIncompleteReport(crashHeadline, progress?.partial),
         requests,
         tokens,
-      });
+      };
     }
+    if (!isGroupAlive()) {
+      clearTimeout(force);
+      doneResolve(finalResult);
+      return;
+    }
+    let postKillPolls = 0;
+    const pollGroup = () => {
+      if (!isGroupAlive()) {
+        clearTimeout(force);
+        doneResolve(finalResult);
+        return;
+      }
+      if (forceKilled) {
+        kill("SIGKILL");
+        if (++postKillPolls >= POST_KILL_POLLS) {
+          doneResolve(finalResult);
+          return;
+        }
+      }
+      setTimeout(pollGroup, GROUP_POLL_MS);
+    };
+    setTimeout(pollGroup, GROUP_POLL_MS);
   });
+  const tryCancel = (): CancelClaim => {
+    if (stop("cancelled", "Cancelled; existing filesystem changes were not reverted.")) {
+      return { accepted: true, done };
+    }
+    return {
+      accepted: false,
+      reason: !settled && reason !== undefined ? "stopping" : "finished",
+    };
+  };
   child.stdin?.end(`Delegated task:\n\n${launch.task}`);
   return {
     ready,
     done,
     run() {
-      if (!started && !settled && !reason) {
+      if (!started && !settled && !exited && !reason) {
         started = true;
         send({ type: "run" });
       }
     },
     deliver(envelope: MessageEnvelope): Promise<DeliveryAck> {
-      if (settled || reason || result || !child.connected) {
+      if (settled || exited || reason || result || !child.connected) {
         return Promise.resolve({ accepted: false, reason: "finished" });
       }
       const deliveryId = randomUUID();
@@ -277,8 +350,9 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
         });
       });
     },
+    tryCancel,
     cancel() {
-      stop("cancelled", "Cancelled; existing filesystem changes were not reverted.");
+      tryCancel();
       return done;
     },
   };
