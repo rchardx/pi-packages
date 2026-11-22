@@ -26,6 +26,18 @@ function script(body: string) {
   ];
 }
 
+async function waitForFile(path: string, timeoutMs = 5_000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await readFile(path, "utf8");
+    } catch {
+      if (Date.now() >= deadline) assert.fail(`Timed out waiting for ${path}`);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+}
+
 test("IPC handshake starts only after handoff and drains large stdout", async () => {
   const execution = startChild(launch, {
     args: script(
@@ -129,16 +141,7 @@ test("deadline timeout preserves child progress, rejects tryCancel during SIGTER
   });
   await timedOut.ready;
   timedOut.run();
-  const waitUntil = Date.now() + 5_000;
-  while (Date.now() < waitUntil) {
-    try {
-      await readFile(sigtermFlag);
-      break;
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-  }
-  await readFile(sigtermFlag);
+  await waitForFile(sigtermFlag);
   assert.equal(timedOut.tryCancel(), undefined);
   await writeFile(releaseFlag, "");
   assert.deepEqual(await timedOut.done, {
@@ -148,6 +151,67 @@ test("deadline timeout preserves child progress, rejects tryCancel during SIGTER
     tokens: 95,
   });
 });
+
+if (process.platform !== "win32") {
+  test("cancel waits to reap same-group descendants when the direct child exits early", async (t: TestContext) => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-runner-pgroup-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+
+    // 1. Descendant ignores SIGTERM for 5s while direct child exits immediately: cancel escalates at graceMs.
+    const stubbornPidFile = join(dir, "stubborn.pid");
+    const stubborn = startChild(launch, {
+      args: script(
+        `const { spawn } = require('node:child_process');
+         spawn(process.execPath, [
+           '-e',
+           'const fs=require("node:fs"); process.on("SIGTERM",()=>{ setTimeout(()=>process.exit(0),5000); }); fs.writeFileSync(${JSON.stringify(`${stubbornPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${stubbornPidFile}.tmp`)}, ${JSON.stringify(stubbornPidFile)}); setInterval(()=>{},1000);'
+         ], { stdio: 'ignore' });
+         process.on('SIGTERM', () => process.exit(0));
+         process.send({type:'ready'});
+         setInterval(()=>{},1000);`,
+      ),
+      graceMs: 150,
+    });
+    t.after(() => stubborn.cancel());
+    await stubborn.ready;
+    stubborn.run();
+    const stubbornPid = Number(await waitForFile(stubbornPidFile));
+    assert.ok(stubbornPid > 0);
+    process.kill(stubbornPid, 0);
+
+    const startedAt = performance.now();
+    const cancelled = await stubborn.tryCancel();
+    assert.equal(cancelled?.status, "cancelled");
+    assert.ok(performance.now() - startedAt >= 120);
+    assert.throws(() => process.kill(stubbornPid, 0), { code: "ESRCH" });
+
+    // 2. Descendant exits cleanly on SIGTERM after direct child exits: resolves before graceMs without SIGKILL wait.
+    const gracefulPidFile = join(dir, "graceful.pid");
+    const graceful = startChild(launch, {
+      args: script(
+        `const { spawn } = require('node:child_process');
+         spawn(process.execPath, [
+           '-e',
+           'const fs=require("node:fs"); process.on("SIGTERM",()=>{ setTimeout(()=>process.exit(0),60); }); fs.writeFileSync(${JSON.stringify(`${gracefulPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${gracefulPidFile}.tmp`)}, ${JSON.stringify(gracefulPidFile)}); setInterval(()=>{},1000);'
+         ], { stdio: 'ignore' });
+         process.on('SIGTERM', () => process.exit(0));
+         process.send({type:'ready'});
+         setInterval(()=>{},1000);`,
+      ),
+      graceMs: 2_000,
+    });
+    t.after(() => graceful.cancel());
+    await graceful.ready;
+    graceful.run();
+    const gracefulPid = Number(await waitForFile(gracefulPidFile));
+    assert.ok(gracefulPid > 0);
+    const gracefulStart = performance.now();
+    const gracefulCancelled = await graceful.tryCancel();
+    assert.equal(gracefulCancelled?.status, "cancelled");
+    assert.ok(performance.now() - gracefulStart < 1_000);
+    assert.throws(() => process.kill(gracefulPid, 0), { code: "ESRCH" });
+  });
+}
 
 test("unexpected crash preserves prior child progress and stderr", async () => {
   const crashed = startChild(launch, {

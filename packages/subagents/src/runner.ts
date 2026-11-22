@@ -22,6 +22,9 @@ import {
   type Status,
 } from "./protocol.ts";
 
+const GROUP_POLL_MS = 20;
+const POST_KILL_POLLS = 10;
+
 export interface Execution {
   ready: Promise<void>;
   done: Promise<Result>;
@@ -88,6 +91,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   let settled = false;
   let started = false;
   let force: NodeJS.Timeout | undefined;
+  let forceKilled = false;
   const pendingDeliveries = new Map<string, (ack: DeliveryAck) => void>();
 
   const failPendingDeliveries = () => {
@@ -106,13 +110,32 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       if (!record(error) || error.code !== "ESRCH") throw error;
     }
   };
+  const isGroupAlive = (): boolean => {
+    if (!child.pid || process.platform === "win32") return false;
+    try {
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      if (record(error) && error.code === "ESRCH") return false;
+      if (record(error) && error.code === "EPERM") return true;
+      throw error;
+    }
+  };
+  const armForceKill = () => {
+    if (force || forceKilled) return;
+    force = setTimeout(() => {
+      force = undefined;
+      forceKilled = true;
+      kill("SIGKILL");
+    }, options.graceMs ?? STOP_GRACE_MS);
+  };
   const stop = (status: Status, report: string): boolean => {
     if (settled || reason) return false;
     reason = { status, report };
     failPendingDeliveries();
     readyReject(new Error(report));
     kill("SIGTERM");
-    force = setTimeout(() => kill("SIGKILL"), options.graceMs ?? STOP_GRACE_MS);
+    armForceKill();
     return true;
   };
   const startup = setTimeout(
@@ -216,7 +239,6 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     failPendingDeliveries();
     clearTimeout(startup);
     clearTimeout(deadline);
-    clearTimeout(force);
     const detail = stderr.trim();
     readyReject(
       new Error(
@@ -230,28 +252,60 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     );
     const requests = result?.requests ?? progress?.requests ?? 0;
     const tokens = result?.tokens ?? progress?.tokens ?? 0;
-    if (reason)
+    let finalResult: Result;
+    if (reason) {
       // A result sent during the grace window supplies the final counts only: its report
       // carries the child's own headline, which would duplicate this one.
-      doneResolve({
+      finalResult = {
         status: reason.status,
         report: formatIncompleteReport(reason.report, progress?.partial),
         requests,
         tokens,
-      });
-    else if (code === 0 && result) doneResolve(result);
-    else {
+      };
+    } else if (code === 0 && result) {
+      finalResult = result;
+    } else {
       const crashHeadline = detail
         ? `Child exited without successful teardown (exit ${code}).\n${detail}`
         : `Child exited without successful teardown (exit ${code}).`;
-      doneResolve({
+      finalResult = {
         status: "failed",
         report: formatIncompleteReport(crashHeadline, progress?.partial),
         requests,
         tokens,
-      });
+      };
     }
+    if (!isGroupAlive()) {
+      clearTimeout(force);
+      doneResolve(finalResult);
+      return;
+    }
+    if (!reason) {
+      kill("SIGTERM");
+      armForceKill();
+    }
+    let postKillPolls = 0;
+    const pollGroup = () => {
+      if (!isGroupAlive()) {
+        clearTimeout(force);
+        doneResolve(finalResult);
+        return;
+      }
+      if (forceKilled) {
+        kill("SIGKILL");
+        if (++postKillPolls >= POST_KILL_POLLS) {
+          doneResolve(finalResult);
+          return;
+        }
+      }
+      setTimeout(pollGroup, GROUP_POLL_MS);
+    };
+    setTimeout(pollGroup, GROUP_POLL_MS);
   });
+  const tryCancel = () =>
+    stop("cancelled", "Cancelled; existing filesystem changes were not reverted.")
+      ? done
+      : undefined;
   child.stdin?.end(`Delegated task:\n\n${launch.task}`);
   return {
     ready,
@@ -280,14 +334,9 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
         });
       });
     },
-    tryCancel() {
-      return stop("cancelled", "Cancelled; existing filesystem changes were not reverted.")
-        ? done
-        : undefined;
-    },
+    tryCancel,
     cancel() {
-      stop("cancelled", "Cancelled; existing filesystem changes were not reverted.");
-      return done;
+      return tryCancel() ?? done;
     },
   };
 }

@@ -2951,10 +2951,13 @@ test("/subagents stop <id> rejects a child already stopping on timeout without s
   const { dir, holdChild, releaseChild } = await communicationFixture(t);
   const sigtermFlag = join(dir, "child-sigterm.flag");
   const releaseFlag = join(dir, "child-release.flag");
+  const spawnDescendantFlag = join(dir, "spawn-descendant.flag");
+  const descendantPidFile = join(dir, "descendant.pid");
   const holdShutdownExt = join(dir, "hold-shutdown.mjs");
   await writeFile(
     holdShutdownExt,
-    `import { existsSync, writeFileSync } from "node:fs";
+    `import { spawn } from "node:child_process";
+import { existsSync, writeFileSync } from "node:fs";
 export default function (pi) {
   pi.registerTool({
     name: "hold_shutdown",
@@ -2963,8 +2966,20 @@ export default function (pi) {
     parameters: { type: "object", properties: {} },
     execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
   });
+  pi.on("session_start", () => {
+    if (process.env.PI_SUBAGENTS_CHILD !== "1" || !existsSync(${JSON.stringify(spawnDescendantFlag)})) return;
+    spawn(
+      process.execPath,
+      [
+        "-e",
+        'const fs = require("node:fs"); process.on("SIGTERM", () => { setTimeout(() => process.exit(0), 5000); }); fs.writeFileSync(${JSON.stringify(`${descendantPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${descendantPidFile}.tmp`)}, ${JSON.stringify(descendantPidFile)}); setInterval(() => {}, 1000);',
+      ],
+      { stdio: "ignore" },
+    );
+    process.on("SIGTERM", () => process.exit(0));
+  });
   pi.on("session_shutdown", async () => {
-    if (process.env.PI_SUBAGENTS_CHILD !== "1") return;
+    if (process.env.PI_SUBAGENTS_CHILD !== "1" || existsSync(${JSON.stringify(spawnDescendantFlag)})) return;
     writeFileSync(${JSON.stringify(sigtermFlag)}, "");
     const until = Date.now() + 1500;
     while (!existsSync(${JSON.stringify(releaseFlag)}) && Date.now() < until) {
@@ -3020,6 +3035,32 @@ export default function (pi) {
   const lookup = await cancelTool.execute("lookup-timed-out", { id: childId });
   assert.ok(record(lookup.details));
   assert.equal(lookup.details.status, "timed_out");
+
+  // Even if the direct child exits immediately on SIGTERM, /subagents stop waits until same-group descendants are reaped.
+  await writeFile(join(dir, "subagents.json"), JSON.stringify({ deadlineSeconds: 1800 }));
+  await writeFile(spawnDescendantFlag, "");
+  holdChild();
+  const groupRun = await tool.execute("group-target", { task: "HELD_THEN_DONE" });
+  const groupId = (groupRun.details as { id?: string }).id;
+  assert.ok(groupId);
+  let descendantPid: number | undefined;
+  const pidDeadline = Date.now() + 10_000;
+  while (Date.now() < pidDeadline) {
+    try {
+      descendantPid = Number(await readFile(descendantPidFile, "utf8"));
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  assert.ok(descendantPid);
+  process.kill(descendantPid, 0);
+
+  await session.prompt(`/subagents stop ${groupId}`);
+  assert.equal(notifications.at(-1)?.type, "info");
+  assert.equal(notifications.at(-1)?.message, `Stopped subagent ${groupId}: HELD_THEN_DONE`);
+  assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
+  releaseChild();
 });
 
 test("/subagents provides case-sensitive two-stage argument completions", {
