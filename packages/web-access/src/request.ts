@@ -7,12 +7,6 @@ export interface HttpErrorOptions {
   reasons?: Readonly<Record<number, string>>;
 }
 
-// A 404 may come from a retired model or a missing endpoint; name the model and its setting
-// without claiming which one caused it.
-export function notFoundReason(tool: WebToolKind, provider: string, model: string): string {
-  return `Requested model "${model}" or endpoint was not found; if the model is unavailable, set ${tool}.providers.${provider}.model in web-access.json.`;
-}
-
 export function httpError(status: number, options: HttpErrorOptions): Error {
   const { label, providerLabel, tool } = options;
   const defaults: Record<number, string> = {
@@ -76,21 +70,12 @@ export function transportError(error: unknown, message: string): Error {
   return new Error(`${message}.`);
 }
 
-function openBody(
-  response: Response,
-  contentType: "application/json" | "text/event-stream",
-  maxBytes: number,
-  errorOptions: HttpErrorOptions,
-) {
+function openBody(response: Response, maxBytes: number, errorOptions: HttpErrorOptions) {
   const { label } = errorOptions;
   if (response.status !== 200) throw httpError(response.status, errorOptions);
-  const effectiveType =
-    response.headers.get("content-type") ??
-    (contentType === "text/event-stream" ? "text/event-stream" : null);
-  if (effectiveType?.split(";", 1)[0]?.trim().toLowerCase() !== contentType) {
-    throw new Error(
-      `${label} returned a ${contentType === "application/json" ? "non-JSON" : "non-event-stream"} response.`,
-    );
+  const effectiveType = response.headers.get("content-type");
+  if (effectiveType?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    throw new Error(`${label} returned a non-JSON response.`);
   }
   const limitError = () =>
     new Error(`${label} response exceeds the ${maxBytes / (1024 * 1024)} MiB limit.`);
@@ -106,7 +91,7 @@ async function readJsonResponse(
   errorOptions: HttpErrorOptions,
 ): Promise<unknown> {
   const { label } = errorOptions;
-  const { reader, limitError } = openBody(response, "application/json", maxBytes, errorOptions);
+  const { reader, limitError } = openBody(response, maxBytes, errorOptions);
   const chunks: Uint8Array[] = [];
   let size = 0;
   try {
@@ -213,74 +198,4 @@ async function sendPost<TAuth>(options: JsonPostOptions<TAuth>): Promise<Respons
 
 export async function postJson<TAuth>(options: JsonPostOptions<TAuth>): Promise<unknown> {
   return readJsonResponse(await sendPost(options), options.maxBytes, options.errorOptions);
-}
-
-export interface SsePostOptions<TAuth> extends JsonPostOptions<TAuth> {
-  // Reading stops at the first terminal event; the stream must not end before one.
-  isTerminal: (event: unknown) => boolean;
-}
-
-// Server-sent JSON events share the decoded-size budget and diagnostics of JSON responses.
-export async function postSse<TAuth>(options: SsePostOptions<TAuth>): Promise<unknown[]> {
-  const response = await sendPost(options);
-  const { label } = options.errorOptions;
-  const { reader, limitError } = openBody(
-    response,
-    "text/event-stream",
-    options.maxBytes,
-    options.errorOptions,
-  );
-  const decoder = new TextDecoder("utf-8", { fatal: true });
-  const events: unknown[] = [];
-  let buffer = "";
-  let size = 0;
-  // Returns true once a terminal event has been parsed.
-  const parseBlocks = (final: boolean): boolean => {
-    const blocks = buffer.split(/\r?\n\r?\n/u);
-    buffer = final ? "" : (blocks.pop() ?? "");
-    for (const block of blocks) {
-      const data = block
-        .split(/\r?\n/u)
-        .filter((line) => line.startsWith("data:"))
-        .map((line) => line.slice(5).replace(/^ /u, ""))
-        .join("\n");
-      if (!data.trim() || data.trim() === "[DONE]") continue;
-      let event: unknown;
-      try {
-        event = JSON.parse(data);
-      } catch {
-        throw new Error(`${label} returned an invalid event stream.`);
-      }
-      events.push(event);
-      if (options.isTerminal(event)) return true;
-    }
-    return false;
-  };
-  try {
-    while (true) {
-      let chunk: ReadableStreamReadResult<Uint8Array>;
-      try {
-        chunk = await reader.read();
-      } catch (error) {
-        throw transportError(error, `${label} response stream failed`);
-      }
-      if (!chunk.done) {
-        size += chunk.value.byteLength;
-        if (size > options.maxBytes) throw limitError();
-      }
-      try {
-        buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
-      } catch {
-        throw new Error(`${label} returned invalid UTF-8.`);
-      }
-      if (parseBlocks(chunk.done)) {
-        await reader.cancel().catch(() => {});
-        return events;
-      }
-      if (chunk.done) break;
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  throw new Error(`${label} event stream ended before the response completed.`);
 }

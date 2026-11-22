@@ -1,13 +1,14 @@
 # @rchardx/pi-web-access
 
-Two independent, opt-in Pi tools backed by user-enabled hosted providers
-(**DeepSeek**, **Anthropic**, search-only **OpenAI** / **OpenAI Codex**, and
-fetch-only **Google Gemini**):
+Two independent, opt-in Pi tools backed by DeepSeek's standalone hosted
+web-tool endpoints:
 
 - `web_fetch` returns a page title and Markdown or plain-text content.
-- `web_search` returns ordered sources alongside provider summaries or grounded synthesis.
+- `web_search` returns ordered sources alongside provider-supplied summaries and
+  optional page content.
 
-Neither tool invokes the other.
+Neither tool invokes the other, and neither routes through a chat-model
+generation turn.
 
 ## Install
 
@@ -34,100 +35,53 @@ root is not a Pi package.
 
 ## Enable tools
 
-Configure authentication in Pi for each provider you intend to enable:
+Configure authentication in Pi before enabling the tools:
 
 - **DeepSeek** (`deepseek`): `/login deepseek` or `DEEPSEEK_API_KEY` (no DeepSeek
   chat model selection is required).
-- **Anthropic** (`anthropic`): `/login anthropic` (API key or Claude Pro/Max OAuth),
-  `ANTHROPIC_API_KEY`, or `ANTHROPIC_AUTH_TOKEN`.
-- **Google** (`google`, fetch only): `/login google` or `GEMINI_API_KEY` (Gemini
-  Developer API key; Vertex AI is not supported).
-- **OpenAI** (`openai`, search only): `/login openai` (API key or Sign in with
-  ChatGPT) or `OPENAI_API_KEY`.
-- **OpenAI Codex** (`openai-codex`, search only): `/login openai-codex`
-  (ChatGPT Plus/Pro subscription).
 
 Keep credentials out of tool arguments and configuration.
 
-Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
-(its directory follows `PI_CODING_AGENT_DIR`):
+Enable the capabilities you want in `~/.pi/agent/web-access.json` (its directory
+follows `PI_CODING_AGENT_DIR`):
 
 ```json
 {
   "search": {
     "providers": {
-      "deepseek": {},
-      "anthropic": { "model": "claude-haiku-5-5" },
-      "openai": {},
-      "openai-codex": { "model": "gpt-6-luna" }
-    },
-    "defaultProvider": "deepseek"
+      "deepseek": {}
+    }
   },
   "fetch": {
     "providers": {
-      "deepseek": {},
-      "anthropic": {},
-      "google": { "model": "gemini-3.8-flash" }
-    },
-    "defaultProvider": "deepseek"
+      "deepseek": {}
+    }
   }
 }
 ```
 
-Each entry under `providers` independently authorizes possible provider charges,
-use of Pi-resolved credentials, and query or URL disclosure to that provider:
+Each `deepseek` entry under `providers` independently authorizes possible
+provider charges, use of Pi-resolved credentials, and query or URL disclosure to
+DeepSeek:
 
-- `deepseek` uses standalone tool endpoints and accepts only `{}`.
-- `anthropic` uses the Messages API and accepts an optional `"model"` ID.
-- `google` uses the Gemini API `generateContent` method with the built-in
-  `url_context` tool and accepts an optional `"model"` ID. It is fetch-only:
-  the Gemini API terms for Grounding with Google Search require showing Google's
-  rendered Search Suggestions with the results, unmodified, to the end user,
-  which a terminal tool result consumed by the agent model cannot do, so
-  `search` rejects it.
-- `openai` and `openai-codex` use the Responses API `web_search` tool and accept
-  an optional `"model"` ID. They are search-only: OpenAI offers no
-  deterministic page-fetch tool, so `fetch` rejects them rather than
-  approximating fetch through search.
-- On each call, if the active Pi model's provider (`ctx.model.provider`) is
-  listed in `providers`, that provider handles the request. Otherwise
-  `defaultProvider` (which must also appear in `providers`) is used when set;
-  without `defaultProvider`, the call fails before resolving credentials.
-- There is no cross-provider fallback: once the target provider is selected,
-  failures report directly without forwarding the query or URL elsewhere.
+- `deepseek` is the only supported provider; it uses standalone tool endpoints
+  and accepts only `{}`.
+- `defaultProvider` is optional and, when set, must be `"deepseek"`.
+- Routing is independent of the active Pi chat model (`ctx.model`), and failures
+  report directly without retries or fallbacks.
 
 Omit `search` or `fetch` to disable that tool; a missing file or `{}` enables
-neither. Project settings and tool arguments cannot grant permission. Replace
-legacy `{ "provider": "deepseek" }` and `allowRanges` settings with the
-`providers` map above.
+neither. Project settings and tool arguments cannot grant permission.
 
 Run `/reload` after enabling or disabling a tool. Explicit tool selection affects
 visibility, not permission. Consent, routing, and credentials are rechecked on
-every call; removing a capability or provider blocks subsequent calls even if Pi
-keeps the tool active. In-flight calls retain starting consent. Restart Pi when
-changing its launch environment.
+every call; removing a capability blocks subsequent calls even if Pi keeps the
+tool active. In-flight calls retain starting consent. Restart Pi when changing
+its launch environment.
 
 Only `search` and `fetch` settings are supported. Malformed JSON, unknown fields,
 empty `providers` maps, or invalid settings prevent both tools from loading;
 invalid edits during a session fail on the next call. Fix the file and reload.
-
-### Default models
-
-Model-backed providers use these built-in model IDs when `"model"` is omitted:
-
-| Provider | Tools | Default model |
-| --- | --- | --- |
-| `anthropic` | search, fetch | `claude-haiku-5-5` |
-| `google` | fetch | `gemini-3.8-flash` |
-| `openai` | search | `gpt-6-luna` |
-| `openai-codex` | search | `gpt-6-luna` |
-
-Defaults are lightweight models fixed in each package release; they do not
-follow the active Pi model or newer provider releases. Tests check that each
-default exists in the model catalog of the Pi version used for development. Set
-`"model"` to choose another model, for example when a provider retires a
-default. When the provider returns HTTP 404, the error reports that the
-requested model or endpoint was not found and names the model and its setting.
 
 ### Authentication and origin boundaries
 
@@ -136,18 +90,12 @@ Pi owns authentication and provider configuration:
 | Provider | Required effective origin | Fixed endpoint | Default HTTP auth |
 | --- | --- | --- | --- |
 | `deepseek` | `https://api.deepseek.com` | `POST /v1/tools/fetch` or `/v1/tools/search` | `Authorization: Bearer <key>` |
-| `anthropic` | `https://api.anthropic.com` | `POST /v1/messages` | `x-api-key: <key>`, or `Authorization: Bearer <token>` (including Claude Pro/Max OAuth) |
-| `google` | `https://generativelanguage.googleapis.com` | `POST /v1beta/models/<model>:generateContent` | `x-goog-api-key: <key>` (an explicit `Authorization` or `x-goog-api-key` header replaces it) |
-| `openai` | `https://api.openai.com` | `POST /v1/responses` | `Authorization: Bearer <key or ChatGPT token>` |
-| `openai-codex` | `https://chatgpt.com` | `POST /backend-api/codex/responses` | `Authorization: Bearer <ChatGPT token>` plus `chatgpt-account-id` from the token's claims |
 
 The effective auth base URL (auth override, otherwise provider default) must
 match the required origin above. Provider headers, then resolved auth headers
 override defaults case-insensitively, with `null` deleting a header. Required
 authentication headers must remain after overrides, and the tools set JSON
-`Content-Type`. As in Pi's own Codex transport, `openai-codex` always sends the
-resolved ChatGPT token and its account ID, ignoring configured overrides of
-those two headers; it defaults `originator: pi`.
+`Content-Type`.
 
 Direct local fetching is not provided. For localhost or intranet URLs, use
 `curl` through `bash`: hosted providers visit targets from their infrastructure,
@@ -167,41 +115,19 @@ web_fetch({ url: "https://example.com/article" })
   and returns a single-line title and provider Markdown, preserving paragraphs.
   HTTP 403 indicates a service security-policy rejection; HTTP 404 indicates no
   usable content could be retrieved.
-- **Anthropic** sends `url` to `POST https://api.anthropic.com/v1/messages` with
-  server tool `web_fetch_20250910` (`max_uses: 1`). Plain-text document results
-  are read directly from `web_fetch_result` without assistant paraphrasing; PDF
-  document results use the model's Markdown text after the last server tool
-  block (adding an explicit incompleteness notice and
-  `details.outputTokenLimitReached: true` if the model stops at `max_tokens`).
-  Responses that refuse, pause before completion, exceed the context window,
-  fail to invoke `web_fetch`, or return only `web_fetch_tool_result_error`
-  results fail explicitly; a rejected extra call (`max_uses_exceeded`) after a
-  successful fetch does not.
-- **Google** sends the URL as the user message to `generateContent` with the
-  `url_context` tool. Content is the model's Markdown rendering of the retrieved
-  page, titled from the matching grounding chunk when Google provides one; it may
-  be condensed despite instructions not to summarize. Thought summaries are
-  excluded. The response must report `URL_RETRIEVAL_STATUS_SUCCESS` in
-  `urlContextMetadata`; missing metadata, unsafe, paywalled, or failed
-  retrievals, blocked prompts, safety finishes, and other abnormal finish reasons
-  fail explicitly (`MAX_TOKENS` keeps the content with an incompleteness notice).
 - Empty titles are valid; invalid schemas or whitespace-only content fail.
 - The model-facing `Requested URL` and `details.url` identify the normalized
   **requested URL**, not a verified final redirect destination. Details also
-  contain `provider`, optional `model`, `title`, `truncated`, optional
-  `outputTokenLimitReached`, and optional `fullOutputPath`; no original
-  `contentType` is returned.
+  contain `provider`, `title`, `truncated`, and optional `fullOutputPath`; no
+  original `contentType` is returned.
 - `web_fetch` declares an `outputSchema` and sets `structuredContent`
-  (`{ provider, model?, url, title, content, outputTokenLimitReached? }`)
-  so Codemode scripts receive the extracted page text directly without parsing
-  the model-facing header.
+  (`{ provider, url, title, content }`) so Codemode scripts receive the
+  extracted page text directly without parsing the model-facing header.
 
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
 may be incomplete, include navigation/comments, or lose links, code formatting,
 and mathematical notation. Browser login and JavaScript rendering are not
-guaranteed. See the [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/),
-[Anthropic web fetch documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-fetch-tool),
-and [Gemini URL context documentation](https://ai.google.dev/gemini-api/docs/url-context).
+guaranteed. See the [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/).
 
 ## Search
 
@@ -217,80 +143,55 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
   characters** and search operators. Long summaries fall back to snippets;
   `need_content: true` requests available page content in the same Search call
   (prefer fewer results to limit output).
-- **Anthropic** sends `query` to `POST https://api.anthropic.com/v1/messages` with
-  server tool `web_search_20250305` (`max_uses: 1`). Queries accept **1–4,096
-  Unicode characters**. Responses must contain a successful
-  `web_search_tool_result` block (a rejected extra call after it is ignored)
-  and finish cleanly (refusals, paused turns, and context-window overflows fail;
-  `max_tokens` retains the retrieved sources and partial synthesis with an
-  explicit incompleteness notice). Returns the grounded synthesis written after
-  the last server tool block alongside deduplicated sources (cited URLs prioritized ahead of
-  uncited results, capped locally to `count`), provider-reported page age, and
-  cited excerpts when present. `need_content: true` adds a notice that full page
-  bodies require `web_fetch`; Search never calls `web_fetch`.
-- **OpenAI** and **OpenAI Codex** stream `query` to the Responses endpoint above
-  with the hosted `web_search` tool (`store: false`; OpenAI also requests
-  `web_search_call.action.sources`). Responses must contain a non-failed
-  `web_search_call` and end with `response.completed`, `response.done`
-  (Codex), or `response.incomplete`, judged by the response status as in Pi;
-  ungrounded answers, failed searches, refusals, failed or cancelled responses,
-  `error` events, and streams ending early fail explicitly (`max_output_tokens`
-  incompleteness keeps the partial synthesis with a notice). Returns the synthesis written after
-  the last search, `url_citation` sources first, then searched sources (capped
-  locally to `count`). The `utm_source=openai` parameter OpenAI appends to
-  source links is removed so one page is listed once; the synthesis text is
-  returned unchanged. `need_content: true` adds the same `web_fetch` notice.
 
 Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
 before applying `count`. All-invalid results are distinguished from an empty
-search. Titles, site names, and dates/ages use single-line whitespace (empty or
-whitespace-only search titles fall back to the result URL); synthesis,
-summaries, excerpts, and content retain paragraphs. Provider summaries and
-syntheses are not verified quotations, and the extension never visits result URLs.
-`web_search` declares an `outputSchema` and sets `structuredContent`
-(`{ provider, model?, query, synthesis?, results, omittedInvalidUrls, outputTokenLimitReached? }`)
-so Codemode scripts receive structured sources and grounded synthesis directly.
+search. Titles, site names, and dates use single-line whitespace (empty or
+whitespace-only search titles fall back to the result URL); summaries and page
+content retain paragraphs. Provider summaries are not verified quotations, and
+the extension never visits result URLs. `web_search` declares an `outputSchema`
+and sets `structuredContent`
+(`{ provider, query, results, omittedInvalidUrls }`) so Codemode scripts receive
+structured sources directly.
 
-See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/),
-and [Anthropic web search documentation](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/web-search-tool).
+See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/).
 
 ## Tool cards in Pi
 
 Cards display lowercase **`web_fetch`** and **`web_search`** headers matching
 the tool names. Calls show the URL or query, with a compact result summary
-(fetched page title for Fetch, plus provider, optional helper model, result
-count for Search, and Pi-reported execution time).
+(fetched page title for Fetch, plus provider, result count for Search, and
+Pi-reported execution time).
 
 Use Pi's expand-tools shortcut (normally `ctrl+o`) to reveal Markdown content,
-grounded synthesis, numbered search results, source URLs, summaries, and cited
-excerpts. The title and summary keep the same style in both views; the shortcut
-hint follows your keybindings. Errors, omitted-source notices, and full-output
-file paths remain visible when collapsed.
+numbered search results, source URLs, summaries, and optional page content. The
+title and summary keep the same style in both views; the shortcut hint follows
+your keybindings. Errors, omitted-source notices, and full-output file paths
+remain visible on current provider cards when collapsed.
 
 Expansion only reveals the existing bounded preview: it does not fetch again or
 read the full-output file. Use `read` for that file. Presentation metadata in
 `details.display` references the model-facing text rather than storing another
 copy of the page. Renderers remove terminal control sequences for display only;
 model-facing content and saved full output are unchanged. Older session results
-without presentation metadata retain a plain-text fallback.
+without presentation metadata or from removed providers use a 5-line plain-text
+preview when collapsed and reveal their full saved text on expansion.
 
 ## Shared limits and privacy
 
 - Fetch has a **60-second** total deadline; Search has **120 seconds**. These cover
   authentication, request, response, and output. Cancellation aborts network work
   and stops waiting for credentials, though Pi's secret-manager work may continue.
-- API responses (JSON bodies or OpenAI event streams) have a **2 MiB decoded
-  limit**. Oversized responses fail without partial output, even after a
-  potentially billable HTTP 200. Malformed, partial, wrong-content-type, and
-  invalid UTF-8 API responses also fail explicitly. Event streams are read only
-  until their terminal event.
+- API responses have a **2 MiB decoded limit**. Oversized responses fail without
+  partial output, even after a potentially billable HTTP 200. Malformed, partial,
+  wrong-content-type, and invalid UTF-8 API responses also fail explicitly.
 - API requests do not follow redirects, retry automatically, or fall back to
   other providers. HTTP 408, 429, and 5xx (including 529 overloaded) diagnostics
   suggest retrying later. HTTP 401 indicates authentication failure, 402
   insufficient balance, and 429 rate limiting.
-- Errors retain HTTP status, recognized provider tool or stream error codes, and
-  recognized network codes, never raw provider bodies or transport messages. Unknown
-  transport failures use a generic diagnostic.
+- Errors retain HTTP status, recognized network codes, and stable diagnostics,
+  never raw provider bodies or transport messages. Unknown transport failures use
+  a generic diagnostic.
 - Previews are limited to **2,000 lines / 50 KiB**. Full formatted output is saved
   when truncated to `pi-web-fetch-*/content.txt` or `pi-web-search-*/content.txt`;
   continue with `read`. Directories are 0700 and files 0600 on POSIX. Failed writes
@@ -309,13 +210,12 @@ Cancellation cannot undo provider charges or server-side tool usage.
 Verified with **Pi 1.6.0 on Linux** using **Node 22.19.0 and Node 26.13.1**.
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
-and execute both tools across DeepSeek and Anthropic, search across OpenAI and
-OpenAI Codex, and fetch through Google, using synthetic credentials
-and local HTTP/controlled responses. They cover per-provider consent, active-model
-routing without cross-provider fallback, visibility, reload, API-key and OAuth
-authentication, effective-origin boundaries, decoding, resource limits,
-cancellation, deadlines, and TUI card rendering. No live account is needed; these
-checks do not guarantee site availability or extraction quality.
+and execute both tools through DeepSeek using synthetic credentials and local
+HTTP/controlled responses. They cover explicit consent, chat-model-independent
+routing without fallback, visibility, reload, API-key and header authentication,
+effective-origin boundaries, decoding, resource limits, cancellation, deadlines,
+Codemode structured output, and TUI card rendering. No live account is needed;
+these checks do not guarantee site availability or extraction quality.
 
 Host-provided libraries use `"*"` peers as Pi recommends; this does not promise
 compatibility with every Pi release. The package remains `private: true` and is not

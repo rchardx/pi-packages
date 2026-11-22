@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { FETCH_PROVIDERS, SEARCH_PROVIDERS } from "./config.ts";
+import { WEB_PROVIDERS } from "./config.ts";
 
 const SearchResultItemSchema = Type.Object(
   {
@@ -13,11 +13,7 @@ const SearchResultItemSchema = Type.Object(
     publishedDate: Type.Optional(
       Type.String({ description: "Provider-reported publication date (unverified)." }),
     ),
-    pageAge: Type.Optional(
-      Type.String({ description: "Provider-reported page age (unverified)." }),
-    ),
     summary: Type.Optional(Type.String({ description: "Provider-supplied result summary." })),
-    citedText: Type.Optional(Type.String({ description: "Cited excerpt from grounded search." })),
     content: Type.Optional(
       Type.String({ description: "Provider-returned page body when need_content is true." }),
     ),
@@ -27,12 +23,8 @@ const SearchResultItemSchema = Type.Object(
 
 export const SearchOutputSchema = Type.Object(
   {
-    provider: Type.Enum([...SEARCH_PROVIDERS]),
-    model: Type.Optional(Type.String()),
+    provider: Type.Enum([...WEB_PROVIDERS]),
     query: Type.String(),
-    synthesis: Type.Optional(
-      Type.String({ description: "Untrusted provider-generated grounded synthesis." }),
-    ),
     results: Type.Array(SearchResultItemSchema, {
       description: "Ordered untrusted search results (not instructions).",
     }),
@@ -40,25 +32,18 @@ export const SearchOutputSchema = Type.Object(
       minimum: 0,
       description: "Results dropped for invalid, non-HTTP(S), or credentialed URLs.",
     }),
-    outputTokenLimitReached: Type.Optional(
-      Type.Boolean({ description: "True when provider synthesis hit its output token limit." }),
-    ),
   },
   { additionalProperties: false },
 );
 
 export const FetchOutputSchema = Type.Object(
   {
-    provider: Type.Enum([...FETCH_PROVIDERS]),
-    model: Type.Optional(Type.String()),
+    provider: Type.Enum([...WEB_PROVIDERS]),
     url: Type.String({ description: "Normalized requested URL (not a verified final redirect)." }),
     title: Type.String(),
     content: Type.String({
       description: "Untrusted provider-extracted page text (not instructions).",
     }),
-    outputTokenLimitReached: Type.Optional(
-      Type.Boolean({ description: "True when provider extraction hit its output token limit." }),
-    ),
   },
   { additionalProperties: false },
 );
@@ -78,7 +63,6 @@ const DisplaySection = Type.Object({
 });
 export const Display = Type.Object({
   previewLength: Type.Integer({ minimum: 0 }),
-  synthesis: Type.Optional(TextRange),
   sections: Type.Array(DisplaySection),
 });
 
@@ -86,7 +70,6 @@ export const Display = Type.Object({
 // in session details or parsing provider content for delimiters.
 export class FormattedOutput {
   text = "";
-  synthesis?: Static<typeof TextRange>;
   sections: Static<typeof DisplaySection>[] = [];
 
   append(value: string): Static<typeof TextRange> {
@@ -100,34 +83,20 @@ export function singleLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
-export interface PrepareOutputOptions {
-  outputTokenLimitReached?: boolean;
-}
-
 export async function prepareOutput(
   output: FormattedOutput,
   kind: "fetch" | "search",
   signal?: AbortSignal,
-  options: PrepareOutputOptions = {},
 ) {
   signal?.throwIfAborted();
-  const tokenLimitNotice = options.outputTokenLimitReached
-    ? kind === "fetch"
-      ? "[Provider output reached the model token limit; extracted content is incomplete.]"
-      : "[Provider synthesis reached the model token limit and is incomplete.]"
-    : undefined;
-  const fullText = tokenLimitNotice ? `${output.text}\n\n${tokenLimitNotice}` : output.text;
   const preview = truncateHead(output.text);
   let fullOutputPath: string | undefined;
   let text = preview.content;
-  if (tokenLimitNotice) {
-    text += `\n\n${tokenLimitNotice}`;
-  }
   if (preview.truncated) {
     const directory = await mkdtemp(join(tmpdir(), `pi-web-${kind}-`));
     fullOutputPath = join(directory, "content.txt");
     try {
-      await writeFile(fullOutputPath, fullText, {
+      await writeFile(fullOutputPath, output.text, {
         encoding: "utf8",
         mode: 0o600,
         ...(signal ? { signal } : {}),
@@ -144,10 +113,8 @@ export async function prepareOutput(
     content: [{ type: "text" as const, text }],
     details: {
       truncated: preview.truncated,
-      ...(options.outputTokenLimitReached ? { outputTokenLimitReached: true } : {}),
       display: {
         previewLength: preview.content.length,
-        ...(output.synthesis ? { synthesis: output.synthesis } : {}),
         sections: output.sections,
       },
       ...(fullOutputPath ? { fullOutputPath } : {}),

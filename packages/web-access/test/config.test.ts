@@ -9,77 +9,19 @@ test("both hosted tools require independent provider authorization tables", () =
   assert.deepEqual(parseConfig({}), {});
   for (const value of [
     { search: { providers: { deepseek: {} } } },
-    { fetch: { providers: { anthropic: {} }, defaultProvider: "anthropic" } },
+    { fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" } },
     {
       search: {
-        providers: { deepseek: {}, anthropic: { model: "org/claude-haiku-4-5" } },
+        providers: { deepseek: {} },
         defaultProvider: "deepseek",
       },
       fetch: {
-        providers: { deepseek: {}, anthropic: {} },
-        defaultProvider: "anthropic",
+        providers: { deepseek: {} },
       },
     },
   ]) {
     assert.deepEqual(parseConfig(value), value);
   }
-});
-
-test("Google is a fetch-only provider with an optional model override", () => {
-  const value = {
-    fetch: { providers: { google: { model: "gemini-3.5-flash" } }, defaultProvider: "google" },
-  };
-  assert.deepEqual(parseConfig(value), value);
-  assert.deepEqual(resolveCapabilityTarget("fetch", parseConfig(value).fetch, "openai"), {
-    provider: "google",
-    model: "gemini-3.5-flash",
-  });
-  assert.throws(
-    () => parseConfig({ search: { providers: { google: {} } } }),
-    /Unsupported search provider "google"; supported providers are deepseek, anthropic, openai, openai-codex\./u,
-  );
-  assert.throws(
-    () => parseConfig({ fetch: { providers: { google: { apiKey: "secret" } } } }),
-    /Unknown field in fetch\.providers\.google: only model is supported/u,
-  );
-});
-
-test("OpenAI and OpenAI Codex are search-only providers with optional model overrides", () => {
-  const value = {
-    search: {
-      providers: { openai: { model: "gpt-5.4-mini" }, "openai-codex": {} },
-      defaultProvider: "openai-codex",
-    },
-  };
-  assert.deepEqual(parseConfig(value), value);
-  assert.throws(
-    () => parseConfig({ search: { providers: { openai: { apiKey: "secret" } } } }),
-    /Unknown field in search\.providers\.openai: only model is supported/u,
-  );
-  for (const provider of ["openai", "openai-codex"]) {
-    assert.throws(
-      () => parseConfig({ fetch: { providers: { [provider]: {} } } }),
-      new RegExp(
-        `Unsupported fetch provider "${provider}"; supported providers are deepseek, anthropic, google\\.`,
-        "u",
-      ),
-    );
-    assert.throws(
-      () =>
-        parseConfig({
-          fetch: { providers: { deepseek: {} }, defaultProvider: provider },
-        }),
-      /fetch\.defaultProvider must be one of the supported providers \(deepseek, anthropic, google\)/u,
-    );
-  }
-  const search = parseConfig(value).search;
-  assert.deepEqual(resolveCapabilityTarget("search", search, "openai"), {
-    provider: "openai",
-    model: "gpt-5.4-mini",
-  });
-  assert.deepEqual(resolveCapabilityTarget("search", search, "anthropic"), {
-    provider: "openai-codex",
-  });
 });
 
 for (const value of [null, [], true, "text", { unknown: true }]) {
@@ -98,23 +40,28 @@ for (const key of ["search", "fetch"] as const) {
     [{ providers: {} }, new RegExp(`${key}\\.providers must enable at least one`, "u")],
     [{ providers: [] }, new RegExp(`${key}\\.providers must be`, "u")],
     [{ providers: { auto: {} } }, /Unsupported .* provider "auto"/u],
-    [{ providers: { xai: {} } }, /Unsupported .* provider "xai"/u],
+    [
+      { providers: { anthropic: {} } },
+      /Unsupported .* provider "anthropic"; supported providers are deepseek\./u,
+    ],
+    [
+      { providers: { openai: {} } },
+      /Unsupported .* provider "openai"; supported providers are deepseek\./u,
+    ],
+    [
+      { providers: { "openai-codex": {} } },
+      /Unsupported .* provider "openai-codex"; supported providers are deepseek\./u,
+    ],
+    [
+      { providers: { google: {} } },
+      /Unsupported .* provider "google"; supported providers are deepseek\./u,
+    ],
     [{ providers: { deepseek: null } }, /providers\.deepseek must be a JSON object/u],
     [{ providers: { deepseek: { model: "deepseek-chat" } } }, /providers\.deepseek must be \{\}/u],
     [{ providers: { deepseek: { apiKey: "secret" } } }, /providers\.deepseek must be \{\}/u],
-    [{ providers: { anthropic: { apiKey: "secret" } } }, /only model is supported/u],
-    [{ providers: { anthropic: { model: "" } } }, /non-empty model ID/u],
-    [{ providers: { anthropic: { model: " claude-haiku-5-5 " } } }, /non-empty model ID/u],
-    [{ providers: { anthropic: { model: "claude haiku" } } }, /non-empty model ID/u],
-    [{ providers: { anthropic: { model: "claude\nhaiku" } } }, /non-empty model ID/u],
-    [{ providers: { anthropic: { model: 42 } } }, /non-empty model ID/u],
-    [
-      { providers: { deepseek: {} }, defaultProvider: "anthropic" },
-      /defaultProvider "anthropic" must also be enabled/u,
-    ],
     [
       { providers: { deepseek: {} }, defaultProvider: "invalid" },
-      /defaultProvider must be one of/u,
+      /defaultProvider must be one of the supported providers \(deepseek\)/u,
     ],
   ] as const) {
     test(`rejects invalid ${key} setting ${JSON.stringify(setting)}`, () => {
@@ -123,57 +70,17 @@ for (const key of ["search", "fetch"] as const) {
   }
 }
 
-test("resolves the active model provider when enabled, otherwise defaultProvider, with no fallback", () => {
-  assert.throws(
-    () => resolveCapabilityTarget("search", undefined, "deepseek"),
-    /Search is disabled/u,
-  );
-  assert.throws(
-    () => resolveCapabilityTarget("fetch", undefined, "anthropic"),
-    /Fetch is disabled/u,
-  );
+test("resolves the enabled DeepSeek provider with or without optional defaultProvider", () => {
+  assert.throws(() => resolveCapabilityTarget("search", undefined), /Search is disabled/u);
+  assert.throws(() => resolveCapabilityTarget("fetch", undefined), /Fetch is disabled/u);
 
-  const dual = parseConfig({
-    search: {
-      providers: {
-        deepseek: {},
-        anthropic: { model: "claude-sonnet-5-5" },
-      },
-      defaultProvider: "deepseek",
-    },
-  }).search;
+  const single = parseConfig({ search: { providers: { deepseek: {} } } }).search;
+  assert.deepEqual(resolveCapabilityTarget("search", single), { provider: "deepseek" });
 
-  assert.deepEqual(resolveCapabilityTarget("search", dual, "anthropic"), {
-    provider: "anthropic",
-    model: "claude-sonnet-5-5",
-  });
-  assert.deepEqual(resolveCapabilityTarget("search", dual, "deepseek"), {
-    provider: "deepseek",
-  });
-  assert.deepEqual(resolveCapabilityTarget("search", dual, "openai"), {
-    provider: "deepseek",
-  });
-  assert.deepEqual(resolveCapabilityTarget("search", dual, undefined), {
-    provider: "deepseek",
-  });
-
-  const activeOnly = parseConfig({
-    fetch: {
-      providers: { anthropic: {} },
-    },
+  const explicit = parseConfig({
+    fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
   }).fetch;
-
-  assert.deepEqual(resolveCapabilityTarget("fetch", activeOnly, "anthropic"), {
-    provider: "anthropic",
-  });
-  assert.throws(
-    () => resolveCapabilityTarget("fetch", activeOnly, "openai"),
-    /Active model provider "openai" is not enabled in fetch\.providers/u,
-  );
-  assert.throws(
-    () => resolveCapabilityTarget("fetch", activeOnly, undefined),
-    /No active model is selected to match fetch\.providers/u,
-  );
+  assert.deepEqual(resolveCapabilityTarget("fetch", explicit), { provider: "deepseek" });
 });
 
 test("missing configuration disables both tools; invalid files fail without being rewritten", async (t) => {
