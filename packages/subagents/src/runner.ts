@@ -25,13 +25,17 @@ import {
 const GROUP_POLL_MS = 20;
 const POST_KILL_POLLS = 10;
 
+export type CancelClaim =
+  | { accepted: true; done: Promise<Result> }
+  | { accepted: false; reason: "stopping" | "finished" };
+
 export interface Execution {
   ready: Promise<void>;
   done: Promise<Result>;
   run(): void;
   deliver(envelope: MessageEnvelope): Promise<DeliveryAck>;
-  /** Claims cancellation when no terminal stop or exit has begun; returns undefined otherwise. */
-  tryCancel(): Promise<Result> | undefined;
+  /** Claims cancellation when the child is still running; reports why otherwise. */
+  tryCancel(): CancelClaim;
   cancel(): Promise<Result>;
 }
 
@@ -88,6 +92,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   let progress: Progress | undefined;
   let reason: { status: Status; report: string } | undefined;
   let stderr = "";
+  let exited = false;
   let settled = false;
   let started = false;
   let force: NodeJS.Timeout | undefined;
@@ -107,7 +112,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       if (process.platform === "win32") child.kill(signal);
       else process.kill(-child.pid, signal);
     } catch (error) {
-      if (!record(error) || error.code !== "ESRCH") throw error;
+      if (!record(error) || (error.code !== "ESRCH" && error.code !== "EPERM")) throw error;
     }
   };
   const isGroupAlive = (): boolean => {
@@ -116,8 +121,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       process.kill(-child.pid, 0);
       return true;
     } catch (error) {
-      if (record(error) && error.code === "ESRCH") return false;
-      if (record(error) && error.code === "EPERM") return true;
+      if (record(error) && (error.code === "ESRCH" || error.code === "EPERM")) return false;
       throw error;
     }
   };
@@ -130,7 +134,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     }, options.graceMs ?? STOP_GRACE_MS);
   };
   const stop = (status: Status, report: string): boolean => {
-    if (settled || reason) return false;
+    if (settled || exited || reason) return false;
     reason = { status, report };
     failPendingDeliveries();
     readyReject(new Error(report));
@@ -161,10 +165,12 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     if (message.type === "result") {
       failPendingDeliveries();
       if (isResult(message.result)) result = message.result;
-      else if (!reason) stop("failed", "Invalid child result.");
+      else if (!stop("failed", "Invalid child result.")) {
+        reason ??= { status: "failed", report: "Invalid child result." };
+      }
       return;
     }
-    if (reason) return;
+    if (reason || exited) return;
     switch (message.type) {
       case "hello":
         send({
@@ -234,6 +240,16 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   child.on("error", (error) => {
     reason ??= { status: "failed", report: bounded(error.message) };
   });
+  child.on("exit", () => {
+    exited = true;
+    failPendingDeliveries();
+    clearTimeout(startup);
+    clearTimeout(deadline);
+    if (!reason && isGroupAlive()) {
+      kill("SIGTERM");
+      armForceKill();
+    }
+  });
   child.on("close", (code) => {
     settled = true;
     failPendingDeliveries();
@@ -302,22 +318,27 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     };
     setTimeout(pollGroup, GROUP_POLL_MS);
   });
-  const tryCancel = () =>
-    stop("cancelled", "Cancelled; existing filesystem changes were not reverted.")
-      ? done
-      : undefined;
+  const tryCancel = (): CancelClaim => {
+    if (stop("cancelled", "Cancelled; existing filesystem changes were not reverted.")) {
+      return { accepted: true, done };
+    }
+    return {
+      accepted: false,
+      reason: !settled && reason !== undefined ? "stopping" : "finished",
+    };
+  };
   child.stdin?.end(`Delegated task:\n\n${launch.task}`);
   return {
     ready,
     done,
     run() {
-      if (!started && !settled && !reason) {
+      if (!started && !settled && !exited && !reason) {
         started = true;
         send({ type: "run" });
       }
     },
     deliver(envelope: MessageEnvelope): Promise<DeliveryAck> {
-      if (settled || reason || result || !child.connected) {
+      if (settled || exited || reason || result || !child.connected) {
         return Promise.resolve({ accepted: false, reason: "finished" });
       }
       const deliveryId = randomUUID();
@@ -336,7 +357,8 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     },
     tryCancel,
     cancel() {
-      return tryCancel() ?? done;
+      tryCancel();
+      return done;
     },
   };
 }

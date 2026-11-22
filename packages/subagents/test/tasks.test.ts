@@ -40,9 +40,9 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
   const done = deferred<Result>();
   const received: MessageEnvelope[] = [];
   let runs = 0;
-  let stopping = false;
+  let state: "running" | "stopping" | "finished" = "running";
   void done.promise.then(() => {
-    stopping = true;
+    state = "finished";
   });
   const execution: Execution = {
     ready: ready.promise,
@@ -56,11 +56,11 @@ function fake(onDeliver?: (envelope: MessageEnvelope) => DeliveryAck | Promise<D
       return { accepted: true };
     },
     tryCancel() {
-      if (stopping) return undefined;
-      return execution.cancel();
+      if (state !== "running") return { accepted: false, reason: state };
+      return { accepted: true, done: execution.cancel() };
     },
     cancel() {
-      stopping = true;
+      if (state === "running") state = "stopping";
       ready.reject(new Error("cancelled"));
       done.resolve({ ...completed, status: "cancelled" });
       return done.promise;
@@ -293,9 +293,9 @@ test("stop claims cancellation synchronously, preserves in-flight timeouts, and 
     const ready = deferred<void>();
     const done = deferred<Result>();
     let cancelCalls = 0;
-    let stopping = false;
+    let state: "running" | "stopping" | "finished" = "running";
     void done.promise.then(() => {
-      stopping = true;
+      state = "finished";
     });
     const execution: Execution = {
       ready: ready.promise,
@@ -305,11 +305,11 @@ test("stop claims cancellation synchronously, preserves in-flight timeouts, and 
         return { accepted: true };
       },
       tryCancel() {
-        if (stopping) return undefined;
-        return execution.cancel();
+        if (state !== "running") return { accepted: false, reason: state };
+        return { accepted: true, done: execution.cancel() };
       },
       cancel() {
-        stopping = true;
+        if (state === "running") state = "stopping";
         cancelCalls++;
         ready.reject(new Error("cancelled"));
         return done.promise;
@@ -322,7 +322,10 @@ test("stop claims cancellation synchronously, preserves in-flight timeouts, and 
       done,
       cancelCalls: () => cancelCalls,
       beginTimeout() {
-        stopping = true;
+        state = "stopping";
+      },
+      beginPostExitDrain() {
+        state = "finished";
       },
     };
   }
@@ -444,7 +447,14 @@ test("stop claims cancellation synchronously, preserves in-flight timeouts, and 
   assert.deepEqual(notifications, [timedOutResult]);
   assert.deepEqual(await tasks.cancel(idTimeout), { id: idTimeout, ...timedOutResult });
 
-  // Sibling children remain untouched and still deliver their completion results.
+  // Sibling children remain untouched and still deliver their completion results, even if stop()
+  // races post-exit pipe/group drain before close settles.
+  childB.beginPostExitDrain();
+  assert.deepEqual(
+    await tasks.stop(idB),
+    { status: "not_found" },
+    "post-exit drain reports not_found rather than stopping and keeps natural completion",
+  );
   childB.done.resolve(completed);
   await setImmediate();
   assert.deepEqual(notifications, [timedOutResult, completed]);

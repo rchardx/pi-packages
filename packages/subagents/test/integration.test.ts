@@ -2952,12 +2952,15 @@ test("/subagents stop <id> rejects a child already stopping on timeout without s
   const sigtermFlag = join(dir, "child-sigterm.flag");
   const releaseFlag = join(dir, "child-release.flag");
   const spawnDescendantFlag = join(dir, "spawn-descendant.flag");
+  const inheritDescendantFlag = join(dir, "inherit-descendant.flag");
+  const leaderPidFile = join(dir, "leader.pid");
   const descendantPidFile = join(dir, "descendant.pid");
+  const inheritedPidFile = join(dir, "inherited.pid");
   const holdShutdownExt = join(dir, "hold-shutdown.mjs");
   await writeFile(
     holdShutdownExt,
     `import { spawn } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, renameSync, writeFileSync } from "node:fs";
 export default function (pi) {
   pi.registerTool({
     name: "hold_shutdown",
@@ -2967,7 +2970,21 @@ export default function (pi) {
     execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
   });
   pi.on("session_start", () => {
-    if (process.env.PI_SUBAGENTS_CHILD !== "1" || !existsSync(${JSON.stringify(spawnDescendantFlag)})) return;
+    if (process.env.PI_SUBAGENTS_CHILD !== "1") return;
+    if (existsSync(${JSON.stringify(inheritDescendantFlag)})) {
+      writeFileSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, String(process.pid));
+      renameSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, ${JSON.stringify(leaderPidFile)});
+      spawn(
+        process.execPath,
+        [
+          "-e",
+          'const fs = require("node:fs"); process.on("SIGTERM", () => { setTimeout(() => process.exit(0), 5000); }); fs.writeFileSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, ${JSON.stringify(inheritedPidFile)}); setInterval(() => {}, 1000);',
+        ],
+        { stdio: "inherit" },
+      ).unref();
+      return;
+    }
+    if (!existsSync(${JSON.stringify(spawnDescendantFlag)})) return;
     spawn(
       process.execPath,
       [
@@ -2975,11 +2992,17 @@ export default function (pi) {
         'const fs = require("node:fs"); process.on("SIGTERM", () => { setTimeout(() => process.exit(0), 5000); }); fs.writeFileSync(${JSON.stringify(`${descendantPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${descendantPidFile}.tmp`)}, ${JSON.stringify(descendantPidFile)}); setInterval(() => {}, 1000);',
       ],
       { stdio: "ignore" },
-    );
+    ).unref();
     process.on("SIGTERM", () => process.exit(0));
   });
   pi.on("session_shutdown", async () => {
-    if (process.env.PI_SUBAGENTS_CHILD !== "1" || existsSync(${JSON.stringify(spawnDescendantFlag)})) return;
+    if (
+      process.env.PI_SUBAGENTS_CHILD !== "1" ||
+      existsSync(${JSON.stringify(spawnDescendantFlag)}) ||
+      existsSync(${JSON.stringify(inheritDescendantFlag)})
+    ) {
+      return;
+    }
     writeFileSync(${JSON.stringify(sigtermFlag)}, "");
     const until = Date.now() + 1500;
     while (!existsSync(${JSON.stringify(releaseFlag)}) && Date.now() < until) {
@@ -3061,6 +3084,56 @@ export default function (pi) {
   assert.equal(notifications.at(-1)?.message, `Stopped subagent ${groupId}: HELD_THEN_DONE`);
   assert.throws(() => process.kill(descendantPid, 0), { code: "ESRCH" });
   releaseChild();
+
+  // If a child finishes and exits 0 while a stdio-inheriting descendant holds pipes open,
+  // /subagents stop reports not_found instead of overwriting completed with cancelled.
+  await rm(spawnDescendantFlag, { force: true });
+  await writeFile(inheritDescendantFlag, "");
+  holdChild();
+  const completedWithDescendant = await tool.execute("inherit-target", { task: "HELD_THEN_DONE" });
+  const completedId = (completedWithDescendant.details as { id?: string }).id;
+  assert.ok(completedId);
+  let leaderPid: number | undefined;
+  let inheritedPid: number | undefined;
+  const inheritDeadline = Date.now() + 10_000;
+  while (Date.now() < inheritDeadline) {
+    try {
+      leaderPid = Number(await readFile(leaderPidFile, "utf8"));
+      inheritedPid = Number(await readFile(inheritedPidFile, "utf8"));
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  assert.ok(leaderPid && inheritedPid);
+  const updatesBeforeCompleted = updates.seen.length;
+  releaseChild();
+  const leaderExitDeadline = Date.now() + 10_000;
+  while (Date.now() < leaderExitDeadline) {
+    try {
+      process.kill(leaderPid, 0);
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    } catch (error) {
+      assert.equal((error as NodeJS.ErrnoException).code, "ESRCH");
+      break;
+    }
+  }
+  assert.throws(() => process.kill(leaderPid, 0), { code: "ESRCH" });
+  process.kill(inheritedPid, 0);
+
+  await session.prompt(`/subagents stop ${completedId}`);
+  assert.equal(notifications.at(-1)?.type, "error");
+  assert.equal(
+    notifications.at(-1)?.message,
+    `No running subagent ${completedId} in this session.`,
+  );
+
+  const completedUpdate = await updates.next("subagent:result", updatesBeforeCompleted);
+  await session.waitForIdle();
+  assert.ok(record(completedUpdate.details));
+  assert.equal(completedUpdate.details.id, completedId);
+  assert.equal(completedUpdate.details.status, "completed");
+  assert.throws(() => process.kill(inheritedPid, 0), { code: "ESRCH" });
 });
 
 test("/subagents provides case-sensitive two-stage argument completions", {

@@ -284,9 +284,10 @@ background-shell extensions do not accidentally return before their commands fin
 - Quit, new session, resume, fork, and reload cancel the root session's children.
 - Children detect parent IPC disconnection and request termination; they are not
   independent services intended to survive the parent.
-- Termination sends SIGTERM and allows Pi to clean up tools/extensions, then sends
-  SIGKILL to the process group after two seconds. Extensions that hang, detach
-  their own processes, or ignore the host lifecycle are not fully containable.
+- Termination (and post-exit process-group cleanup if a child leaves same-group
+  descendants running) sends SIGTERM, then sends SIGKILL to the process group
+  after two seconds. Extensions that hang, detach their own processes, or ignore
+  the host lifecycle are not fully containable.
 - Explicit cancellation (`subagent_cancel` or `/subagents stop <id>`) never
   emits a `subagent:result` wake-up. Shutdown cancellation never wakes a
   replacement session.

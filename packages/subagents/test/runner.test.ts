@@ -99,9 +99,9 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
   execution.run();
   await afterProgress;
   const pendingCancel = execution.tryCancel();
-  assert.ok(pendingCancel);
-  assert.equal(execution.tryCancel(), undefined);
-  const cancelled = await pendingCancel;
+  assert.equal(pendingCancel.accepted, true);
+  assert.deepEqual(execution.tryCancel(), { accepted: false, reason: "stopping" });
+  const cancelled = await pendingCancel.done;
   assert.deepEqual(cancelled, {
     status: "cancelled",
     report:
@@ -109,7 +109,7 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
     requests: 2,
     tokens: 45,
   });
-  assert.equal(execution.tryCancel(), undefined);
+  assert.deepEqual(execution.tryCancel(), { accepted: false, reason: "finished" });
   assert.deepEqual(await execution.cancel(), cancelled);
 });
 
@@ -142,7 +142,7 @@ test("deadline timeout preserves child progress, rejects tryCancel during SIGTER
   await timedOut.ready;
   timedOut.run();
   await waitForFile(sigtermFlag);
-  assert.equal(timedOut.tryCancel(), undefined);
+  assert.deepEqual(timedOut.tryCancel(), { accepted: false, reason: "stopping" });
   await writeFile(releaseFlag, "");
   assert.deepEqual(await timedOut.done, {
     status: "timed_out",
@@ -153,7 +153,7 @@ test("deadline timeout preserves child progress, rejects tryCancel during SIGTER
 });
 
 if (process.platform !== "win32") {
-  test("cancel waits to reap same-group descendants when the direct child exits early", async (t: TestContext) => {
+  test("process-group cleanup reaps descendants, locks exit before close, and ignores EPERM", async (t: TestContext) => {
     const dir = await mkdtemp(join(tmpdir(), "pi-runner-pgroup-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
 
@@ -180,8 +180,10 @@ if (process.platform !== "win32") {
     process.kill(stubbornPid, 0);
 
     const startedAt = performance.now();
-    const cancelled = await stubborn.tryCancel();
-    assert.equal(cancelled?.status, "cancelled");
+    const stubbornClaim = stubborn.tryCancel();
+    assert.equal(stubbornClaim.accepted, true);
+    const cancelled = await stubbornClaim.done;
+    assert.equal(cancelled.status, "cancelled");
     assert.ok(performance.now() - startedAt >= 120);
     assert.throws(() => process.kill(stubbornPid, 0), { code: "ESRCH" });
 
@@ -206,10 +208,86 @@ if (process.platform !== "win32") {
     const gracefulPid = Number(await waitForFile(gracefulPidFile));
     assert.ok(gracefulPid > 0);
     const gracefulStart = performance.now();
-    const gracefulCancelled = await graceful.tryCancel();
-    assert.equal(gracefulCancelled?.status, "cancelled");
+    const gracefulClaim = graceful.tryCancel();
+    assert.equal(gracefulClaim.accepted, true);
+    const gracefulCancelled = await gracefulClaim.done;
+    assert.equal(gracefulCancelled.status, "cancelled");
     assert.ok(performance.now() - gracefulStart < 1_000);
     assert.throws(() => process.kill(gracefulPid, 0), { code: "ESRCH" });
+
+    // 3. Direct child completes and exits 0 while a stdio-inheriting descendant holds pipes open:
+    //    exit locks completion, rejects late tryCancel as "finished", and reaps the descendant so close settles.
+    const leaderPidFile = join(dir, "leader.pid");
+    const inheritedPidFile = join(dir, "inherited.pid");
+    const inherited = startChild(launch, {
+      args: script(
+        `const fs = require('node:fs');
+         const { spawn } = require('node:child_process');
+         fs.writeFileSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, String(process.pid));
+         fs.renameSync(${JSON.stringify(`${leaderPidFile}.tmp`)}, ${JSON.stringify(leaderPidFile)});
+         process.send({type:'ready'});
+         process.on('message', m => {
+           if (m.type !== 'run') return;
+           spawn(process.execPath, [
+             '-e',
+             'const fs=require("node:fs"); process.on("SIGTERM",()=>{ setTimeout(()=>process.exit(0),5000); }); fs.writeFileSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${inheritedPidFile}.tmp`)}, ${JSON.stringify(inheritedPidFile)}); setInterval(()=>{},1000);'
+           ], { stdio: 'inherit' });
+           const waitDesc = setInterval(() => {
+             if (!fs.existsSync(${JSON.stringify(inheritedPidFile)})) return;
+             clearInterval(waitDesc);
+             process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+           }, 10);
+         });`,
+      ),
+      graceMs: 150,
+    });
+    t.after(() => inherited.cancel());
+    await inherited.ready;
+    inherited.run();
+    const leaderPid = Number(await waitForFile(leaderPidFile));
+    const inheritedPid = Number(await waitForFile(inheritedPidFile));
+    const exitDeadline = Date.now() + 5_000;
+    for (;;) {
+      try {
+        process.kill(leaderPid, 0);
+        if (Date.now() >= exitDeadline) assert.fail("Timed out waiting for leader exit");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } catch (error) {
+        assert.deepEqual((error as NodeJS.ErrnoException).code, "ESRCH");
+        break;
+      }
+    }
+    process.kill(inheritedPid, 0);
+    assert.deepEqual(inherited.tryCancel(), { accepted: false, reason: "finished" });
+    assert.deepEqual(await inherited.done, success);
+    assert.throws(() => process.kill(inheritedPid, 0), { code: "ESRCH" });
+
+    // 4. EPERM on process-group signals neither crashes the parent nor stalls settlement.
+    const realKill = process.kill.bind(process);
+    const killMock = t.mock.method(process, "kill", (pid: number, signal?: string | number) => {
+      if (pid < 0) {
+        throw Object.assign(new Error("Operation not permitted"), { code: "EPERM" });
+      }
+      return realKill(pid, signal);
+    });
+    try {
+      const epermChild = startChild(launch, {
+        args: script(
+          `process.send({type:'ready'});
+           process.on('message', m => {
+             if (m.type === 'run') process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+           });`,
+        ),
+        graceMs: 2_000,
+      });
+      await epermChild.ready;
+      epermChild.run();
+      const epermStart = performance.now();
+      assert.deepEqual(await epermChild.done, success);
+      assert.ok(performance.now() - epermStart < 1_000);
+    } finally {
+      killMock.mock.restore();
+    }
   });
 }
 

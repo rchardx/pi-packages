@@ -235,10 +235,12 @@ export class Tasks {
       return { status: "not_found" };
     }
     if (task.cancelRequested) return { status: "stopping" };
-    const cancelling = task.execution.tryCancel();
-    if (!cancelling) return { status: "stopping" };
+    const claim = task.execution.tryCancel();
+    if (!claim.accepted) {
+      return { status: claim.reason === "stopping" ? "stopping" : "not_found" };
+    }
     this.claimCancel(task);
-    await cancelling;
+    await claim.done;
     return { status: "stopped", task };
   }
 
