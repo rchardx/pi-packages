@@ -22,6 +22,8 @@ import { Display, singleLine } from "./output.ts";
 const Details = Type.Object({
   provider: Type.Enum([...WEB_PROVIDERS]),
   mode: Type.Optional(Type.String()),
+  objective: Type.Optional(Type.String()),
+  excerpts: Type.Optional(Type.Boolean()),
   display: Display,
   truncated: Type.Boolean(),
   fullOutputPath: Type.Optional(Type.String()),
@@ -51,11 +53,45 @@ function compactMetadataItem(value: string): string {
   return match?.[1] ?? value;
 }
 
-export function renderWebCall(kind: Kind, value: unknown, theme: Theme) {
-  const argument = typeof value === "string" ? singleLine(displayText(value)) : "";
+function formatDomainCallHint(value: unknown, prefix = ""): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .flatMap((entry) => (typeof entry === "string" ? [singleLine(displayText(entry))] : []))
+    .filter(Boolean);
+  if (items.length === 0) return undefined;
+  const head = items
+    .slice(0, 2)
+    .map((entry) => `${prefix}${entry}`)
+    .join(", ");
+  return items.length > 2 ? `${head} +${items.length - 2}` : head;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function renderWebCall(kind: Kind, args: unknown, theme: Theme) {
+  const record = isPlainObject(args) ? args : undefined;
+  const rawPrimary = kind === "search" ? record?.query : record?.url;
+  const argument = typeof rawPrimary === "string" ? singleLine(displayText(rawPrimary)) : "";
+  const hints: string[] = [];
+  if (kind === "fetch") {
+    const rawObjective = record?.objective;
+    const objective = typeof rawObjective === "string" ? singleLine(displayText(rawObjective)) : "";
+    if (objective) hints.push(objective);
+  } else {
+    const included = formatDomainCallHint(record?.include_domains);
+    if (included) hints.push(included);
+    const excluded = formatDomainCallHint(record?.exclude_domains, "-");
+    if (excluded) hints.push(excluded);
+    const rawAfter = record?.after_date;
+    const afterDate = typeof rawAfter === "string" ? singleLine(displayText(rawAfter)) : "";
+    if (afterDate) hints.push(`≥${afterDate}`);
+  }
   return new TruncatedText(
     theme.fg("toolTitle", theme.bold(`web_${kind}`)) +
-      (argument ? `  ${theme.fg("muted", argument)}` : ""),
+      (argument ? `  ${theme.fg("muted", argument)}` : "") +
+      (hints.length ? `  ${theme.fg("dim", hints.join(" · "))}` : ""),
     0,
     0,
   );
@@ -98,6 +134,9 @@ export function renderWebResult(
     new TruncatedText(theme.fg("toolTitle", theme.bold(singleLine(read(section.heading)))), 0, 0);
   if (kind === "fetch" && sections[0]) view.addChild(heading(sections[0]));
   const metadata = [PROVIDER_LABELS[details.provider]];
+  if (kind === "fetch" && (details.excerpts || Boolean(details.objective))) {
+    metadata.push("excerpts");
+  }
   if (kind === "search" && details.mode) metadata.push(singleLine(displayText(details.mode)));
   if (kind === "search" && details.resultCount !== undefined) {
     metadata.push(`${details.resultCount} ${details.resultCount === 1 ? "result" : "results"}`);
@@ -143,7 +182,10 @@ export function renderWebResult(
         .map((range) => compactMetadataItem(read(range)))
         .filter(Boolean)
         .join(" · ");
-      if (sectionMetadata) view.addChild(new Text(theme.fg("dim", sectionMetadata), 0, 0));
+      if (sectionMetadata) {
+        view.addChild(new Text(theme.fg("dim", sectionMetadata), 0, 0));
+        if (kind === "fetch") view.addChild(new Spacer(1));
+      }
       for (const [index, range] of section.body.entries()) {
         const body = read(range);
         if (body) {

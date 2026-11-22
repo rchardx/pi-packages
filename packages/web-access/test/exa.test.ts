@@ -153,6 +153,47 @@ test("searchExa switches to text-only contents when need_content is true and hon
       contents: { highlights: true },
     },
   ]);
+
+  seenBodies.length = 0;
+  const filtered = await searchExa(
+    {
+      query: "Node.js releases",
+      include_domains: [
+        "  DOCS.Nodejs.org/api/ ",
+        "npmjs.com/package/@types/node/",
+        "nodejs.org/",
+        "nodejs.org",
+      ],
+      exclude_domains: ["www.nodejs.org/", "nodejs.org/dist/"],
+      after_date: "2024-02-29",
+    },
+    credentials,
+    {},
+    undefined,
+    transport,
+  );
+  assert.deepEqual(seenBodies, [
+    {
+      query: "Node.js releases",
+      type: "auto",
+      numResults: 10,
+      includeDomains: ["docs.nodejs.org/api", "npmjs.com/package/@types/node", "nodejs.org"],
+      excludeDomains: ["www.nodejs.org", "nodejs.org/dist"],
+      startPublishedDate: "2024-02-29T00:00:00.000Z",
+      contents: { highlights: true },
+    },
+  ]);
+  assert.match(
+    filtered.content[0]?.text ?? "",
+    /Filters: include=docs\.nodejs\.org\/api, npmjs\.com\/package\/@types\/node, nodejs\.org; exclude=www\.nodejs\.org, nodejs\.org\/dist; after=2024-02-29/u,
+  );
+  assert.deepEqual(filtered.details.includeDomains, [
+    "docs.nodejs.org/api",
+    "npmjs.com/package/@types/node",
+    "nodejs.org",
+  ]);
+  assert.deepEqual(filtered.details.excludeDomains, ["www.nodejs.org", "nodejs.org/dist"]);
+  assert.equal(filtered.details.afterDate, "2024-02-29");
 });
 
 test("searchExa rejects blank queries, incompatible lite + max_age_hours, and pre-cancellation before resolving credentials", async () => {
@@ -177,6 +218,24 @@ test("searchExa rejects blank queries, incompatible lite + max_age_hours, and pr
     searchExa({ query: "API", max_age_hours: 0 }, resolveAuth, { mode: "lite" }),
     /mode "lite" uses cached content only and cannot be combined with max_age_hours/u,
   );
+  for (const badFilter of [
+    { include_domains: ["   "] },
+    { include_domains: ["https://nodejs.org"] },
+    { include_domains: ["*.nodejs.org"] },
+    { include_domains: ["nodejs.org:443"] },
+    { include_domains: ["user@nodejs.org/api"] },
+    { include_domains: ["nodejs.org?x=1"] },
+    { include_domains: ["nodejs.org#frag"] },
+    { include_domains: ["localhost"] },
+    { include_domains: ["127.0.0.1"] },
+    { include_domains: [".edu"] },
+    { include_domains: [".edu/path"] },
+    { exclude_domains: ["github.com/../etc"] },
+    { include_domains: ["nodejs.org"], exclude_domains: ["NODEJS.ORG/"] },
+    { after_date: "2025-02-29" },
+  ]) {
+    await assert.rejects(searchExa({ query: "API", ...badFilter }, resolveAuth));
+  }
   await assert.rejects(
     searchExa({ query: "API" }, resolveAuth, {}, AbortSignal.abort(new Error("cancelled"))),
     /cancelled/u,
@@ -201,7 +260,7 @@ test("searchExa normalizes nullable metadata, omits invalid URLs, and handles ov
   assert.equal(result.details.omittedInvalidUrls, 1);
   assert.equal(result.structuredContent.results[0]?.title, pageUrl);
   assert.match(result.content[0]?.text ?? "", /Omitted 1 result\(s\)/u);
-  assert.match(result.content[0]?.text ?? "", /Provider summary: Not provided\./u);
+  assert.match(result.content[0]?.text ?? "", /Highlights: Not provided\./u);
 
   const oversized = await localTransport(t, "https://api.exa.ai/search", (_req, reply) => {
     reply.writeHead(200, { "content-type": "application/json" });
@@ -272,6 +331,40 @@ test("fetchExa normalizes URLs, passes maxAgeHours, and saves truncated output p
   if (process.platform !== "win32") {
     assert.equal((await stat(fullPath)).mode & 0o777, 0o600);
   }
+
+  // Targeted objective requests highlights.query instead of full page text.
+  let objectiveBody: unknown;
+  const focused = await fetchExa(
+    pageUrl,
+    credentials,
+    { maxAgeHours: 12, objective: "  LTS\nmaintenance dates  " },
+    undefined,
+    async (_endpoint, init) => {
+      objectiveBody = JSON.parse(String(init?.body));
+      return Response.json({
+        results: [
+          {
+            url: pageUrl,
+            title: "Node Releases",
+            highlights: ["22.x enters Maintenance LTS.", "End-of-life in April 2027."],
+          },
+        ],
+      });
+    },
+  );
+  assert.deepEqual(objectiveBody, {
+    urls: [pageUrl],
+    highlights: { query: "LTS maintenance dates" },
+    maxAgeHours: 12,
+  });
+  assert.equal(focused.details.objective, "LTS maintenance dates");
+  assert.equal(focused.structuredContent.objective, "LTS maintenance dates");
+  assert.equal(
+    focused.structuredContent.content,
+    "22.x enters Maintenance LTS.\n\nEnd-of-life in April 2027.",
+  );
+  assert.match(focused.content[0]?.text ?? "", /Objective: LTS maintenance dates/u);
+  assert.match(focused.content[0]?.text ?? "", /Untrusted provider-returned web excerpts/u);
 });
 
 test("fetchExa sanitizes crawl statuses, cache misses, HTTP errors, and pre-auth URL errors", async (t) => {
@@ -291,6 +384,10 @@ test("fetchExa sanitizes crawl statuses, cache misses, HTTP errors, and pre-auth
   await assert.rejects(
     fetchExa(`https://docs.example.test/${"a".repeat(2024)}`, countAuth),
     /Exa Fetch URL exceeds 2048 characters after normalization/u,
+  );
+  await assert.rejects(
+    fetchExa(pageUrl, countAuth, { objective: "  \n " }),
+    /Exa Fetch objective must not be blank/u,
   );
   assert.equal(resolutions, 0);
 
@@ -352,6 +449,11 @@ test("fetchExa sanitizes crawl statuses, cache misses, HTTP errors, and pre-auth
       { results: [{ url: pageUrl, title: "Blank", text: "  \n " }] },
       {},
       /no readable page content/u,
+    ],
+    [
+      { results: [{ url: pageUrl, title: "Cached", highlights: [] }] },
+      { maxAgeHours: -1, objective: "unmatched topic" },
+      /found no excerpts matching the requested objective/u,
     ],
   ] as const) {
     await assert.rejects(

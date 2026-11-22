@@ -157,6 +157,41 @@ test("searchParallel honors configured and per-call mode and freshness overrides
       },
     },
   ]);
+
+  seenBodies.length = 0;
+  const filtered = await searchParallel(
+    {
+      query: "Node.js releases",
+      include_domains: ["DOCS.Python.org/3/", "wikipedia.org", ".gov"],
+      exclude_domains: ["docs.python.org/3/library/"],
+      after_date: "2025-01-15",
+    },
+    credentials,
+    {},
+    undefined,
+    transport,
+  );
+  assert.deepEqual(seenBodies, [
+    {
+      mode: "fast",
+      search_queries: ["Node.js releases"],
+      advanced_settings: {
+        max_results: 10,
+        source_policy: {
+          include_domains: ["docs.python.org/3", "wikipedia.org", ".gov"],
+          exclude_domains: ["docs.python.org/3/library"],
+          after_date: "2025-01-15",
+        },
+      },
+    },
+  ]);
+  assert.match(
+    filtered.content[0]?.text ?? "",
+    /Filters: include=docs\.python\.org\/3, wikipedia\.org, \.gov; exclude=docs\.python\.org\/3\/library; after=2025-01-15/u,
+  );
+  assert.deepEqual(filtered.details.includeDomains, ["docs.python.org/3", "wikipedia.org", ".gov"]);
+  assert.deepEqual(filtered.details.excludeDomains, ["docs.python.org/3/library"]);
+  assert.equal(filtered.details.afterDate, "2025-01-15");
 });
 
 test("searchParallel rejects unsupported modes, need_content, invalid query lengths, and pre-cancellation before reading credentials", async () => {
@@ -179,6 +214,22 @@ test("searchParallel rejects unsupported modes, need_content, invalid query leng
       /1–200 Unicode characters/u,
     );
   }
+  for (const badFilter of [
+    { include_domains: ["https://docs.parallel.ai"] },
+    { include_domains: ["*.parallel.ai"] },
+    { include_domains: ["parallel.ai"], exclude_domains: ["www.parallel.ai/"] },
+    { mode: "turbo" as const, include_domains: ["docs.parallel.ai/search"] },
+    { mode: "turbo" as const, exclude_domains: ["docs.parallel.ai/search"] },
+    { after_date: "2025-02-29" },
+  ]) {
+    await assert.rejects(searchParallel({ query: "API", ...badFilter }, countAuth));
+  }
+  await assert.rejects(
+    searchParallel({ query: "API", include_domains: ["docs.parallel.ai/search"] }, countAuth, {
+      mode: "turbo",
+    }),
+    /mode "turbo" does not support domain\/path prefix filters/u,
+  );
   await assert.rejects(
     searchParallel({ query: "API" }, countAuth, {}, AbortSignal.abort(new Error("cancelled"))),
     /cancelled/u,
@@ -203,7 +254,7 @@ test("searchParallel normalizes nullable metadata, omits invalid URLs, and handl
   assert.equal(result.details.omittedInvalidUrls, 1);
   assert.equal(result.structuredContent.results[0]?.title, pageUrl);
   assert.match(result.content[0]?.text ?? "", /Omitted 1 result\(s\)/u);
-  assert.match(result.content[0]?.text ?? "", /Provider summary: Not provided\./u);
+  assert.match(result.content[0]?.text ?? "", /Excerpts: Not provided\./u);
 
   const oversized = await localTransport(t, "https://api.parallel.ai/v1/search", (_req, reply) => {
     reply.writeHead(200, { "content-type": "application/json" });
@@ -301,6 +352,63 @@ test("fetchParallel normalizes URLs, requests full_content with fetch_policy, fa
     }),
   );
   assert.equal(excerptFallback.structuredContent.content, "Part A\n\nPart B");
+  assert.equal(excerptFallback.details.excerpts, true);
+  assert.match(excerptFallback.content[0]?.text ?? "", /Untrusted provider-returned web excerpts/u);
+
+  // Objective omits full_content (and advanced_settings when maxAgeHours is unset) to request focused excerpts.
+  const objectiveBodies: unknown[] = [];
+  const focusedDefault = await fetchParallel(
+    pageUrl,
+    credentials,
+    { objective: "  rate\nlimits  " },
+    undefined,
+    async (_endpoint, init) => {
+      objectiveBodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        results: [
+          {
+            url: pageUrl,
+            title: "Rate limits",
+            excerpts: ["600 requests per minute."],
+            full_content: null,
+          },
+        ],
+        errors: [],
+      });
+    },
+  );
+  const focusedLive = await fetchParallel(
+    pageUrl,
+    credentials,
+    { objective: "rate limits", maxAgeHours: 0 },
+    undefined,
+    async (_endpoint, init) => {
+      objectiveBodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        results: [
+          {
+            url: pageUrl,
+            title: "Rate limits",
+            excerpts: ["600 requests per minute."],
+            full_content: null,
+          },
+        ],
+        errors: [],
+      });
+    },
+  );
+  assert.deepEqual(objectiveBodies, [
+    { urls: [pageUrl], objective: "rate limits" },
+    {
+      urls: [pageUrl],
+      objective: "rate limits",
+      advanced_settings: { fetch_policy: { max_age_seconds: PARALLEL_MIN_MAX_AGE_SECONDS } },
+    },
+  ]);
+  assert.equal(focusedDefault.details.objective, "rate limits");
+  assert.equal(focusedDefault.structuredContent.objective, "rate limits");
+  assert.equal(focusedLive.structuredContent.content, "600 requests per minute.");
+  assert.match(focusedDefault.content[0]?.text ?? "", /Objective: rate limits/u);
 });
 
 test("fetchParallel rejects cache-only (-1) and invalid URLs pre-auth, and sanitizes extract errors and HTTP statuses without leaking raw error text", async (t) => {
@@ -313,6 +421,10 @@ test("fetchParallel rejects cache-only (-1) and invalid URLs pre-auth, and sanit
   await assert.rejects(
     fetchParallel(pageUrl, countAuth, { maxAgeHours: -1 }),
     /Parallel Fetch does not support cache-only mode \(-1\)/u,
+  );
+  await assert.rejects(
+    fetchParallel(pageUrl, countAuth, { objective: "   " }),
+    /Parallel Fetch objective must not be blank/u,
   );
   assert.equal(resolutions, 0);
 
@@ -391,6 +503,16 @@ test("fetchParallel rejects cache-only (-1) and invalid URLs pre-auth, and sanit
       },
     );
   }
+
+  await assert.rejects(
+    fetchParallel(pageUrl, credentials, { objective: "unmatched topic" }, undefined, async () =>
+      Response.json({
+        results: [{ url: pageUrl, title: "Page", excerpts: [], full_content: null }],
+        errors: [],
+      }),
+    ),
+    /Parallel Fetch found no excerpts matching the requested objective/u,
+  );
 
   for (const [status, message] of [
     [401, "Parallel Fetch HTTP 401: Missing or invalid Parallel API key."],

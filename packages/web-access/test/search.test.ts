@@ -564,6 +564,16 @@ test("backend query errors and pre-cancellation do not resolve credentials", asy
     searchWithCredentials({ query: "API", max_age_hours: 24 }, resolveKey),
     /DeepSeek Search does not support max_age_hours/u,
   );
+  for (const filterArgs of [
+    { query: "API", include_domains: ["nodejs.org"] },
+    { query: "API", exclude_domains: ["reddit.com"] },
+    { query: "API", after_date: "2025-01-01" },
+  ]) {
+    await assert.rejects(
+      searchWithCredentials(filterArgs, resolveKey),
+      /DeepSeek Search does not support include_domains, exclude_domains, or after_date/u,
+    );
+  }
   await assert.rejects(
     searchWithCredentials({ query: "API" }, resolveKey, AbortSignal.abort(new Error("cancelled"))),
     /cancelled/u,

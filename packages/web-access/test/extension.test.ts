@@ -270,6 +270,12 @@ test("the registered search schema declares the argument constraints enforced by
     { query: "API", mode: "advanced" },
     { query: "API", mode: "deep", max_age_hours: 0 },
     { query: "API", max_age_hours: -1 },
+    {
+      query: "API",
+      include_domains: ["nodejs.org", "github.com/nodejs/node"],
+      exclude_domains: ["nodejs.org/dist"],
+      after_date: "2025-01-01",
+    },
   ])
     assert.equal(Check(tool.parameters, args), true);
   for (const args of [
@@ -285,6 +291,14 @@ test("the registered search schema declares the argument constraints enforced by
     { query: "API", mode: "invalid" },
     { query: "API", max_age_hours: -2 },
     { query: "API", max_age_hours: 721 },
+    { query: "API", include_domains: [] },
+    { query: "API", include_domains: [""] },
+    {
+      query: "API",
+      exclude_domains: Array.from({ length: 101 }, (_, index) => `d${index}.example`),
+    },
+    { query: "API", after_date: "2025/01/01" },
+    { query: "API", before_date: "2025-12-31" },
     { query: "API", provider: "other" },
   ])
     assert.equal(Check(tool.parameters, args), false, JSON.stringify(args));
@@ -624,14 +638,24 @@ test("Parallel defaults to fast mode in guidelines, uses PARALLEL_API_KEY at har
     mode: "advanced",
     max_age_hours: 0,
     count: 5,
+    include_domains: ["docs.parallel.ai"],
+    after_date: "2026-01-01",
   });
   assert.equal(overrideSearch.details.mode, "advanced");
 
   const fetchRes = await fetchTool.execute("p-f1", {
     url: "https://docs.parallel.ai/search",
+    objective: "authentication headers",
     max_age_hours: 0,
   });
   assert.equal(fetchRes.details.provider, "parallel");
+  assert.deepEqual(fetchRes.structuredContent, {
+    provider: "parallel",
+    url: "https://docs.parallel.ai/search",
+    title: "Parallel Docs",
+    objective: "authentication headers",
+    content: "Excerpt",
+  });
   assert.equal(Check(fetchTool.outputSchema, fetchRes.structuredContent), true);
 
   failParallel = true;
@@ -655,14 +679,22 @@ test("Parallel defaults to fast mode in guidelines, uses PARALLEL_API_KEY at har
       body: {
         mode: "advanced",
         search_queries: ["Parallel search"],
-        advanced_settings: { max_results: 5, fetch_policy: { max_age_seconds: 600 } },
+        advanced_settings: {
+          max_results: 5,
+          source_policy: {
+            include_domains: ["docs.parallel.ai"],
+            after_date: "2026-01-01",
+          },
+          fetch_policy: { max_age_seconds: 600 },
+        },
       },
     },
     {
       url: "https://api.parallel.ai/v1/extract",
       body: {
         urls: ["https://docs.parallel.ai/search"],
-        advanced_settings: { full_content: true, fetch_policy: { max_age_seconds: 600 } },
+        objective: "authentication headers",
+        advanced_settings: { fetch_policy: { max_age_seconds: 600 } },
       },
     },
     {

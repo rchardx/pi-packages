@@ -10,6 +10,7 @@ import {
   FETCH_TIMEOUT_MS,
   FetchParameters,
   fetchDeepSeek,
+  MAX_FETCH_OBJECTIVE_CHARACTERS,
   MAX_FETCH_RESPONSE_BYTES,
 } from "../src/fetch.ts";
 import { fixture } from "./_server.ts";
@@ -87,6 +88,8 @@ test("preserves provider Markdown and paragraphs without local HTML extraction, 
 test("the registered fetch schema bounds input and disallows per-call credentials or provider selection", () => {
   for (const args of [
     { url },
+    { url, objective: "extract authentication headers" },
+    { url, objective: "x".repeat(MAX_FETCH_OBJECTIVE_CHARACTERS), max_age_hours: 0 },
     { url, max_age_hours: -1 },
     { url, max_age_hours: 0 },
     { url, max_age_hours: 720 },
@@ -99,6 +102,9 @@ test("the registered fetch schema bounds input and disallows per-call credential
     { url: "" },
     { url: null },
     { url: "x".repeat(8193) },
+    { url, objective: "" },
+    { url, objective: "x".repeat(MAX_FETCH_OBJECTIVE_CHARACTERS + 1) },
+    { url, objective: 42 },
     { url, max_age_hours: -2 },
     { url, max_age_hours: 721 },
     { url, max_age_hours: 1.5 },
@@ -109,12 +115,18 @@ test("the registered fetch schema bounds input and disallows per-call credential
   }
 });
 
-test("DeepSeek Fetch rejects max_age_hours and pre-cancellation before resolving credentials", async () => {
+test("DeepSeek Fetch rejects objective, max_age_hours, and pre-cancellation before resolving credentials", async () => {
   let resolutions = 0;
   const countAuth = () => {
     resolutions++;
     return credentials();
   };
+  await assert.rejects(
+    fetchDeepSeek(url, countAuth, undefined, async () => response(), {
+      objective: "extract headers",
+    }),
+    /DeepSeek Fetch does not support objective/u,
+  );
   await assert.rejects(
     fetchDeepSeek(url, countAuth, undefined, async () => response(), { maxAgeHours: 0 }),
     /DeepSeek Fetch does not support max_age_hours/u,
