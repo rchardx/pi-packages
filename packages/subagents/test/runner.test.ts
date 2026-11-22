@@ -262,7 +262,38 @@ if (process.platform !== "win32") {
     assert.deepEqual(await inherited.done, success);
     assert.throws(() => process.kill(inheritedPid, 0), { code: "ESRCH" });
 
-    // 4. EPERM on process-group signals neither crashes the parent nor stalls settlement.
+    // 4. Descendant closing inherited pipes on first SIGTERM does not receive a duplicate SIGTERM on close.
+    const cleanupPidFile = join(dir, "cleanup-once.pid");
+    const cleanupDoneFile = join(dir, "cleanup-once.done");
+    const singleSigterm = startChild(launch, {
+      args: script(
+        `const fs = require('node:fs');
+         const { spawn } = require('node:child_process');
+         process.send({type:'ready'});
+         process.on('message', m => {
+           if (m.type !== 'run') return;
+           spawn(process.execPath, [
+             '-e',
+             'const fs=require("node:fs"); let count=0; process.on("SIGTERM",()=>{ if(++count>1) process.exit(1); fs.closeSync(1); fs.closeSync(2); setTimeout(()=>{ fs.writeFileSync(${JSON.stringify(`${cleanupDoneFile}.tmp`)}, String(count)); fs.renameSync(${JSON.stringify(`${cleanupDoneFile}.tmp`)}, ${JSON.stringify(cleanupDoneFile)}); process.exit(0); }, 200); }); fs.writeFileSync(${JSON.stringify(`${cleanupPidFile}.tmp`)}, String(process.pid)); fs.renameSync(${JSON.stringify(`${cleanupPidFile}.tmp`)}, ${JSON.stringify(cleanupPidFile)}); setInterval(()=>{},1000);'
+           ], { stdio: ['ignore', 'inherit', 'inherit'] });
+           const waitDesc = setInterval(() => {
+             if (!fs.existsSync(${JSON.stringify(cleanupPidFile)})) return;
+             clearInterval(waitDesc);
+             process.send({type:'result', result:${JSON.stringify(success)}}, () => process.exit(0));
+           }, 10);
+         });`,
+      ),
+      graceMs: 2_000,
+    });
+    t.after(() => singleSigterm.cancel());
+    await singleSigterm.ready;
+    singleSigterm.run();
+    const cleanupPid = Number(await waitForFile(cleanupPidFile));
+    assert.deepEqual(await singleSigterm.done, success);
+    assert.equal(await waitForFile(cleanupDoneFile), "1");
+    assert.throws(() => process.kill(cleanupPid, 0), { code: "ESRCH" });
+
+    // 5. EPERM on process-group signals neither crashes the parent nor stalls settlement.
     const realKill = process.kill.bind(process);
     const killMock = t.mock.method(process, "kill", (pid: number, signal?: string | number) => {
       if (pid < 0) {

@@ -97,6 +97,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
   let started = false;
   let force: NodeJS.Timeout | undefined;
   let forceKilled = false;
+  let groupTerminating = false;
   const pendingDeliveries = new Map<string, (ack: DeliveryAck) => void>();
 
   const failPendingDeliveries = () => {
@@ -125,8 +126,10 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       throw error;
     }
   };
-  const armForceKill = () => {
-    if (force || forceKilled) return;
+  const terminateGroup = () => {
+    if (groupTerminating) return;
+    groupTerminating = true;
+    kill("SIGTERM");
     force = setTimeout(() => {
       force = undefined;
       forceKilled = true;
@@ -138,8 +141,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     reason = { status, report };
     failPendingDeliveries();
     readyReject(new Error(report));
-    kill("SIGTERM");
-    armForceKill();
+    terminateGroup();
     return true;
   };
   const startup = setTimeout(
@@ -245,10 +247,7 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
     failPendingDeliveries();
     clearTimeout(startup);
     clearTimeout(deadline);
-    if (!reason && isGroupAlive()) {
-      kill("SIGTERM");
-      armForceKill();
-    }
+    if (isGroupAlive()) terminateGroup();
   });
   child.on("close", (code) => {
     settled = true;
@@ -295,10 +294,6 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       clearTimeout(force);
       doneResolve(finalResult);
       return;
-    }
-    if (!reason) {
-      kill("SIGTERM");
-      armForceKill();
     }
     let postKillPolls = 0;
     const pollGroup = () => {
