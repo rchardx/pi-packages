@@ -1,225 +1,76 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { type AuthRegistry, resolveDeepSeekHeaders } from "../src/auth.ts";
+import {
+  DEEPSEEK_API_ORIGIN,
+  EXA_API_ORIGIN,
+  resolveDeepSeekHeaders,
+  resolveExaHeaders,
+} from "../src/auth.ts";
 
-async function deepSeekFixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), "pi-deepseek-auth-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const runtime = await ModelRuntime.create({
-    authPath: join(directory, "auth.json"),
-    modelsPath: null,
-    refreshOnCreate: false,
-    allowModelNetwork: false,
+function preserveEnv(t: TestContext, name: "DEEPSEEK_API_KEY" | "EXA_API_KEY") {
+  const previous = process.env[name];
+  delete process.env[name];
+  t.after(() => {
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
   });
-  const provider = runtime.getProvider("deepseek");
-  assert.ok(provider);
-  const registry: AuthRegistry = {
-    getProvider: (id) => {
-      assert.equal(id, "deepseek");
-      return provider;
+}
+
+test("hardcoded provider origins point exclusively to the official APIs", () => {
+  assert.equal(DEEPSEEK_API_ORIGIN, "https://api.deepseek.com");
+  assert.equal(EXA_API_ORIGIN, "https://api.exa.ai");
+});
+
+test("resolveDeepSeekHeaders reads DEEPSEEK_API_KEY, trims outer whitespace, and sanitizes invalid values", (t) => {
+  preserveEnv(t, "DEEPSEEK_API_KEY");
+  assert.throws(() => resolveDeepSeekHeaders(), /Configure DEEPSEEK_API_KEY/u);
+
+  process.env.DEEPSEEK_API_KEY = "   ";
+  assert.throws(() => resolveDeepSeekHeaders(), /Configure DEEPSEEK_API_KEY/u);
+
+  process.env.DEEPSEEK_API_KEY = "  deepseek-test-key  ";
+  assert.deepEqual(Object.fromEntries(resolveDeepSeekHeaders()), {
+    authorization: "Bearer deepseek-test-key",
+  });
+
+  process.env.DEEPSEEK_API_KEY = "bad-secret\r\nx-injected: 1";
+  assert.throws(
+    () => resolveDeepSeekHeaders(),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        "Invalid DEEPSEEK_API_KEY header value; check the environment variable.",
+      );
+      assert.ok(!error.message.includes("bad-secret"));
+      return true;
     },
-    getProviderAuth: async (id) => {
-      assert.equal(id, "deepseek");
-      return { auth: { apiKey: "test-only-key" } };
+  );
+});
+
+test("resolveExaHeaders reads EXA_API_KEY, trims outer whitespace, and sanitizes invalid values", (t) => {
+  preserveEnv(t, "EXA_API_KEY");
+  assert.throws(() => resolveExaHeaders(), /Configure EXA_API_KEY/u);
+
+  process.env.EXA_API_KEY = "\t\n";
+  assert.throws(() => resolveExaHeaders(), /Configure EXA_API_KEY/u);
+
+  process.env.EXA_API_KEY = "  exa-test-key  ";
+  assert.deepEqual(Object.fromEntries(resolveExaHeaders()), {
+    "x-api-key": "exa-test-key",
+  });
+
+  process.env.EXA_API_KEY = "exa-secret-密钥";
+  assert.throws(
+    () => resolveExaHeaders(),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        "Invalid EXA_API_KEY header value; check the environment variable.",
+      );
+      assert.ok(!error.message.includes("exa-secret"));
+      return true;
     },
-  };
-  return { provider, registry };
-}
-
-for (const baseUrl of [
-  "https://api.deepseek.com",
-  "https://api.deepseek.com/",
-  "https://api.deepseek.com/v1",
-  "https://api.deepseek.com/v1/",
-  "https://api.deepseek.com/beta",
-  "https://API.DEEPSEEK.COM:443/anthropic",
-  "https://api.deepseek.com/other?version=2#fragment",
-  "https://test-user:test-password@api.deepseek.com/v1",
-]) {
-  test(`DeepSeek accepts the official effective origin regardless of base path: ${baseUrl}`, async (t) => {
-    const { registry, provider } = await deepSeekFixture(t);
-    registry.getProvider = () => ({ ...provider, baseUrl });
-    assert.equal(
-      (await resolveDeepSeekHeaders(registry)).get("authorization"),
-      "Bearer test-only-key",
-    );
-    registry.getProvider = () => ({ ...provider, baseUrl: "https://gateway.example.test" });
-    registry.getProviderAuth = async () => ({ auth: { apiKey: "test-only-key", baseUrl } });
-    assert.equal(
-      (await resolveDeepSeekHeaders(registry)).get("authorization"),
-      "Bearer test-only-key",
-    );
-  });
-}
-
-for (const baseUrl of [
-  "invalid",
-  "https://gateway.example.test/v1",
-  "https://api.deepseek.com.evil.test/v1",
-  "http://api.deepseek.com",
-  "https://api.deepseek.com:8443",
-]) {
-  for (const source of ["provider", "auth"]) {
-    test(`DeepSeek rejects a mismatched ${source} origin without exposing the route`, async (t) => {
-      const { registry, provider } = await deepSeekFixture(t);
-      if (source === "provider") registry.getProvider = () => ({ ...provider, baseUrl });
-      else registry.getProviderAuth = async () => ({ auth: { apiKey: "test-only-key", baseUrl } });
-      await assert.rejects(resolveDeepSeekHeaders(registry), {
-        message:
-          "DeepSeek web tools require Pi's effective auth origin to be https://api.deepseek.com.",
-      });
-    });
-  }
-}
-
-test("an explicit DeepSeek auth origin is sufficient without provider defaults, but an unknown origin is not", async (t) => {
-  const { registry } = await deepSeekFixture(t);
-  registry.getProvider = () => undefined;
-  await assert.rejects(resolveDeepSeekHeaders(registry), /effective auth origin/u);
-  registry.getProviderAuth = async () => ({
-    auth: { apiKey: "test-only-key", baseUrl: "https://api.deepseek.com/beta" },
-  });
-  assert.equal(
-    (await resolveDeepSeekHeaders(registry)).get("authorization"),
-    "Bearer test-only-key",
   );
-});
-
-test("OAuth capability does not prevent use of auth already resolved by Pi", async (t) => {
-  const { registry, provider } = await deepSeekFixture(t);
-  registry.getProvider = () => ({
-    ...provider,
-    auth: {
-      ...provider.auth,
-      oauth: {
-        name: "Test OAuth",
-        login: async () => ({
-          type: "oauth",
-          access: "test-token",
-          refresh: "test-refresh",
-          expires: 0,
-        }),
-        refresh: async (credential) => credential,
-        toAuth: async () => ({ apiKey: "test-only-key" }),
-      },
-    },
-  });
-  assert.equal(
-    (await resolveDeepSeekHeaders(registry)).get("authorization"),
-    "Bearer test-only-key",
-  );
-});
-
-test("forwards provider and resolved auth headers with case-insensitive overrides and null suppression", async (t) => {
-  const { registry, provider } = await deepSeekFixture(t);
-  const providerHeaders = { "X-Provider": "provider", "X-Replace": "old", "X-Remove": "old" };
-  const authHeaders = { "x-replace": "new", "x-remove": null, "X-Auth": "resolved" };
-  registry.getProvider = () => ({ ...provider, headers: providerHeaders });
-  registry.getProviderAuth = async () => ({
-    auth: { apiKey: "test-only-key", headers: authHeaders },
-  });
-  const headers = await resolveDeepSeekHeaders(registry);
-  assert.deepEqual(Object.fromEntries(headers), {
-    authorization: "Bearer test-only-key",
-    "x-auth": "resolved",
-    "x-provider": "provider",
-    "x-replace": "new",
-  });
-  assert.equal(providerHeaders["X-Remove"], "old");
-  assert.equal(authHeaders["x-remove"], null);
-});
-
-test("only final merged header values are validated, so overridden provider values never fail", async (t) => {
-  const { registry, provider } = await deepSeekFixture(t);
-  registry.getProvider = () => ({
-    ...provider,
-    headers: { "X-Replaced": "invalid\nvalue", "X-Removed": "invalid\nvalue" },
-  });
-  registry.getProviderAuth = async () => ({
-    auth: { apiKey: "test-only-key", headers: { "x-replaced": "valid", "x-removed": null } },
-  });
-  assert.deepEqual(Object.fromEntries(await resolveDeepSeekHeaders(registry)), {
-    authorization: "Bearer test-only-key",
-    "x-replaced": "valid",
-  });
-});
-
-test("Pi's Authorization header overrides the default bearer key and works without an apiKey field", async (t) => {
-  const { registry, provider } = await deepSeekFixture(t);
-  registry.getProvider = () => ({
-    ...provider,
-    headers: { Authorization: "Bearer provider-only-key" },
-  });
-  registry.getProviderAuth = async () => ({
-    auth: { apiKey: "default-key", headers: { authorization: "Bearer resolved-key" } },
-  });
-  assert.equal(
-    (await resolveDeepSeekHeaders(registry)).get("Authorization"),
-    "Bearer resolved-key",
-  );
-  registry.getProviderAuth = async () => ({
-    auth: { headers: { authorization: "Bearer header-only-key" } },
-  });
-  assert.equal(
-    (await resolveDeepSeekHeaders(registry)).get("Authorization"),
-    "Bearer header-only-key",
-  );
-});
-
-test("null Authorization suppresses the bearer default instead of restoring a different credential", async (t) => {
-  const { registry } = await deepSeekFixture(t);
-  registry.getProviderAuth = async () => ({
-    auth: { apiKey: "default-key", headers: { authorization: null } },
-  });
-  await assert.rejects(resolveDeepSeekHeaders(registry), /Configure DeepSeek authentication/u);
-});
-
-for (const auth of [
-  { apiKey: "private\nkey" },
-  { headers: { Authorization: "Bearer private\nkey" } },
-  { headers: { "Invalid\nName": "private-value" } },
-]) {
-  test("HTTP header construction failures are sanitized without validating credential formats", async (t) => {
-    const { registry } = await deepSeekFixture(t);
-    registry.getProviderAuth = async () => ({ auth });
-    await assert.rejects(resolveDeepSeekHeaders(registry), {
-      message: "Cannot prepare DeepSeek authentication headers returned by Pi.",
-    });
-  });
-}
-
-test("missing credentials are not replaced and SDK failures do not disclose their cause", async (t) => {
-  const { registry, provider } = await deepSeekFixture(t);
-  registry.getProvider = () => ({
-    ...provider,
-    headers: { Authorization: "must-not-be-a-fallback" },
-  });
-  registry.getProviderAuth = async () => undefined;
-  await assert.rejects(resolveDeepSeekHeaders(registry), /Configure DeepSeek authentication/u);
-  registry.getProviderAuth = async () => {
-    throw new Error("secret-manager-output");
-  };
-  await assert.rejects(resolveDeepSeekHeaders(registry), {
-    message: "Cannot resolve DeepSeek credentials through Pi; check the provider setup.",
-  });
-});
-
-test("provider lookup failures are also sanitized", async (t) => {
-  const { registry } = await deepSeekFixture(t);
-  registry.getProvider = () => {
-    throw new Error("private-provider-configuration");
-  };
-  await assert.rejects(resolveDeepSeekHeaders(registry), {
-    message: "Cannot resolve DeepSeek credentials through Pi; check the provider setup.",
-  });
-});
-
-test("a resolved auth result without HTTP authorization gives a configuration error", async (t) => {
-  const { registry } = await deepSeekFixture(t);
-  registry.getProviderAuth = async () => ({ auth: {} });
-  await assert.rejects(resolveDeepSeekHeaders(registry), /Configure DeepSeek authentication/u);
 });

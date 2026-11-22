@@ -143,48 +143,25 @@ export async function withDeadline<T>(
   }
 }
 
-export async function resolveWithSignal<T>(
-  resolve: () => Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  // Pi auth takes no signal. Race the wait; fetch owns request/body cancellation
-  // through the same signal, including when credential completion races an abort.
-  signal.throwIfAborted();
-  let onAbort = () => {};
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    const resolved = resolve();
-    resolved.catch(() => {});
-    return await Promise.race([resolved, aborted]);
-  } finally {
-    signal.removeEventListener("abort", onAbort);
-  }
-}
-
-export interface JsonPostOptions<TAuth> {
+export interface JsonPostOptions {
   endpoint: string;
-  resolveAuth: () => Promise<TAuth>;
-  buildRequest: (auth: TAuth) => { headers: Headers; body: object };
+  resolveHeaders: () => Headers;
+  body: object;
   signal: AbortSignal;
   maxBytes: number;
   request: typeof fetch;
   errorOptions: HttpErrorOptions;
 }
 
-async function sendPost<TAuth>(options: JsonPostOptions<TAuth>): Promise<Response> {
-  const auth = await resolveWithSignal(options.resolveAuth, options.signal);
-  const built = options.buildRequest(auth);
-  const headers = new Headers(built.headers);
-  // Authentication belongs to Pi; the JSON payload format belongs to this tool.
+async function sendPost(options: JsonPostOptions): Promise<Response> {
+  options.signal.throwIfAborted();
+  const headers = new Headers(options.resolveHeaders());
   headers.set("Content-Type", "application/json");
   try {
     return await options.request(options.endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify(built.body),
+      body: JSON.stringify(options.body),
       redirect: "error",
       signal: options.signal,
     });
@@ -196,6 +173,6 @@ async function sendPost<TAuth>(options: JsonPostOptions<TAuth>): Promise<Respons
   }
 }
 
-export async function postJson<TAuth>(options: JsonPostOptions<TAuth>): Promise<unknown> {
+export async function postJson(options: JsonPostOptions): Promise<unknown> {
   return readJsonResponse(await sendPost(options), options.maxBytes, options.errorOptions);
 }

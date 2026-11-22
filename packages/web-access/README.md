@@ -1,14 +1,14 @@
 # @rchardx/pi-web-access
 
-Two independent, opt-in Pi tools backed by DeepSeek's standalone hosted
-web-tool endpoints:
+Two independent, opt-in Pi tools backed by standalone hosted web-tool endpoints
+(**Exa** and **DeepSeek**):
 
 - `web_fetch` returns a page title and Markdown or plain-text content.
-- `web_search` returns ordered sources alongside provider-supplied summaries and
-  optional page content.
+- `web_search` returns ordered sources alongside provider-supplied summaries
+  (or extractive highlights) and optional page content.
 
 Neither tool invokes the other, and neither routes through a chat-model
-generation turn.
+generation turn or Pi's chat-model provider registry.
 
 ## Install
 
@@ -35,67 +35,75 @@ root is not a Pi package.
 
 ## Enable tools
 
-Configure authentication in Pi before enabling the tools:
+Export the API key in Pi's launch environment for each provider you intend to
+enable:
 
-- **DeepSeek** (`deepseek`): `/login deepseek` or `DEEPSEEK_API_KEY` (no DeepSeek
-  chat model selection is required).
+| Provider | Environment variable | Hardcoded endpoints | HTTP authentication |
+| --- | --- | --- | --- |
+| `exa` | `EXA_API_KEY` | `POST https://api.exa.ai/search` or `/contents` | `x-api-key: <key>` |
+| `deepseek` | `DEEPSEEK_API_KEY` | `POST https://api.deepseek.com/v1/tools/search` or `/v1/tools/fetch` | `Authorization: Bearer <key>` |
 
-Keep credentials out of tool arguments and configuration.
+Endpoints are fixed in code and cannot be overridden. Credentials are read
+exclusively from the environment variables above—never from Pi's `/login`
+store (`auth.json`), `models.json`, tool arguments, or `web-access.json`.
+Restart Pi after changing its launch environment.
 
-Enable the capabilities you want in `~/.pi/agent/web-access.json` (its directory
-follows `PI_CODING_AGENT_DIR`):
+Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
+(its directory follows `PI_CODING_AGENT_DIR`):
 
 ```json
 {
   "search": {
     "providers": {
+      "exa": { "mode": "auto", "maxAgeHours": 24 },
       "deepseek": {}
-    }
+    },
+    "defaultProvider": "exa"
   },
   "fetch": {
     "providers": {
+      "exa": { "maxAgeHours": 24 },
       "deepseek": {}
-    }
+    },
+    "defaultProvider": "exa"
   }
 }
 ```
 
-Each `deepseek` entry under `providers` independently authorizes possible
-provider charges, use of Pi-resolved credentials, and query or URL disclosure to
-DeepSeek:
+Each entry under `providers` independently authorizes possible provider charges,
+use of the corresponding environment API key, and query or URL disclosure to
+that provider:
 
-- `deepseek` is the only supported provider; it uses standalone tool endpoints
-  and accepts only `{}`.
-- `defaultProvider` is optional and, when set, must be `"deepseek"`.
-- Routing is independent of the active Pi chat model (`ctx.model`), and failures
-  report directly without retries or fallbacks.
+- `exa` accepts optional `mode` (`"lite"`, `"auto"`, `"deep-lite"`, or `"deep"`,
+  default `"auto"`; search only) and `maxAgeHours` (integer `-1` to `720`: `0`
+  requests a live fetch, `-1` restricts retrieval to cached content only, and
+  `1`–`720` sets a target maximum cache age in hours; omitted uses Exa's default
+  cache policy). Per Exa's Contents API, `0` may still reuse a fetch from the
+  previous 60 seconds, and a positive threshold may return older cached content
+  if a live refresh fails. Search `mode: "lite"` serves cached content only and
+  cannot be combined with `maxAgeHours`.
+- `deepseek` accepts only `{}`.
+- When a single provider is enabled in `providers`, `defaultProvider` may be
+  omitted; when multiple providers are enabled, `defaultProvider` is required
+  and must also appear in `providers`.
+- Routing is independent of the active Pi chat model (`ctx.model`), and there is
+  no cross-provider fallback: once the target provider is selected, failures
+  report directly without forwarding the query or URL elsewhere.
+- When `exa` is the active provider on load or `/reload`, the registered tool
+  guidelines inform Pi of the configured defaults, per-call override parameters,
+  and user `web-access.json` configuration.
 
 Omit `search` or `fetch` to disable that tool; a missing file or `{}` enables
 neither. Project settings and tool arguments cannot grant permission.
 
-Run `/reload` after enabling or disabling a tool. Explicit tool selection affects
-visibility, not permission. Consent, routing, and credentials are rechecked on
-every call; removing a capability blocks subsequent calls even if Pi keeps the
-tool active. In-flight calls retain starting consent. Restart Pi when changing
-its launch environment.
+Run `/reload` after enabling, disabling, or changing configured defaults so tool
+visibility and prompt guidelines refresh. Consent, routing, and API keys are
+rechecked on every call; removing a capability or provider blocks subsequent
+calls even if Pi keeps the tool active. In-flight calls retain starting consent.
 
 Only `search` and `fetch` settings are supported. Malformed JSON, unknown fields,
 empty `providers` maps, or invalid settings prevent both tools from loading;
 invalid edits during a session fail on the next call. Fix the file and reload.
-
-### Authentication and origin boundaries
-
-Pi owns authentication and provider configuration:
-
-| Provider | Required effective origin | Fixed endpoint | Default HTTP auth |
-| --- | --- | --- | --- |
-| `deepseek` | `https://api.deepseek.com` | `POST /v1/tools/fetch` or `/v1/tools/search` | `Authorization: Bearer <key>` |
-
-The effective auth base URL (auth override, otherwise provider default) must
-match the required origin above. Provider headers, then resolved auth headers
-override defaults case-insensitively, with `null` deleting a header. Required
-authentication headers must remain after overrides, and the tools set JSON
-`Content-Type`.
 
 Direct local fetching is not provided. For localhost or intranet URLs, use
 `curl` through `bash`: hosted providers visit targets from their infrastructure,
@@ -106,11 +114,26 @@ target-site access rules.
 
 ```typescript
 web_fetch({ url: "https://example.com/article" })
+web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
 ```
 
 - Accepts one absolute HTTP(S) URL without an embedded username/password.
-  Input and normalized URLs are limited to **8,192 characters**. Normalization
-  removes fragments and may expand non-ASCII paths through escaping.
+  Input and normalized URLs are limited to **8,192 characters** (**2,048
+  characters** after normalization on **Exa**). Normalization removes fragments
+  and may expand non-ASCII paths through escaping.
+- `max_age_hours` (optional integer `-1` to `720`) overrides the configured
+  freshness target on providers that support cache control (`exa`). `0`
+  requests a live fetch (Exa may reuse a fetch from the previous 60 seconds),
+  `-1` restricts retrieval to cached content only, and `1`–`720` sets a target
+  maximum cache age in hours (returning older cached content if a live refresh
+  fails). Passing `max_age_hours` when `deepseek` is active fails explicitly
+  before reading credentials.
+- **Exa** sends `{ "urls": [url], "text": true }` (plus `maxAgeHours` when set)
+  to `POST https://api.exa.ai/contents` and returns a single-line title and
+  extracted Markdown/text. Crawl errors reported in `statuses` (such as
+  restricted sources, HTTP 404, `CRAWL_HTTP_<status>`, or timeouts) and
+  cache-only misses fail with sanitized diagnostics; `max_age_hours` does not
+  change Exa's per-page rate.
 - **DeepSeek** sends `{ "url": "..." }` to `POST https://api.deepseek.com/v1/tools/fetch`
   and returns a single-line title and provider Markdown, preserving paragraphs.
   HTTP 403 indicates a service security-policy rejection; HTTP 404 indicates no
@@ -118,8 +141,8 @@ web_fetch({ url: "https://example.com/article" })
 - Empty titles are valid; invalid schemas or whitespace-only content fail.
 - The model-facing `Requested URL` and `details.url` identify the normalized
   **requested URL**, not a verified final redirect destination. Details also
-  contain `provider`, `title`, `truncated`, and optional `fullOutputPath`; no
-  original `contentType` is returned.
+  contain `provider`, `title`, `truncated`, optional `maxAgeHours`, and optional
+  `fullOutputPath`; no original `contentType` is returned.
 - `web_fetch` declares an `outputSchema` and sets `structuredContent`
   (`{ provider, url, title, content }`) so Codemode scripts receive the
   extracted page text directly without parsing the model-facing header.
@@ -127,17 +150,33 @@ web_fetch({ url: "https://example.com/article" })
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
 may be incomplete, include navigation/comments, or lose links, code formatting,
 and mathematical notation. Browser login and JavaScript rendering are not
-guaranteed. See the [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/).
+guaranteed. See the [Exa Contents reference](https://docs.exa.ai/reference/get-contents)
+and [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/).
 
 ## Search
 
 ```typescript
 web_search({ query: "Node.js release notes site:nodejs.org" })
+web_search({ query: "React Server Components caching", mode: "deep", max_age_hours: 24 })
 web_search({ query: "TypeScript releases site:github.com", count: 5, need_content: true })
 ```
 
 - `count` defaults to **10**, with an allowed range of **1–50**. Fewer or zero
   results are valid.
+- `mode` (`"lite"`, `"auto"`, `"deep-lite"`, or `"deep"`) and `max_age_hours`
+  (`-1` to `720`) optionally override configured defaults per call on **Exa**.
+  Passing either parameter when `deepseek` is active fails explicitly before
+  reading credentials.
+- **Exa** sends `query`, `type` (from `mode`, default `"auto"`), `numResults`
+  (`count`), and a single content view in `contents` (`{ "highlights": true }`
+  when `need_content` is `false`, or `{ "text": true }` when `need_content` is
+  `true`, plus `maxAgeHours` when applicable) to `POST https://api.exa.ai/search`
+  rather than downloading both views at once. Exa's base rate for the selected
+  `mode` covers up to 10 results, with per-result charges above 10 returned
+  results; `max_age_hours` does not change request pricing. A per-call
+  `mode: "lite"` override ignores a configured `maxAgeHours` default, while
+  passing `max_age_hours` when the effective `mode` is `"lite"` fails
+  explicitly.
 - **DeepSeek** sends `query`, `count`, and `need_content` (default `false`) to
   `POST https://api.deepseek.com/v1/tools/search`. Queries accept **1–128 Unicode
   characters** and search operators. Long summaries fall back to snippets;
@@ -147,48 +186,50 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
 Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
 before applying `count`. All-invalid results are distinguished from an empty
 search. Titles, site names, and dates use single-line whitespace (empty or
-whitespace-only search titles fall back to the result URL); summaries and page
-content retain paragraphs. Provider summaries are not verified quotations, and
-the extension never visits result URLs. `web_search` declares an `outputSchema`
-and sets `structuredContent`
+whitespace-only search titles fall back to the result URL); summaries/highlights
+and page content retain paragraphs. Provider summaries are not verified
+quotations, and the extension never visits result URLs. `web_search` declares an
+`outputSchema` and sets `structuredContent`
 (`{ provider, query, results, omittedInvalidUrls }`) so Codemode scripts receive
 structured sources directly.
 
-See the [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/).
+See the [Exa Search reference](https://docs.exa.ai/reference/search) and
+[DeepSeek Search reference](https://api-docs.deepseek.com/api/search/).
 
 ## Tool cards in Pi
 
 Cards display lowercase **`web_fetch`** and **`web_search`** headers matching
 the tool names. Calls show the URL or query, with a compact result summary
-(fetched page title for Fetch, plus provider, result count for Search, and
-Pi-reported execution time).
+(fetched page title for Fetch, plus provider, search mode when applicable,
+result count for Search, and Pi-reported execution time).
 
 Use Pi's expand-tools shortcut (normally `ctrl+o`) to reveal Markdown content,
-numbered search results, source URLs, summaries, and optional page content. The
-title and summary keep the same style in both views; the shortcut hint follows
-your keybindings. Errors, omitted-source notices, and full-output file paths
-remain visible on current provider cards when collapsed.
+numbered search results, source URLs, compact publication dates, summaries, and
+optional page content. The title and summary keep the same style in both views;
+the shortcut hint follows your keybindings. Errors, omitted-source notices, and
+full-output file paths remain visible on current provider cards when collapsed.
 
 Expansion only reveals the existing bounded preview: it does not fetch again or
 read the full-output file. Use `read` for that file. Presentation metadata in
 `details.display` references the model-facing text rather than storing another
-copy of the page. Renderers remove terminal control sequences for display only;
-model-facing content and saved full output are unchanged. Older session results
-without presentation metadata or from removed providers use a 5-line plain-text
-preview when collapsed and reveal their full saved text on expansion.
+copy of the page. Renderers remove terminal control sequences and shorten ISO
+timestamps for display only; model-facing content and saved full output are
+unchanged. Older session results without presentation metadata or from removed
+providers use a 5-line plain-text preview when collapsed and reveal their full
+saved text on expansion.
 
 ## Shared limits and privacy
 
 - Fetch has a **60-second** total deadline; Search has **120 seconds**. These cover
-  authentication, request, response, and output. Cancellation aborts network work
-  and stops waiting for credentials, though Pi's secret-manager work may continue.
+  request preparation, network transfer, response decoding, and output. Cancellation
+  aborts outbound network work immediately.
 - API responses have a **2 MiB decoded limit**. Oversized responses fail without
   partial output, even after a potentially billable HTTP 200. Malformed, partial,
   wrong-content-type, and invalid UTF-8 API responses also fail explicitly.
 - API requests do not follow redirects, retry automatically, or fall back to
   other providers. HTTP 408, 429, and 5xx (including 529 overloaded) diagnostics
   suggest retrying later. HTTP 401 indicates authentication failure, 402
-  insufficient balance, and 429 rate limiting.
+  insufficient balance or credit/budget limit, and 429 rate limiting.
 - Errors retain HTTP status, recognized network codes, and stable diagnostics,
   never raw provider bodies or transport messages. Unknown transport failures use
   a generic diagnostic.
@@ -210,10 +251,10 @@ Cancellation cannot undo provider charges or server-side tool usage.
 Verified with **Pi 1.6.0 on Linux** using **Node 22.19.0 and Node 26.13.1**.
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
-and execute both tools through DeepSeek using synthetic credentials and local
-HTTP/controlled responses. They cover explicit consent, chat-model-independent
-routing without fallback, visibility, reload, API-key and header authentication,
-effective-origin boundaries, decoding, resource limits, cancellation, deadlines,
+and execute both tools across Exa and DeepSeek using synthetic environment API
+keys and local HTTP/controlled responses. They cover per-provider consent,
+environment-only authentication decoupled from Pi's model registry, visibility,
+prompt guidelines, reload, decoding, resource limits, cancellation, deadlines,
 Codemode structured output, and TUI card rendering. No live account is needed;
 these checks do not guarantee site availability or extraction quality.
 

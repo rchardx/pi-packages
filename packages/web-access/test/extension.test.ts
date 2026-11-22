@@ -30,21 +30,27 @@ async function loadSession(
   modelsConfig?: object,
 ) {
   const previousDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  const previousExaKey = process.env.EXA_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
+  delete process.env.EXA_API_KEY;
   t.after(() => {
     if (previousDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = previousDeepSeekKey;
+    if (previousExaKey === undefined) delete process.env.EXA_API_KEY;
+    else process.env.EXA_API_KEY = previousExaKey;
   });
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("Unexpected network call");
   });
   const directory = await mkdtemp(join(tmpdir(), "pi-web-extension-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
-  t.after(() => {
+  let activeSession: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  t.after(async () => {
+    activeSession?.dispose();
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
   if (config !== undefined) await writeFile(join(directory, "web-access.json"), config);
   const settingsManager = SettingsManager.inMemory();
@@ -79,18 +85,21 @@ async function loadSession(
     sessionManager: SessionManager.inMemory(directory),
     ...(tools ? { tools } : {}),
   });
-  t.after(() => session.dispose());
+  activeSession = session;
   if (tools) assert.deepEqual(session.getActiveToolNames(), tools);
   return { session, directory, modelRuntime, loader };
 }
 
-test("Pi loads hosted fetch, requires independent consent, and resolves credentials per invocation", async (t) => {
-  const { session, directory, modelRuntime } = await loadSession(t, ["web_fetch"], enabledSearch);
+test("Pi loads hosted fetch, requires independent consent, and reads DEEPSEEK_API_KEY per invocation", async (t) => {
+  const { session, directory } = await loadSession(t, ["web_fetch"], enabledSearch);
   const tool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
   assert.ok(tool);
   for (const args of [
     { url: "https://example.test" },
     { url: `https://example.test/${"x".repeat(3000)}` },
+    { url: "https://example.test", max_age_hours: -1 },
+    { url: "https://example.test", max_age_hours: 0 },
+    { url: "https://example.test", max_age_hours: 720 },
   ]) {
     assert.equal(Check(tool.parameters, args), true);
   }
@@ -98,9 +107,13 @@ test("Pi loads hosted fetch, requires independent consent, and resolves credenti
     {},
     { url: "" },
     { url: "x".repeat(8193) },
+    { url: "https://example.test", max_age_hours: -2 },
+    { url: "https://example.test", max_age_hours: 721 },
+    { url: "https://example.test", max_age_hours: 1.5 },
+    { url: "https://example.test", max_age_hours: "0" },
     { url: "https://example.test", apiKey: "not-allowed" },
   ]) {
-    assert.equal(Check(tool.parameters, args), false);
+    assert.equal(Check(tool.parameters, args), false, JSON.stringify(args));
   }
   let expectedKey = "sdk-fetch-key-1";
   let calls = 0;
@@ -129,20 +142,23 @@ test("Pi loads hosted fetch, requires independent consent, and resolves credenti
     assert.equal(url, "https://api.deepseek.com/v1/tools/fetch");
     return nativeFetch(`http://127.0.0.1:${address.port}/v1/tools/fetch`, init);
   });
-  const resolveAuth = t.mock.method(modelRuntime, "getAuth");
   // Search consent and explicit fetch tool selection do not authorize fetching.
+  process.env.DEEPSEEK_API_KEY = expectedKey;
   await assert.rejects(
     tool.execute("disabled", { url: "https://example.test/guide" }),
     /Fetch is disabled/u,
   );
-  assert.equal(resolveAuth.mock.callCount(), 0);
+  assert.equal(calls, 0);
+
   await writeFile(join(directory, "web-access.json"), enabledFetch);
+  delete process.env.DEEPSEEK_API_KEY;
   await assert.rejects(
     tool.execute("missing-key", { url: "https://example.test/guide" }),
-    /Configure DeepSeek authentication/u,
+    /Configure DEEPSEEK_API_KEY/u,
   );
   assert.equal(calls, 0);
-  await modelRuntime.setRuntimeApiKey("deepseek", expectedKey);
+
+  process.env.DEEPSEEK_API_KEY = expectedKey;
   const result = await tool.execute("sdk-success", {
     url: "https://EXAMPLE.test:443/guide#section",
   });
@@ -150,28 +166,23 @@ test("Pi loads hosted fetch, requires independent consent, and resolves credenti
   assert.ok(content?.type === "text");
   assert.match(content.text, /SDK fixture/u);
   assert.match(content.text, /# Hosted Markdown/u);
+
   expectedKey = "sdk-fetch-key-2";
-  await modelRuntime.setRuntimeApiKey("deepseek", expectedKey);
+  process.env.DEEPSEEK_API_KEY = expectedKey;
   await tool.execute("second", { url: "https://example.test/guide" });
   assert.equal(calls, 2);
-  assert.equal(resolveAuth.mock.callCount(), 3);
+
   await writeFile(join(directory, "web-access.json"), enabledSearch);
   await assert.rejects(
     tool.execute("revoked", { url: "https://example.test/guide" }),
     /Fetch is disabled/u,
   );
-  assert.equal(resolveAuth.mock.callCount(), 3);
   assert.equal(calls, 2);
 });
 
 test("fetch consent does not authorize search, and revocation blocks an explicitly selected tool", async (t) => {
-  const { session, directory, modelRuntime } = await loadSession(
-    t,
-    ["web_fetch", "web_search"],
-    enabledFetch,
-  );
-  await modelRuntime.setRuntimeApiKey("deepseek", "test-key");
-  const resolveAuth = t.mock.method(modelRuntime, "getAuth");
+  const { session, directory } = await loadSession(t, ["web_fetch", "web_search"], enabledFetch);
+  process.env.DEEPSEEK_API_KEY = "test-key";
   const search = session.agent.state.tools.find((tool) => tool.name === "web_search");
   const fetch = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
   assert.ok(search && fetch);
@@ -181,7 +192,6 @@ test("fetch consent does not authorize search, and revocation blocks an explicit
     fetch.execute("disabled", { url: "https://example.test" }),
     /Fetch is disabled/u,
   );
-  assert.equal(resolveAuth.mock.callCount(), 0);
 });
 
 test("fetch defaults active only after its own opt-in and reload", async (t) => {
@@ -196,8 +206,8 @@ test("fetch defaults active only after its own opt-in and reload", async (t) => 
   assert.match(session.systemPrompt, /web_fetch sends the URL to a hosted provider/u);
 });
 
-test("Pi search requires opt-in before resolving credentials and supports the environment key", async (t) => {
-  const { session, directory, modelRuntime } = await loadSession(t, ["web_search"]);
+test("Pi search requires opt-in before reading DEEPSEEK_API_KEY and sends requests to the hardcoded endpoint", async (t) => {
+  const { session, directory } = await loadSession(t, ["web_search"]);
   const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
   assert.ok(tool);
   process.env.DEEPSEEK_API_KEY = "sdk-test-only-key";
@@ -221,14 +231,14 @@ test("Pi search requires opt-in before resolving credentials and supports the en
       ],
     });
   });
-  const resolveAuth = t.mock.method(modelRuntime, "getAuth");
-  // Explicit tool selection and a key do not authorize reading credentials or sending queries.
   await assert.rejects(tool.execute("disabled", { query: "SDK search" }), /Search is disabled/u);
-  assert.equal(resolveAuth.mock.callCount(), 0);
+  assert.equal(calls, 0);
+
   await writeFile(join(directory, "web-access.json"), enabledSearch);
   delete process.env.DEEPSEEK_API_KEY;
   await assert.rejects(tool.execute("missing-key", { query: "SDK search" }), /DEEPSEEK_API_KEY/u);
   assert.equal(calls, 0);
+
   process.env.DEEPSEEK_API_KEY = "sdk-test-only-key";
   const result = await tool.execute("search", { query: "SDK search", need_content: true });
   const text = result.content[0];
@@ -236,11 +246,10 @@ test("Pi search requires opt-in before resolving credentials and supports the en
   assert.match(text.text, /SDK result/u);
   assert.match(text.text, /Provider page content/u);
   assert.equal(calls, 1);
-  assert.equal(resolveAuth.mock.callCount(), 2);
+
   await assert.rejects(tool.execute("long-query", { query: "x".repeat(129) }), /1–128 Unicode/u);
   await writeFile(join(directory, "web-access.json"), "{}");
   await assert.rejects(tool.execute("revoked", { query: "SDK search" }), /Search is disabled/u);
-  assert.equal(resolveAuth.mock.callCount(), 2);
   assert.equal(calls, 1);
 });
 
@@ -252,6 +261,9 @@ test("the registered search schema declares the argument constraints enforced by
     { query: "API" },
     { query: "API", count: 1 },
     { query: "API", count: 50, need_content: true },
+    { query: "API", mode: "lite" },
+    { query: "API", mode: "deep", max_age_hours: 0 },
+    { query: "API", max_age_hours: -1 },
   ])
     assert.equal(Check(tool.parameters, args), true);
   for (const args of [
@@ -264,6 +276,9 @@ test("the registered search schema declares the argument constraints enforced by
     { query: "API", count: 1.5 },
     { query: "API", count: "10" },
     { query: "API", need_content: "true" },
+    { query: "API", mode: "invalid" },
+    { query: "API", max_age_hours: -2 },
+    { query: "API", max_age_hours: 721 },
     { query: "API", provider: "other" },
   ])
     assert.equal(Check(tool.parameters, args), false, JSON.stringify(args));
@@ -282,7 +297,6 @@ test("default visibility omits search metadata until enabled and reloaded", asyn
   assert.match(session.systemPrompt, /web_search sends the query to a hosted provider/u);
   const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
   assert.ok(tool);
-  // Provider-specific limits are reported by the selected provider, not advertised to every model.
   assert.doesNotMatch(
     `${tool.description}${JSON.stringify(tool.parameters)}${session.systemPrompt}`,
     /DeepSeek|Anthropic|OpenAI|Gemini|synthesis/iu,
@@ -308,211 +322,38 @@ test("malformed configuration prevents both tools from loading until fixed", asy
   assert.ok(session.getActiveToolNames().includes("web_fetch"));
 });
 
-test("search uses Pi runtime credentials without an env key and resolves them again per call", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, undefined, enabledSearch);
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
-  assert.ok(tool);
-  assert.equal(process.env.DEEPSEEK_API_KEY, undefined);
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
-    calls++;
-    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer runtime-key-${calls}`);
-    return Response.json({ results: [] });
-  });
-  await modelRuntime.setRuntimeApiKey("deepseek", "runtime-key-1");
-  await tool.execute("first", { query: "API" });
-  await modelRuntime.setRuntimeApiKey("deepseek", "runtime-key-2");
-  await tool.execute("second", { query: "API" });
-  assert.equal(calls, 2);
-});
-
-test("search honors Pi login credentials and precedence, then stops after logout without another key", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, ["web_search"], enabledSearch);
-  await modelRuntime.login("deepseek", "api_key", {
-    prompt: async () => "stored-test-only-key",
-    notify: () => {},
-  });
-  process.env.DEEPSEEK_API_KEY = "environment-test-only-key";
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async (_url: unknown, init?: RequestInit) => {
-    calls++;
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer stored-test-only-key");
-    return Response.json({ results: [] });
-  });
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
-  assert.ok(tool);
-  await tool.execute("stored-key", { query: "API" });
-  delete process.env.DEEPSEEK_API_KEY;
-  await modelRuntime.logout("deepseek");
-  await assert.rejects(
-    tool.execute("logged-out", { query: "API" }),
-    /Configure DeepSeek authentication/u,
-  );
-  assert.equal(calls, 1);
-});
-
-test("SDK effective gateway auth is rejected before sending a request", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, ["web_search"], enabledSearch);
-  modelRuntime.registerProvider("deepseek", { baseUrl: "https://gateway.example.test/v1" });
-  await modelRuntime.setRuntimeApiKey("deepseek", "gateway-only-key");
-  const resolveAuth = t.mock.method(modelRuntime, "getAuth");
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
-  assert.ok(tool);
-  await assert.rejects(tool.execute("gateway", { query: "API" }), /effective auth origin/u);
-  assert.equal(resolveAuth.mock.callCount(), 1);
-});
-
-for (const baseUrl of [
-  "https://api.deepseek.com/beta",
-  "https://api.deepseek.com/anthropic",
-  "https://test-user:test-password@api.deepseek.com/v1",
-]) {
-  test(`SDK base ${baseUrl}, mixed model routes, and custom auth headers work at the fixed search endpoint`, async (t) => {
-    const { session, modelRuntime } = await loadSession(t, ["web_search"], enabledSearch, {
-      providers: {
-        deepseek: {
-          baseUrl,
-          headers: { authorization: "Bearer sdk-header-key", "X-Custom": "sdk-header-value" },
-          models: [{ id: "gateway-chat-model", baseUrl: "https://gateway.example.test/v1" }],
-        },
-      },
-    });
-    await modelRuntime.setRuntimeApiKey("deepseek", "sdk-default-key");
-    assert.equal(modelRuntime.getError(), undefined);
-    assert.ok(
-      modelRuntime
-        .getProvider("deepseek")
-        ?.getModels()
-        .some((model) => model.baseUrl === "https://gateway.example.test/v1"),
-    );
-    let calls = 0;
-    t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
-      calls++;
-      assert.equal(url, "https://api.deepseek.com/v1/tools/search");
-      assert.equal(init?.redirect, "error");
-      assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
-        authorization: "Bearer sdk-header-key",
-        "content-type": "application/json",
-        "x-custom": "sdk-header-value",
-      });
-      return Response.json({ results: [] });
-    });
-    const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
-    assert.ok(tool);
-    await tool.execute("custom-auth", { query: "API" });
-    assert.equal(calls, 1);
-  });
-}
-
-test("SDK global diagnostics do not override usable provider auth", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, ["web_search"], enabledSearch, {
-    providers: { unrelated: { baseUrl: 42 } },
-  });
-  assert.match(modelRuntime.getError() ?? "", /Invalid models.json schema/u);
-  await modelRuntime.setRuntimeApiKey("deepseek", "sdk-test-only-key");
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
-    calls++;
-    assert.equal(url, "https://api.deepseek.com/v1/tools/search");
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer sdk-test-only-key");
-    return Response.json({ results: [] });
-  });
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
-  assert.ok(tool);
-  await tool.execute("upstream-diagnostic", { query: "API" });
-  assert.equal(calls, 1);
-});
-
-test("SDK credential resolution failures are sanitized and never fall back to the environment", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, ["web_search"], enabledSearch);
-  process.env.DEEPSEEK_API_KEY = "must-not-be-used";
-  t.mock.method(modelRuntime, "getAuth", async () => {
-    throw new Error("credential-value-from-sdk");
-  });
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_search");
-  assert.ok(tool);
-  await assert.rejects(tool.execute("auth-error", { query: "API" }), {
-    message: "Cannot resolve DeepSeek credentials through Pi; check the provider setup.",
-  });
-});
-
-test("hosted fetch honors Pi environment and login precedence, then stops without credentials", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, undefined, enabledFetch);
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
-  assert.ok(tool);
-  process.env.DEEPSEEK_API_KEY = "environment-fetch-key";
-  let expected = "environment-fetch-key";
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
-    calls++;
-    assert.equal(url, "https://api.deepseek.com/v1/tools/fetch");
-    assert.equal(new Headers(init?.headers).get("authorization"), `Bearer ${expected}`);
-    return Response.json({ title: "Page", content: "Provider content" });
-  });
-  await tool.execute("environment", { url: "https://example.test" });
-  await modelRuntime.login("deepseek", "api_key", {
-    prompt: async () => "stored-fetch-key",
-    notify: () => {},
-  });
-  expected = "stored-fetch-key";
-  await tool.execute("login", { url: "https://example.test" });
-  await modelRuntime.logout("deepseek");
-  expected = "environment-fetch-key";
-  await tool.execute("environment-again", { url: "https://example.test" });
-  delete process.env.DEEPSEEK_API_KEY;
-  await assert.rejects(
-    tool.execute("no-credentials", { url: "https://example.test" }),
-    /Configure DeepSeek authentication/u,
-  );
-  assert.equal(calls, 3);
-});
-
-test("hosted fetch uses Pi headers at the fixed endpoint and rejects an effective gateway", async (t) => {
-  const { session, modelRuntime } = await loadSession(t, undefined, enabledFetch, {
-    providers: {
-      deepseek: {
-        baseUrl: "https://api.deepseek.com/beta",
-        headers: { authorization: "Custom fetch auth", "X-Custom": "value" },
-      },
-    },
-  });
-  await modelRuntime.setRuntimeApiKey("deepseek", "default-key");
-  const tool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
-  assert.ok(tool);
-  let calls = 0;
-  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
-    calls++;
-    assert.equal(url, "https://api.deepseek.com/v1/tools/fetch");
-    assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
-      authorization: "Custom fetch auth",
-      "x-custom": "value",
-      "content-type": "application/json",
-    });
-    return Response.json({ title: "Page", content: "Provider content" });
-  });
-  await tool.execute("headers", { url: "https://example.test" });
-  modelRuntime.registerProvider("deepseek", { baseUrl: "https://gateway.example.test/v1" });
-  await assert.rejects(
-    tool.execute("gateway", { url: "https://example.test" }),
-    /effective auth origin/u,
-  );
-  assert.equal(calls, 1);
-});
-
-test("uses the configured standalone provider regardless of the active chat model", async (t) => {
+test("operates solely through environment API keys and hardcoded endpoints, decoupled from Pi ModelRegistry, auth.json, and models.json", async (t) => {
   const bothConfig = JSON.stringify({
     search: { providers: { deepseek: {} } },
     fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
   });
-  const { session, modelRuntime } = await loadSession(t, ["web_search", "web_fetch"], bothConfig);
-  await modelRuntime.setRuntimeApiKey("deepseek", "deepseek-runtime-key");
-  await modelRuntime.setRuntimeApiKey("anthropic", "sk-ant-api03-unrelated");
-  await modelRuntime.setRuntimeApiKey("openai", "sk-openai-unrelated");
-
+  const { session, modelRuntime } = await loadSession(t, ["web_search", "web_fetch"], bothConfig, {
+    providers: {
+      deepseek: {
+        baseUrl: "https://gateway.example.test/v1",
+        apiKey: "gateway-chat-key-must-be-ignored",
+        headers: { Authorization: "Bearer gateway-header-must-be-ignored" },
+        models: [{ id: "gateway-chat-model" }],
+      },
+    },
+  });
+  await modelRuntime.login("deepseek", "api_key", {
+    prompt: async () => "stored-login-key-must-be-ignored",
+    notify: () => {},
+  });
   const search = session.agent.state.tools.find((tool) => tool.name === "web_search");
   const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
   assert.ok(search && fetchTool);
 
+  // Stored Pi login and models.json keys are ignored when DEEPSEEK_API_KEY is unset.
+  await assert.rejects(
+    search.execute("no-env", { query: "test query" }),
+    /Configure DEEPSEEK_API_KEY/u,
+  );
+
+  process.env.DEEPSEEK_API_KEY = "env-only-deepseek-key";
+  await modelRuntime.setRuntimeApiKey("anthropic", "sk-ant-api03-unrelated");
+  await modelRuntime.setRuntimeApiKey("openai", "sk-openai-unrelated");
   const anthropicModel = modelRuntime.getProvider("anthropic")?.getModels()[0];
   const openaiModel = modelRuntime.getProvider("openai")?.getModels()[0];
   assert.ok(anthropicModel && openaiModel);
@@ -520,7 +361,10 @@ test("uses the configured standalone provider regardless of the active chat mode
   const seenUrls: string[] = [];
   t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
     seenUrls.push(String(url));
-    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer deepseek-runtime-key");
+    assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
+      authorization: "Bearer env-only-deepseek-key",
+      "content-type": "application/json",
+    });
     if (url === "https://api.deepseek.com/v1/tools/search") {
       return Response.json({
         results: [
@@ -556,7 +400,136 @@ test("uses the configured standalone provider regardless of the active chat mode
   ]);
 });
 
+test("Exa exposes configured defaults in guidelines, uses EXA_API_KEY at hardcoded endpoints without registering a Pi model provider, and never falls back across providers", async (t) => {
+  const exaConfig = JSON.stringify({
+    search: {
+      providers: {
+        exa: { mode: "auto", maxAgeHours: 24 },
+        deepseek: {},
+      },
+      defaultProvider: "exa",
+    },
+    fetch: {
+      providers: {
+        exa: { maxAgeHours: 12 },
+        deepseek: {},
+      },
+      defaultProvider: "exa",
+    },
+  });
+  const { session, directory, modelRuntime } = await loadSession(
+    t,
+    ["web_search", "web_fetch"],
+    exaConfig,
+  );
+  assert.equal(modelRuntime.getProvider("exa"), undefined);
+  assert.match(
+    session.systemPrompt,
+    /Active search provider is Exa \(defaults: mode="auto", maxAgeHours=24h\)/u,
+  );
+  assert.match(session.systemPrompt, /Active fetch provider is Exa \(default maxAgeHours=12h\)/u);
+
+  process.env.DEEPSEEK_API_KEY = "unused-deepseek-key";
+  const searchTool = session.agent.state.tools.find((tool) => tool.name === "web_search");
+  const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
+  assert.ok(searchTool?.outputSchema && fetchTool?.outputSchema);
+
+  // Missing EXA_API_KEY fails directly without falling back to DeepSeek.
+  await assert.rejects(
+    searchTool.execute("exa-missing", { query: "Node.js" }),
+    /Configure EXA_API_KEY/u,
+  );
+
+  process.env.EXA_API_KEY = "env-exa-key";
+  let failExa = false;
+  const seenRequests: Array<{ url: string; body: unknown }> = [];
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    seenRequests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
+      "content-type": "application/json",
+      "x-api-key": "env-exa-key",
+    });
+    if (failExa) return new Response("rate limit", { status: 429 });
+    if (url === "https://api.exa.ai/search") {
+      return Response.json({
+        results: [
+          {
+            url: "https://exa.ai/docs",
+            title: "Exa Docs",
+            publishedDate: "2026-09-01",
+            highlights: ["Exa highlight."],
+          },
+        ],
+      });
+    }
+    assert.equal(url, "https://api.exa.ai/contents");
+    return Response.json({
+      results: [{ url: "https://exa.ai/docs", title: "Exa Docs", text: "# Exa Docs\n\nBody." }],
+    });
+  });
+
+  const searchRes = await searchTool.execute("exa-s1", {
+    query: "Exa search",
+    mode: "deep",
+    max_age_hours: 0,
+  });
+  assert.equal(searchRes.details.provider, "exa");
+  assert.equal(Check(searchTool.outputSchema, searchRes.structuredContent), true);
+
+  const fetchRes = await fetchTool.execute("exa-f1", {
+    url: "https://exa.ai/docs",
+    max_age_hours: 0,
+  });
+  assert.equal(fetchRes.details.provider, "exa");
+  assert.equal(Check(fetchTool.outputSchema, fetchRes.structuredContent), true);
+
+  // Upstream Exa 429 reports directly without forwarding to DeepSeek.
+  failExa = true;
+  await assert.rejects(
+    searchTool.execute("exa-429", { query: "Exa search" }),
+    /Exa Search HTTP 429/u,
+  );
+  failExa = false;
+
+  assert.deepEqual(seenRequests, [
+    {
+      url: "https://api.exa.ai/search",
+      body: {
+        query: "Exa search",
+        type: "deep",
+        numResults: 10,
+        contents: { highlights: true, maxAgeHours: 0 },
+      },
+    },
+    {
+      url: "https://api.exa.ai/contents",
+      body: {
+        urls: ["https://exa.ai/docs"],
+        text: true,
+        maxAgeHours: 0,
+      },
+    },
+    {
+      url: "https://api.exa.ai/search",
+      body: {
+        query: "Exa search",
+        type: "auto",
+        numResults: 10,
+        contents: { highlights: true, maxAgeHours: 24 },
+      },
+    },
+  ]);
+
+  await writeFile(join(directory, "web-access.json"), "{}");
+});
+
 test("web_search and web_fetch expose structuredContent matching outputSchema to codemode scripts", async (t) => {
+  const previousDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = "cm-deepseek-key";
+  t.after(() => {
+    if (previousDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousDeepSeekKey;
+  });
   const bothConfig = JSON.stringify({
     search: { providers: { deepseek: {} } },
     fetch: { providers: { deepseek: {} } },
@@ -634,12 +607,14 @@ test("web_search and web_fetch expose structuredContent matching outputSchema to
   assert.ok(llmAddr && typeof llmAddr === "object");
 
   const directory = await mkdtemp(join(tmpdir(), "pi-web-codemode-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
   const prevDir = process.env.PI_CODING_AGENT_DIR;
   process.env.PI_CODING_AGENT_DIR = directory;
-  t.after(() => {
+  let activeSession: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  t.after(async () => {
+    activeSession?.dispose();
     if (prevDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = prevDir;
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
   });
   await writeFile(join(directory, "web-access.json"), bothConfig);
   const modelsPath = join(directory, "models.json");
@@ -689,7 +664,6 @@ test("web_search and web_fetch expose structuredContent matching outputSchema to
     refreshOnCreate: false,
     allowModelNetwork: false,
   });
-  await modelRuntime.setRuntimeApiKey("deepseek", "cm-deepseek-key");
 
   const { session } = await createAgentSession({
     cwd: directory,
@@ -700,7 +674,7 @@ test("web_search and web_fetch expose structuredContent matching outputSchema to
     sessionManager: SessionManager.inMemory(directory),
     tools: ["web_search", "web_fetch", "codemode"],
   });
-  t.after(() => session.dispose());
+  activeSession = session;
 
   t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
     if (String(url).startsWith(`http://127.0.0.1:${llmAddr.port}/`)) {

@@ -3,20 +3,42 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig, parseConfig, resolveCapabilityTarget } from "../src/config.ts";
+import { loadConfig, parseConfig, resolveFetchTarget, resolveSearchTarget } from "../src/config.ts";
 
-test("both hosted tools require independent provider authorization tables", () => {
+test("both hosted tools accept single-provider or multi-provider authorization tables", () => {
   assert.deepEqual(parseConfig({}), {});
   for (const value of [
+    { search: { providers: { exa: {} } } },
     { search: { providers: { deepseek: {} } } },
-    { fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" } },
+    { fetch: { providers: { exa: { maxAgeHours: 24 } } } },
     {
       search: {
-        providers: { deepseek: {} },
+        providers: {
+          exa: { mode: "auto", maxAgeHours: 24 },
+          deepseek: {},
+        },
+        defaultProvider: "exa",
+      },
+      fetch: {
+        providers: {
+          exa: { maxAgeHours: 0 },
+          deepseek: {},
+        },
+        defaultProvider: "exa",
+      },
+    },
+    {
+      search: {
+        providers: {
+          exa: { mode: "lite" },
+          deepseek: {},
+        },
         defaultProvider: "deepseek",
       },
       fetch: {
-        providers: { deepseek: {} },
+        providers: {
+          exa: { maxAgeHours: -1 },
+        },
       },
     },
   ]) {
@@ -36,32 +58,50 @@ for (const key of ["search", "fetch"] as const) {
     [false, new RegExp(`${key} must be an object`, "u")],
     [[], new RegExp(`${key} must be an object`, "u")],
     [{}, new RegExp(`${key}\\.providers must be`, "u")],
-    [{ provider: "deepseek" }, new RegExp(`Unknown field in ${key}`, "u")],
+    [{ provider: "exa" }, new RegExp(`Unknown field in ${key}`, "u")],
     [{ providers: {} }, new RegExp(`${key}\\.providers must enable at least one`, "u")],
     [{ providers: [] }, new RegExp(`${key}\\.providers must be`, "u")],
     [{ providers: { auto: {} } }, /Unsupported .* provider "auto"/u],
     [
       { providers: { anthropic: {} } },
-      /Unsupported .* provider "anthropic"; supported providers are deepseek\./u,
+      /Unsupported .* provider "anthropic"; supported providers are deepseek, exa\./u,
     ],
     [
       { providers: { openai: {} } },
-      /Unsupported .* provider "openai"; supported providers are deepseek\./u,
-    ],
-    [
-      { providers: { "openai-codex": {} } },
-      /Unsupported .* provider "openai-codex"; supported providers are deepseek\./u,
-    ],
-    [
-      { providers: { google: {} } },
-      /Unsupported .* provider "google"; supported providers are deepseek\./u,
+      /Unsupported .* provider "openai"; supported providers are deepseek, exa\./u,
     ],
     [{ providers: { deepseek: null } }, /providers\.deepseek must be a JSON object/u],
-    [{ providers: { deepseek: { model: "deepseek-chat" } } }, /providers\.deepseek must be \{\}/u],
+    [{ providers: { deepseek: { mode: "auto" } } }, /providers\.deepseek must be \{\}/u],
     [{ providers: { deepseek: { apiKey: "secret" } } }, /providers\.deepseek must be \{\}/u],
+    [{ providers: { exa: null } }, /providers\.exa must be a JSON object/u],
+    [{ providers: { exa: { apiKey: "secret" } } }, /Unknown field in .*\.providers\.exa/u],
     [
-      { providers: { deepseek: {} }, defaultProvider: "invalid" },
-      /defaultProvider must be one of the supported providers \(deepseek\)/u,
+      { providers: { exa: { maxAgeHours: -2 } } },
+      /maxAgeHours must be an integer between -1 and 720/u,
+    ],
+    [
+      { providers: { exa: { maxAgeHours: 721 } } },
+      /maxAgeHours must be an integer between -1 and 720/u,
+    ],
+    [
+      { providers: { exa: { maxAgeHours: 1.5 } } },
+      /maxAgeHours must be an integer between -1 and 720/u,
+    ],
+    [
+      { providers: { exa: { maxAgeHours: "24" } } },
+      /maxAgeHours must be an integer between -1 and 720/u,
+    ],
+    [
+      { providers: { deepseek: {}, exa: {} } },
+      /defaultProvider is required when multiple providers are enabled/u,
+    ],
+    [
+      { providers: { deepseek: {} }, defaultProvider: "exa" },
+      /defaultProvider "exa" must also be enabled/u,
+    ],
+    [
+      { providers: { exa: {} }, defaultProvider: "invalid" },
+      /defaultProvider must be one of the supported providers \(deepseek, exa\)/u,
     ],
   ] as const) {
     test(`rejects invalid ${key} setting ${JSON.stringify(setting)}`, () => {
@@ -70,17 +110,62 @@ for (const key of ["search", "fetch"] as const) {
   }
 }
 
-test("resolves the enabled DeepSeek provider with or without optional defaultProvider", () => {
-  assert.throws(() => resolveCapabilityTarget("search", undefined), /Search is disabled/u);
-  assert.throws(() => resolveCapabilityTarget("fetch", undefined), /Fetch is disabled/u);
+test("validates Exa search modes, lite cache constraint, and fetch-only option boundaries", () => {
+  for (const mode of ["lite", "auto", "deep-lite", "deep"] as const) {
+    const parsed = parseConfig({ search: { providers: { exa: { mode } } } });
+    assert.deepEqual(resolveSearchTarget(parsed.search), {
+      provider: "exa",
+      options: { mode },
+    });
+  }
+  assert.throws(
+    () => parseConfig({ search: { providers: { exa: { mode: "instant" } } } }),
+    /search\.providers\.exa\.mode must be one of lite, auto, deep-lite, deep/u,
+  );
+  assert.throws(
+    () => parseConfig({ search: { providers: { exa: { mode: "lite", maxAgeHours: 24 } } } }),
+    /cannot combine mode "lite" with maxAgeHours/u,
+  );
+  assert.throws(
+    () => parseConfig({ fetch: { providers: { exa: { mode: "auto" } } } }),
+    /Unknown field in fetch\.providers\.exa: only maxAgeHours is supported/u,
+  );
+});
 
-  const single = parseConfig({ search: { providers: { deepseek: {} } } }).search;
-  assert.deepEqual(resolveCapabilityTarget("search", single), { provider: "deepseek" });
+test("resolves single-provider and multi-provider targets deterministically", () => {
+  assert.throws(() => resolveSearchTarget(undefined), /Search is disabled/u);
+  assert.throws(() => resolveFetchTarget(undefined), /Fetch is disabled/u);
 
-  const explicit = parseConfig({
-    fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" },
-  }).fetch;
-  assert.deepEqual(resolveCapabilityTarget("fetch", explicit), { provider: "deepseek" });
+  const singleExa = parseConfig({
+    search: { providers: { exa: { mode: "deep", maxAgeHours: 12 } } },
+    fetch: { providers: { exa: { maxAgeHours: 0 } } },
+  });
+  assert.deepEqual(resolveSearchTarget(singleExa.search), {
+    provider: "exa",
+    options: { mode: "deep", maxAgeHours: 12 },
+  });
+  assert.deepEqual(resolveFetchTarget(singleExa.fetch), {
+    provider: "exa",
+    options: { maxAgeHours: 0 },
+  });
+
+  const dualExaDefault = parseConfig({
+    search: {
+      providers: { deepseek: {}, exa: { mode: "auto" } },
+      defaultProvider: "exa",
+    },
+    fetch: {
+      providers: { deepseek: {}, exa: { maxAgeHours: 24 } },
+      defaultProvider: "deepseek",
+    },
+  });
+  assert.deepEqual(resolveSearchTarget(dualExaDefault.search), {
+    provider: "exa",
+    options: { mode: "auto" },
+  });
+  assert.deepEqual(resolveFetchTarget(dualExaDefault.fetch), {
+    provider: "deepseek",
+  });
 });
 
 test("missing configuration disables both tools; invalid files fail without being rewritten", async (t) => {
@@ -89,14 +174,14 @@ test("missing configuration disables both tools; invalid files fail without bein
   const path = join(directory, "web-access.json");
   assert.deepEqual(await loadConfig(path), {});
   const enabled = {
-    fetch: { providers: { deepseek: {} }, defaultProvider: "deepseek" as const },
+    fetch: { providers: { exa: { maxAgeHours: 24 } }, defaultProvider: "exa" as const },
   };
   await writeFile(path, JSON.stringify(enabled));
   assert.deepEqual(await loadConfig(path), enabled);
   for (const source of [
     "{",
     '{"fetch":false}',
-    '{"fetch":{"provider":"deepseek"}}',
+    '{"fetch":{"provider":"exa"}}',
     '{"unknown":true}',
   ]) {
     await writeFile(path, source);
