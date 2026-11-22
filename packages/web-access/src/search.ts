@@ -1,10 +1,10 @@
 import { type Static, Type } from "typebox";
-import { resolveDeepSeekHeaders, resolveExaHeaders } from "./auth.ts";
+import { resolveDeepSeekHeaders, resolveExaHeaders, resolveParallelHeaders } from "./auth.ts";
 import {
-  EXA_SEARCH_MODES,
   MAX_MAX_AGE_HOURS,
   MIN_MAX_AGE_HOURS,
   type ResolvedSearchTarget,
+  SEARCH_MODES,
 } from "./config.ts";
 import {
   DEEPSEEK_MAX_QUERY_CHARACTERS,
@@ -14,14 +14,17 @@ import {
   searchDeepSeek,
 } from "./providers/deepseek.ts";
 import { searchExa } from "./providers/exa.ts";
+import { PARALLEL_MAX_QUERY_CHARACTERS, searchParallel } from "./providers/parallel.ts";
 
 export {
   DEEPSEEK_MAX_QUERY_CHARACTERS,
   DEFAULT_SEARCH_COUNT,
   MAX_RESPONSE_BYTES as MAX_SEARCH_RESPONSE_BYTES,
+  PARALLEL_MAX_QUERY_CHARACTERS,
   SEARCH_TIMEOUT_MS,
   searchDeepSeek,
   searchExa,
+  searchParallel,
 };
 
 const MAX_SEARCH_COUNT = 50;
@@ -46,9 +49,9 @@ export const SearchParameters = Type.Object(
       }),
     ),
     mode: Type.Optional(
-      Type.Enum([...EXA_SEARCH_MODES], {
+      Type.Enum([...SEARCH_MODES], {
         description:
-          'Optional search tier override when supported ("lite" cached fast-path, "auto" balanced, "deep-lite" or "deep" multi-step)',
+          'Optional search tier override matching the active provider (Exa: "lite", "auto", "deep-lite", "deep"; Parallel: "turbo", "fast", "basic", "advanced")',
       }),
     ),
     max_age_hours: Type.Optional(
@@ -56,7 +59,7 @@ export const SearchParameters = Type.Object(
         minimum: MIN_MAX_AGE_HOURS,
         maximum: MAX_MAX_AGE_HOURS,
         description:
-          "Optional content freshness target in hours when supported (0 requests a live fetch, -1 uses cache only, 1–720 sets target max cache age)",
+          "Optional content freshness target in hours when supported (0 requests a live fetch on Exa or a 600-second freshness window on Parallel, -1 uses cached/indexed content only, 1–720 sets target max cache age)",
       }),
     ),
   },
@@ -74,5 +77,7 @@ export function executeSearch(
       return searchDeepSeek(args, resolveDeepSeekHeaders, signal, request);
     case "exa":
       return searchExa(args, resolveExaHeaders, target.options, signal, request);
+    case "parallel":
+      return searchParallel(args, resolveParallelHeaders, target.options, signal, request);
   }
 }

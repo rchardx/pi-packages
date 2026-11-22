@@ -1,7 +1,7 @@
 import { type Static, Type } from "typebox";
 import { Check } from "typebox/value";
 import { DEEPSEEK_API_ORIGIN, resolveDeepSeekHeaders } from "../auth.ts";
-import type { ExaSearchMode } from "../config.ts";
+import type { SearchMode } from "../config.ts";
 import {
   type FetchStructuredOutput,
   formatFetchOutput,
@@ -53,7 +53,7 @@ export interface SearchInput {
   query: string;
   count?: number;
   need_content?: boolean;
-  mode?: ExaSearchMode;
+  mode?: SearchMode;
   max_age_hours?: number;
 }
 

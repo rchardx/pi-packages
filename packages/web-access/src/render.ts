@@ -34,6 +34,7 @@ type Context = KeybindingHints & { isError: boolean; durationMs: number | undefi
 const PROVIDER_LABELS: Readonly<Record<WebProviderId, string>> = {
   deepseek: "DeepSeek",
   exa: "Exa",
+  parallel: "Parallel",
 };
 
 // Provider text must not introduce terminal control sequences. Model-facing content is untouched.

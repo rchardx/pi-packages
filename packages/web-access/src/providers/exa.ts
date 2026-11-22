@@ -3,9 +3,11 @@ import { Check } from "typebox/value";
 import { EXA_API_ORIGIN, resolveExaHeaders } from "../auth.ts";
 import {
   DEFAULT_EXA_SEARCH_MODE,
+  EXA_SEARCH_MODES,
   type ExaFetchConfig,
   type ExaSearchConfig,
   type ExaSearchMode,
+  supportedExaMode,
 } from "../config.ts";
 import {
   type FetchStructuredOutput,
@@ -178,7 +180,18 @@ export async function searchExa(
     if (!args.query.trim()) {
       throw new Error("Exa Search requires a non-blank query.");
     }
-    const mode: ExaSearchMode = args.mode ?? options.mode ?? DEFAULT_EXA_SEARCH_MODE;
+    let mode: ExaSearchMode;
+    if (args.mode !== undefined) {
+      const parsedMode = supportedExaMode(args.mode);
+      if (!parsedMode) {
+        throw new Error(
+          `Exa Search mode must be one of ${EXA_SEARCH_MODES.join(", ")}; got "${args.mode}".`,
+        );
+      }
+      mode = parsedMode;
+    } else {
+      mode = options.mode ?? DEFAULT_EXA_SEARCH_MODE;
+    }
     const callMaxAge = args.max_age_hours;
     if (callMaxAge !== undefined && mode === "lite") {
       throw new Error(

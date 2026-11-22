@@ -31,13 +31,17 @@ async function loadSession(
 ) {
   const previousDeepSeekKey = process.env.DEEPSEEK_API_KEY;
   const previousExaKey = process.env.EXA_API_KEY;
+  const previousParallelKey = process.env.PARALLEL_API_KEY;
   delete process.env.DEEPSEEK_API_KEY;
   delete process.env.EXA_API_KEY;
+  delete process.env.PARALLEL_API_KEY;
   t.after(() => {
     if (previousDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
     else process.env.DEEPSEEK_API_KEY = previousDeepSeekKey;
     if (previousExaKey === undefined) delete process.env.EXA_API_KEY;
     else process.env.EXA_API_KEY = previousExaKey;
+    if (previousParallelKey === undefined) delete process.env.PARALLEL_API_KEY;
+    else process.env.PARALLEL_API_KEY = previousParallelKey;
   });
   t.mock.method(globalThis, "fetch", async () => {
     throw new Error("Unexpected network call");
@@ -262,6 +266,8 @@ test("the registered search schema declares the argument constraints enforced by
     { query: "API", count: 1 },
     { query: "API", count: 50, need_content: true },
     { query: "API", mode: "lite" },
+    { query: "API", mode: "fast" },
+    { query: "API", mode: "advanced" },
     { query: "API", mode: "deep", max_age_hours: 0 },
     { query: "API", max_age_hours: -1 },
   ])
@@ -516,6 +522,155 @@ test("Exa exposes configured defaults in guidelines, uses EXA_API_KEY at hardcod
         type: "auto",
         numResults: 10,
         contents: { highlights: true, maxAgeHours: 24 },
+      },
+    },
+  ]);
+
+  await writeFile(join(directory, "web-access.json"), "{}");
+});
+
+test("Parallel defaults to fast mode in guidelines, uses PARALLEL_API_KEY at hardcoded /v1 endpoints, and never falls back to Exa or DeepSeek", async (t) => {
+  const parallelConfig = JSON.stringify({
+    search: {
+      providers: {
+        exa: {},
+        parallel: {},
+        deepseek: {},
+      },
+      defaultProvider: "parallel",
+    },
+    fetch: {
+      providers: {
+        exa: {},
+        parallel: { maxAgeHours: 6 },
+        deepseek: {},
+      },
+      defaultProvider: "parallel",
+    },
+  });
+  const { session, directory, modelRuntime } = await loadSession(
+    t,
+    ["web_search", "web_fetch"],
+    parallelConfig,
+  );
+  assert.equal(modelRuntime.getProvider("parallel"), undefined);
+  assert.match(
+    session.systemPrompt,
+    /Active search provider is Parallel \(defaults: mode="fast", maxAgeHours=index cache/u,
+  );
+  assert.match(
+    session.systemPrompt,
+    /Active fetch provider is Parallel \(default maxAgeHours=6h\)/u,
+  );
+
+  process.env.EXA_API_KEY = "unused-exa-key";
+  process.env.DEEPSEEK_API_KEY = "unused-deepseek-key";
+  const searchTool = session.agent.state.tools.find((tool) => tool.name === "web_search");
+  const fetchTool = session.agent.state.tools.find((tool) => tool.name === "web_fetch");
+  assert.ok(searchTool?.outputSchema && fetchTool?.outputSchema);
+
+  await assert.rejects(
+    searchTool.execute("p-missing", { query: "Node.js" }),
+    /Configure PARALLEL_API_KEY/u,
+  );
+
+  process.env.PARALLEL_API_KEY = "env-parallel-key";
+  let failParallel = false;
+  const seenRequests: Array<{ url: string; body: unknown }> = [];
+  t.mock.method(globalThis, "fetch", async (url: unknown, init?: RequestInit) => {
+    seenRequests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+    assert.deepEqual(Object.fromEntries(new Headers(init?.headers)), {
+      "content-type": "application/json",
+      "x-api-key": "env-parallel-key",
+    });
+    if (failParallel) return new Response("rate limit", { status: 429 });
+    if (url === "https://api.parallel.ai/v1/search") {
+      return Response.json({
+        search_id: "s1",
+        session_id: "sess1",
+        results: [
+          {
+            url: "https://docs.parallel.ai/search",
+            title: "Parallel Docs",
+            publish_date: "2026-09-10",
+            excerpts: ["Parallel excerpt."],
+          },
+        ],
+      });
+    }
+    assert.equal(url, "https://api.parallel.ai/v1/extract");
+    return Response.json({
+      extract_id: "e1",
+      session_id: "sess1",
+      results: [
+        {
+          url: "https://docs.parallel.ai/search",
+          title: "Parallel Docs",
+          excerpts: ["Excerpt"],
+          full_content: "# Parallel Docs\n\nBody.",
+        },
+      ],
+      errors: [],
+    });
+  });
+
+  const defaultSearch = await searchTool.execute("p-s1", { query: "Parallel search" });
+  assert.equal(defaultSearch.details.provider, "parallel");
+  assert.equal(defaultSearch.details.mode, "fast");
+  assert.equal(Check(searchTool.outputSchema, defaultSearch.structuredContent), true);
+
+  const overrideSearch = await searchTool.execute("p-s2", {
+    query: "Parallel search",
+    mode: "advanced",
+    max_age_hours: 0,
+    count: 5,
+  });
+  assert.equal(overrideSearch.details.mode, "advanced");
+
+  const fetchRes = await fetchTool.execute("p-f1", {
+    url: "https://docs.parallel.ai/search",
+    max_age_hours: 0,
+  });
+  assert.equal(fetchRes.details.provider, "parallel");
+  assert.equal(Check(fetchTool.outputSchema, fetchRes.structuredContent), true);
+
+  failParallel = true;
+  await assert.rejects(
+    searchTool.execute("p-429", { query: "Parallel search" }),
+    /Parallel Search HTTP 429/u,
+  );
+  failParallel = false;
+
+  assert.deepEqual(seenRequests, [
+    {
+      url: "https://api.parallel.ai/v1/search",
+      body: {
+        mode: "fast",
+        search_queries: ["Parallel search"],
+        advanced_settings: { max_results: 10 },
+      },
+    },
+    {
+      url: "https://api.parallel.ai/v1/search",
+      body: {
+        mode: "advanced",
+        search_queries: ["Parallel search"],
+        advanced_settings: { max_results: 5, fetch_policy: { max_age_seconds: 600 } },
+      },
+    },
+    {
+      url: "https://api.parallel.ai/v1/extract",
+      body: {
+        urls: ["https://docs.parallel.ai/search"],
+        advanced_settings: { full_content: true, fetch_policy: { max_age_seconds: 600 } },
+      },
+    },
+    {
+      url: "https://api.parallel.ai/v1/search",
+      body: {
+        mode: "fast",
+        search_queries: ["Parallel search"],
+        advanced_settings: { max_results: 10 },
       },
     },
   ]);

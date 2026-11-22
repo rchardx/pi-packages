@@ -1,11 +1,11 @@
 # @rchardx/pi-web-access
 
 Two independent, opt-in Pi tools backed by standalone hosted web-tool endpoints
-(**Exa** and **DeepSeek**):
+(**Exa**, **Parallel**, and **DeepSeek**):
 
 - `web_fetch` returns a page title and Markdown or plain-text content.
 - `web_search` returns ordered sources alongside provider-supplied summaries
-  (or extractive highlights) and optional page content.
+  (or extractive excerpts/highlights) and optional page content.
 
 Neither tool invokes the other, and neither routes through a chat-model
 generation turn or Pi's chat-model provider registry.
@@ -41,6 +41,7 @@ enable:
 | Provider | Environment variable | Hardcoded endpoints | HTTP authentication |
 | --- | --- | --- | --- |
 | `exa` | `EXA_API_KEY` | `POST https://api.exa.ai/search` or `/contents` | `x-api-key: <key>` |
+| `parallel` | `PARALLEL_API_KEY` | `POST https://api.parallel.ai/v1/search` or `/v1/extract` | `x-api-key: <key>` |
 | `deepseek` | `DEEPSEEK_API_KEY` | `POST https://api.deepseek.com/v1/tools/search` or `/v1/tools/fetch` | `Authorization: Bearer <key>` |
 
 Endpoints are fixed in code and cannot be overridden. Credentials are read
@@ -56,6 +57,7 @@ Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
   "search": {
     "providers": {
       "exa": { "mode": "auto", "maxAgeHours": 24 },
+      "parallel": { "mode": "fast" },
       "deepseek": {}
     },
     "defaultProvider": "exa"
@@ -63,6 +65,7 @@ Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
   "fetch": {
     "providers": {
       "exa": { "maxAgeHours": 24 },
+      "parallel": {},
       "deepseek": {}
     },
     "defaultProvider": "exa"
@@ -82,6 +85,13 @@ that provider:
   previous 60 seconds, and a positive threshold may return older cached content
   if a live refresh fails. Search `mode: "lite"` serves cached content only and
   cannot be combined with `maxAgeHours`.
+- `parallel` accepts optional `mode` (`"turbo"`, `"fast"`, `"basic"`, or
+  `"advanced"`, default `"fast"`; search only) and `maxAgeHours` (`-1` to `720`
+  on search, `0` to `720` on fetch: omitted on search serves Parallel's cached
+  index without live site fetches, `-1` on search forces index-only retrieval,
+  `0` maps to Parallel's 600-second minimum `max_age_seconds` live-refresh
+  window, and `1`–`720` maps to `maxAgeHours * 3600` seconds; Parallel Fetch
+  offers no cache-only guarantee and rejects `-1`).
 - `deepseek` accepts only `{}`.
 - When a single provider is enabled in `providers`, `defaultProvider` may be
   omitted; when multiple providers are enabled, `defaultProvider` is required
@@ -89,9 +99,9 @@ that provider:
 - Routing is independent of the active Pi chat model (`ctx.model`), and there is
   no cross-provider fallback: once the target provider is selected, failures
   report directly without forwarding the query or URL elsewhere.
-- When `exa` is the active provider on load or `/reload`, the registered tool
-  guidelines inform Pi of the configured defaults, per-call override parameters,
-  and user `web-access.json` configuration.
+- When `exa` or `parallel` is the active provider on load or `/reload`, the
+  registered tool guidelines inform Pi of the configured defaults, per-call
+  override parameters, and user `web-access.json` configuration.
 
 Omit `search` or `fetch` to disable that tool; a missing file or `{}` enables
 neither. Project settings and tool arguments cannot grant permission.
@@ -122,18 +132,26 @@ web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
   characters** after normalization on **Exa**). Normalization removes fragments
   and may expand non-ASCII paths through escaping.
 - `max_age_hours` (optional integer `-1` to `720`) overrides the configured
-  freshness target on providers that support cache control (`exa`). `0`
-  requests a live fetch (Exa may reuse a fetch from the previous 60 seconds),
-  `-1` restricts retrieval to cached content only, and `1`–`720` sets a target
-  maximum cache age in hours (returning older cached content if a live refresh
-  fails). Passing `max_age_hours` when `deepseek` is active fails explicitly
-  before reading credentials.
+  freshness target on providers that support cache control (`exa` and
+  `parallel`). On **Exa**, `0` requests a live fetch (reusing fetches within 60
+  seconds), `-1` restricts retrieval to cache only, and `1`–`720` sets a target
+  maximum cache age in hours. On **Parallel**, `0` sets
+  `fetch_policy.max_age_seconds` to `600` (Parallel's 10-minute minimum) and
+  `1`–`720` sets `maxAgeHours * 3600` seconds, while `-1` fails explicitly
+  before reading credentials. Passing `max_age_hours` when `deepseek` is active
+  also fails explicitly before reading credentials.
 - **Exa** sends `{ "urls": [url], "text": true }` (plus `maxAgeHours` when set)
   to `POST https://api.exa.ai/contents` and returns a single-line title and
   extracted Markdown/text. Crawl errors reported in `statuses` (such as
   restricted sources, HTTP 404, `CRAWL_HTTP_<status>`, or timeouts) and
   cache-only misses fail with sanitized diagnostics; `max_age_hours` does not
   change Exa's per-page rate.
+- **Parallel** sends `{ "urls": [url], "advanced_settings": { "full_content": true } }`
+  (plus `advanced_settings.fetch_policy` when `max_age_hours` / `maxAgeHours` is
+  set) to `POST https://api.parallel.ai/v1/extract` and returns a single-line
+  title and extracted Markdown (`full_content`, falling back to `excerpts` if
+  `full_content` is `null`). Entries in `errors` fail with sanitized diagnostics
+  without exposing raw upstream error bodies.
 - **DeepSeek** sends `{ "url": "..." }` to `POST https://api.deepseek.com/v1/tools/fetch`
   and returns a single-line title and provider Markdown, preserving paragraphs.
   HTTP 403 indicates a service security-policy rejection; HTTP 404 indicates no
@@ -150,7 +168,8 @@ web_fetch({ url: "https://example.com/changelog", max_age_hours: 0 })
 There is no raw JSON/CSV/XML/plain-text pass-through guarantee. Provider content
 may be incomplete, include navigation/comments, or lose links, code formatting,
 and mathematical notation. Browser login and JavaScript rendering are not
-guaranteed. See the [Exa Contents reference](https://docs.exa.ai/reference/get-contents)
+guaranteed. See the [Exa Contents reference](https://docs.exa.ai/reference/get-contents),
+[Parallel Extract reference](https://docs.parallel.ai/api-reference/extract/extract),
 and [DeepSeek Fetch reference](https://api-docs.deepseek.com/api/fetch/).
 
 ## Search
@@ -161,12 +180,14 @@ web_search({ query: "React Server Components caching", mode: "deep", max_age_hou
 web_search({ query: "TypeScript releases site:github.com", count: 5, need_content: true })
 ```
 
-- `count` defaults to **10**, with an allowed range of **1–50**. Fewer or zero
+- `count` defaults to **10**, with an allowed range of **1–50** (public
+  **Parallel** search modes cap returned results at **20**). Fewer or zero
   results are valid.
-- `mode` (`"lite"`, `"auto"`, `"deep-lite"`, or `"deep"`) and `max_age_hours`
-  (`-1` to `720`) optionally override configured defaults per call on **Exa**.
-  Passing either parameter when `deepseek` is active fails explicitly before
-  reading credentials.
+- `mode` (Exa: `"lite"`, `"auto"`, `"deep-lite"`, `"deep"`; Parallel: `"turbo"`,
+  `"fast"`, `"basic"`, `"advanced"`) and `max_age_hours` (`-1` to `720`)
+  optionally override configured defaults per call. Passing a mode belonging to
+  another provider, or passing `mode` / `max_age_hours` when `deepseek` is
+  active, fails explicitly before reading credentials.
 - **Exa** sends `query`, `type` (from `mode`, default `"auto"`), `numResults`
   (`count`), and a single content view in `contents` (`{ "highlights": true }`
   when `need_content` is `false`, or `{ "text": true }` when `need_content` is
@@ -177,6 +198,16 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
   `mode: "lite"` override ignores a configured `maxAgeHours` default, while
   passing `max_age_hours` when the effective `mode` is `"lite"` fails
   explicitly.
+- **Parallel** sends `mode` (default `"fast"`), `search_queries: [query.trim()]`
+  (**1–200 Unicode characters** after trimming), and `advanced_settings`
+  (`max_results: count`, plus `fetch_policy: { max_age_seconds }` when
+  `maxAgeHours >= 0`, using a 600-second minimum for `0` and omitting
+  `fetch_policy` when omitted or `-1` so retrieval stays on Parallel's cached
+  index) to `POST https://api.parallel.ai/v1/search`. Parallel's base rate for
+  the selected `mode` (`turbo`/`fast` vs `basic`/`advanced`) covers up to 10
+  results, with per-result charges above 10. Parallel Search returns Markdown
+  `excerpts` as summaries and rejects `need_content: true` explicitly before
+  reading credentials (use `web_fetch` for full page text).
 - **DeepSeek** sends `query`, `count`, and `need_content` (default `false`) to
   `POST https://api.deepseek.com/v1/tools/search`. Queries accept **1–128 Unicode
   characters** and search operators. Long summaries fall back to snippets;
@@ -186,15 +217,16 @@ web_search({ query: "TypeScript releases site:github.com", count: 5, need_conten
 Invalid, non-HTTP(S), or credential-bearing source URLs are omitted with a count
 before applying `count`. All-invalid results are distinguished from an empty
 search. Titles, site names, and dates use single-line whitespace (empty or
-whitespace-only search titles fall back to the result URL); summaries/highlights
+whitespace-only search titles fall back to the result URL); summaries/excerpts
 and page content retain paragraphs. Provider summaries are not verified
 quotations, and the extension never visits result URLs. `web_search` declares an
 `outputSchema` and sets `structuredContent`
 (`{ provider, query, results, omittedInvalidUrls }`) so Codemode scripts receive
 structured sources directly.
 
-See the [Exa Search reference](https://docs.exa.ai/reference/search) and
-[DeepSeek Search reference](https://api-docs.deepseek.com/api/search/).
+See the [Exa Search reference](https://docs.exa.ai/reference/search),
+[Parallel Search reference](https://docs.parallel.ai/api-reference/search/web),
+and [DeepSeek Search reference](https://api-docs.deepseek.com/api/search/).
 
 ## Tool cards in Pi
 
@@ -251,12 +283,13 @@ Cancellation cannot undo provider charges or server-side tool usage.
 Verified with **Pi 1.6.0 on Linux** using **Node 22.19.0 and Node 26.13.1**.
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
-and execute both tools across Exa and DeepSeek using synthetic environment API
-keys and local HTTP/controlled responses. They cover per-provider consent,
-environment-only authentication decoupled from Pi's model registry, visibility,
-prompt guidelines, reload, decoding, resource limits, cancellation, deadlines,
-Codemode structured output, and TUI card rendering. No live account is needed;
-these checks do not guarantee site availability or extraction quality.
+and execute both tools across Exa, Parallel, and DeepSeek using synthetic
+environment API keys and local HTTP/controlled responses. They cover
+per-provider consent, environment-only authentication decoupled from Pi's model
+registry, visibility, prompt guidelines, reload, decoding, resource limits,
+cancellation, deadlines, Codemode structured output, and TUI card rendering. No
+live account is needed; these checks do not guarantee site availability or
+extraction quality.
 
 Host-provided libraries use `"*"` peers as Pi recommends; this does not promise
 compatibility with every Pi release. The package remains `private: true` and is not
