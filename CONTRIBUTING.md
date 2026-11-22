@@ -23,7 +23,8 @@ Apply these rules when proposing or scoping a feature:
 
 1. **Start from a concrete user friction, not feature parity.** Describe the
    specific workflow gap in Pi rather than copying a feature name from another
-   harness.
+   harness. See [Ecosystem Trends and Capability Radar](docs/ecosystem-trends.md)
+   for tracked external signals and current scope stances.
 2. **Verify host and existing package coverage first.** Check whether Pi's
    built-in commands, settings, keybindings, or an existing package in this
    repository already solve the problem.
