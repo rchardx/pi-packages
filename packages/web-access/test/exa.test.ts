@@ -166,6 +166,10 @@ test("searchExa rejects blank queries, incompatible lite + max_age_hours, and pr
     /Exa Search requires a non-blank query/u,
   );
   await assert.rejects(
+    searchExa({ query: "API", mode: "fast" }, resolveAuth),
+    /Exa Search mode must be one of lite, auto, deep-lite, deep; got "fast"/u,
+  );
+  await assert.rejects(
     searchExa({ query: "API", mode: "lite", max_age_hours: 24 }, resolveAuth),
     /mode "lite" uses cached content only and cannot be combined with max_age_hours/u,
   );

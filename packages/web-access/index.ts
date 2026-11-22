@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   type Config,
   DEFAULT_EXA_SEARCH_MODE,
+  DEFAULT_PARALLEL_SEARCH_MODE,
   loadConfig,
   resolveFetchTarget,
   resolveSearchTarget,
@@ -27,6 +28,13 @@ function searchGuidelines(config: Config): string[] {
     guidelines.push(
       `Active search provider is Exa (defaults: mode="${mode}", maxAgeHours=${maxAge}). Override per call with mode ("lite", "auto", "deep-lite", "deep") or max_age_hours (-1 cache only, 0 request live fetch, 1–720 target max cache age in hours; incompatible with "lite"), or configure search.providers.exa in web-access.json in your Pi agent directory and run /reload.`,
     );
+  } else if (target.provider === "parallel") {
+    const mode = target.options.mode ?? DEFAULT_PARALLEL_SEARCH_MODE;
+    const maxAge =
+      target.options.maxAgeHours !== undefined ? `${target.options.maxAgeHours}h` : "index cache";
+    guidelines.push(
+      `Active search provider is Parallel (defaults: mode="${mode}", maxAgeHours=${maxAge}; returns Markdown excerpts, omit need_content). Override per call with mode ("turbo", "fast", "basic", "advanced") or max_age_hours (-1 index cache only, 0 live refresh with 10m minimum window, 1–720 target max cache age in hours), or configure search.providers.parallel in web-access.json in your Pi agent directory and run /reload.`,
+    );
   }
   return guidelines;
 }
@@ -45,6 +53,14 @@ function fetchGuidelines(config: Config): string[] {
         : "provider default";
     guidelines.push(
       `Active fetch provider is Exa (default maxAgeHours=${maxAge}). Override per call with max_age_hours (-1 cache only, 0 request live fetch, 1–720 target max cache age in hours), or configure fetch.providers.exa in web-access.json in your Pi agent directory and run /reload.`,
+    );
+  } else if (target.provider === "parallel") {
+    const maxAge =
+      target.options.maxAgeHours !== undefined
+        ? `${target.options.maxAgeHours}h`
+        : "provider default";
+    guidelines.push(
+      `Active fetch provider is Parallel (default maxAgeHours=${maxAge}). Override per call with max_age_hours (0 live refresh with 10m minimum window, 1–720 target max cache age in hours; -1 cache-only is unsupported), or configure fetch.providers.parallel in web-access.json in your Pi agent directory and run /reload.`,
     );
   }
   return guidelines;

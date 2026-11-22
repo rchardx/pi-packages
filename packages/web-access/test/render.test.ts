@@ -20,8 +20,8 @@ import {
   TUI_KEYBINDINGS,
   visibleWidth,
 } from "@earendil-works/pi-tui";
-import { fetchDeepSeek, fetchExa } from "../src/fetch.ts";
-import { searchDeepSeek, searchExa } from "../src/search.ts";
+import { fetchDeepSeek, fetchExa, fetchParallel } from "../src/fetch.ts";
+import { searchDeepSeek, searchExa, searchParallel } from "../src/search.ts";
 
 const tools = new Map<string, ToolRenderers>();
 const terminal: Terminal = {
@@ -485,4 +485,44 @@ test("Exa fetch and search cards display mode, compact ISO dates, and distinguis
   searchCard.updateResult({ ...fullTextSearch, isError: false, durationMs: 900 });
   assert.match(text(searchCard, true), /Page content\nFull body from Exa\./u);
   assert.doesNotMatch(text(searchCard, true), /\nSummary\n/u);
+
+  const parallelAuth = () => new Headers({ "x-api-key": "parallel-render-key" });
+  const parallelFetched = await fetchParallel(url, parallelAuth, {}, undefined, async () =>
+    Response.json({
+      results: [
+        { url, title: "Parallel page", excerpts: [], full_content: "## Parallel\n\nBody." },
+      ],
+      errors: [],
+    }),
+  );
+  fetchCard.updateResult({ ...parallelFetched, isError: false, durationMs: 500 });
+  assert.deepEqual(lines(fetchCard), [
+    `web_fetch  ${url}`,
+    "Parallel page",
+    "Parallel · 0.5s · alt+o to expand",
+  ]);
+
+  const parallelSearched = await searchParallel(
+    { query: "release notes" },
+    parallelAuth,
+    {},
+    undefined,
+    async () =>
+      Response.json({
+        results: [
+          {
+            url: "https://example.test/p-1",
+            title: "Parallel result",
+            publish_date: "2026-10-05",
+            excerpts: ["Parallel Markdown excerpt."],
+          },
+        ],
+      }),
+  );
+  searchCard.updateResult({ ...parallelSearched, isError: false, durationMs: 700 });
+  assert.deepEqual(lines(searchCard), [
+    "web_search  release notes",
+    "Parallel · fast · 1 result · 0.7s · alt+o to expand",
+  ]);
+  assert.match(text(searchCard, true), /Summary\nParallel Markdown excerpt\./u);
 });

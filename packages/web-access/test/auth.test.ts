@@ -3,11 +3,16 @@ import { test, type TestContext } from "node:test";
 import {
   DEEPSEEK_API_ORIGIN,
   EXA_API_ORIGIN,
+  PARALLEL_API_ORIGIN,
   resolveDeepSeekHeaders,
   resolveExaHeaders,
+  resolveParallelHeaders,
 } from "../src/auth.ts";
 
-function preserveEnv(t: TestContext, name: "DEEPSEEK_API_KEY" | "EXA_API_KEY") {
+function preserveEnv(
+  t: TestContext,
+  name: "DEEPSEEK_API_KEY" | "EXA_API_KEY" | "PARALLEL_API_KEY",
+) {
   const previous = process.env[name];
   delete process.env[name];
   t.after(() => {
@@ -19,6 +24,7 @@ function preserveEnv(t: TestContext, name: "DEEPSEEK_API_KEY" | "EXA_API_KEY") {
 test("hardcoded provider origins point exclusively to the official APIs", () => {
   assert.equal(DEEPSEEK_API_ORIGIN, "https://api.deepseek.com");
   assert.equal(EXA_API_ORIGIN, "https://api.exa.ai");
+  assert.equal(PARALLEL_API_ORIGIN, "https://api.parallel.ai");
 });
 
 test("resolveDeepSeekHeaders reads DEEPSEEK_API_KEY, trims outer whitespace, and sanitizes invalid values", (t) => {
@@ -70,6 +76,33 @@ test("resolveExaHeaders reads EXA_API_KEY, trims outer whitespace, and sanitizes
         "Invalid EXA_API_KEY header value; check the environment variable.",
       );
       assert.ok(!error.message.includes("exa-secret"));
+      return true;
+    },
+  );
+});
+
+test("resolveParallelHeaders reads PARALLEL_API_KEY, trims outer whitespace, and sanitizes invalid values", (t) => {
+  preserveEnv(t, "PARALLEL_API_KEY");
+  assert.throws(() => resolveParallelHeaders(), /Configure PARALLEL_API_KEY/u);
+
+  process.env.PARALLEL_API_KEY = "  ";
+  assert.throws(() => resolveParallelHeaders(), /Configure PARALLEL_API_KEY/u);
+
+  process.env.PARALLEL_API_KEY = "  parallel-test-key  ";
+  assert.deepEqual(Object.fromEntries(resolveParallelHeaders()), {
+    "x-api-key": "parallel-test-key",
+  });
+
+  process.env.PARALLEL_API_KEY = "parallel-secret-密钥";
+  assert.throws(
+    () => resolveParallelHeaders(),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(
+        error.message,
+        "Invalid PARALLEL_API_KEY header value; check the environment variable.",
+      );
+      assert.ok(!error.message.includes("parallel-secret"));
       return true;
     },
   );

@@ -1,5 +1,6 @@
 export const DEEPSEEK_API_ORIGIN = "https://api.deepseek.com";
 export const EXA_API_ORIGIN = "https://api.exa.ai";
+export const PARALLEL_API_ORIGIN = "https://api.parallel.ai";
 
 function readApiKey(envVar: string, label: string): string {
   const value = process.env[envVar]?.trim();
@@ -34,4 +35,8 @@ export function resolveDeepSeekHeaders(): Headers {
 
 export function resolveExaHeaders(): Headers {
   return buildAuthHeaders("EXA_API_KEY", "Exa web tools", "x-api-key", (key) => key);
+}
+
+export function resolveParallelHeaders(): Headers {
+  return buildAuthHeaders("PARALLEL_API_KEY", "Parallel web tools", "x-api-key", (key) => key);
 }
