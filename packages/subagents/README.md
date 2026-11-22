@@ -94,9 +94,9 @@ UUIDs with optional role, elapsed duration, and a single-line task preview.
 Stopping a child terminates its process group, records `cancelled` status in
 this session, updates the `subagents` status indicator, and confirms the stop
 without emitting `subagent:result` or waking an idle parent (an active
-`subagent_wait` resolves cleanly once no running children remain). Missing
-arguments or unknown or finished IDs report an error notification and leave
-running children untouched.
+`subagent_wait` resolves cleanly once no children remain running or stopping).
+Missing arguments or unknown, stopping, or finished IDs report an error
+notification and leave running children untouched.
 
 ### Live session communication
 

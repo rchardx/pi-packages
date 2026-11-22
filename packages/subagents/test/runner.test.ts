@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type TestContext, test } from "node:test";
 import type { Launch } from "../src/protocol.ts";
 import { startChild } from "../src/runner.ts";
 
@@ -83,7 +86,10 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
   await execution.ready;
   execution.run();
   await afterProgress;
-  const cancelled = await execution.cancel();
+  const pendingCancel = execution.tryCancel();
+  assert.ok(pendingCancel);
+  assert.equal(execution.tryCancel(), undefined);
+  const cancelled = await pendingCancel;
   assert.deepEqual(cancelled, {
     status: "cancelled",
     report:
@@ -91,27 +97,50 @@ test("cancel escalates when a child ignores SIGTERM and retains prior progress",
     requests: 2,
     tokens: 45,
   });
+  assert.equal(execution.tryCancel(), undefined);
   assert.deepEqual(await execution.cancel(), cancelled);
 });
 
-test("deadline timeout preserves child progress and SIGTERM flush", async () => {
+test("deadline timeout preserves child progress, rejects tryCancel during SIGTERM flush, and keeps timed_out", async (t: TestContext) => {
+  const dir = await mkdtemp(join(tmpdir(), "pi-runner-timeout-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const sigtermFlag = join(dir, "sigterm.flag");
+  const releaseFlag = join(dir, "release.flag");
   const timedOut = startChild(launch, {
     args: script(
-      `process.send({type:'ready'});
+      `const fs = require('node:fs');
+       process.send({type:'ready'});
        process.on('SIGTERM', () => {
-         process.send(
-           {type:'progress', progress:{requests:3, tokens:90, partial:'Last assistant message:\\nHalfway done.'}},
-           () => process.send({type:'result', result:{status:'cancelled', report:'aborted', requests:3, tokens:95}}, () => process.exit(143))
-         );
+         fs.writeFileSync(${JSON.stringify(sigtermFlag)}, '');
+         const poll = setInterval(() => {
+           if (!fs.existsSync(${JSON.stringify(releaseFlag)})) return;
+           clearInterval(poll);
+           process.send(
+             {type:'progress', progress:{requests:3, tokens:90, partial:'Last assistant message:\\nHalfway done.'}},
+             () => process.send({type:'result', result:{status:'cancelled', report:'aborted', requests:3, tokens:95}}, () => process.exit(143))
+           );
+         }, 10);
        });
        setInterval(()=>{},1000);`,
     ),
     // The deadline counts from spawn; leave room for a slow child to report ready first.
     deadlineMs: 1_000,
-    graceMs: 500,
+    graceMs: 2_000,
   });
   await timedOut.ready;
   timedOut.run();
+  const waitUntil = Date.now() + 5_000;
+  while (Date.now() < waitUntil) {
+    try {
+      await readFile(sigtermFlag);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  await readFile(sigtermFlag);
+  assert.equal(timedOut.tryCancel(), undefined);
+  await writeFile(releaseFlag, "");
   assert.deepEqual(await timedOut.done, {
     status: "timed_out",
     report: "Child execution deadline exceeded.\n\nLast assistant message:\nHalfway done.",

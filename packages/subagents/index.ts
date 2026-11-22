@@ -409,12 +409,17 @@ export default function subagents(pi: ExtensionAPI) {
         return;
       }
 
-      const stopped = await tasks?.stop(id);
-      if (!stopped) {
+      const outcome = await tasks?.stop(id);
+      if (!outcome || outcome.status === "not_found") {
         ctx.ui.notify(`No running subagent ${oneLine(id, 64)} in this session.`, "error");
         return;
       }
+      if (outcome.status === "stopping") {
+        ctx.ui.notify(`Subagent ${oneLine(id, 64)} is already stopping.`, "error");
+        return;
+      }
       if (sessionClosed) return;
+      const { task: stopped } = outcome;
       const roleTag = stopped.role ? ` (${stopped.role})` : "";
       ctx.ui.notify(`Stopped subagent ${stopped.id}${roleTag}: ${oneLine(stopped.task)}`, "info");
     },

@@ -27,6 +27,8 @@ export interface Execution {
   done: Promise<Result>;
   run(): void;
   deliver(envelope: MessageEnvelope): Promise<DeliveryAck>;
+  /** Claims cancellation when no terminal stop or exit has begun; returns undefined otherwise. */
+  tryCancel(): Promise<Result> | undefined;
   cancel(): Promise<Result>;
 }
 
@@ -104,13 +106,14 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
       if (!record(error) || error.code !== "ESRCH") throw error;
     }
   };
-  const stop = (status: Status, report: string) => {
-    if (settled || reason) return;
+  const stop = (status: Status, report: string): boolean => {
+    if (settled || reason) return false;
     reason = { status, report };
     failPendingDeliveries();
     readyReject(new Error(report));
     kill("SIGTERM");
     force = setTimeout(() => kill("SIGKILL"), options.graceMs ?? STOP_GRACE_MS);
+    return true;
   };
   const startup = setTimeout(
     () => stop("timed_out", "Child startup timed out."),
@@ -276,6 +279,11 @@ export function startChild(launch: Launch, options: RunnerOptions = {}): Executi
           }
         });
       });
+    },
+    tryCancel() {
+      return stop("cancelled", "Cancelled; existing filesystem changes were not reverted.")
+        ? done
+        : undefined;
     },
     cancel() {
       stop("cancelled", "Cancelled; existing filesystem changes were not reverted.");

@@ -2945,6 +2945,83 @@ test("/subagents stop <id> wakes subagent_wait cleanly and settles once when rac
   }
 });
 
+test("/subagents stop <id> rejects a child already stopping on timeout without swallowing its report", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, holdChild, releaseChild } = await communicationFixture(t);
+  const sigtermFlag = join(dir, "child-sigterm.flag");
+  const releaseFlag = join(dir, "child-release.flag");
+  const holdShutdownExt = join(dir, "hold-shutdown.mjs");
+  await writeFile(
+    holdShutdownExt,
+    `import { existsSync, writeFileSync } from "node:fs";
+export default function (pi) {
+  pi.registerTool({
+    name: "hold_shutdown",
+    label: "Hold",
+    description: "Fixture",
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
+  });
+  pi.on("session_shutdown", async () => {
+    if (process.env.PI_SUBAGENTS_CHILD !== "1") return;
+    writeFileSync(${JSON.stringify(sigtermFlag)}, "");
+    const until = Date.now() + 1500;
+    while (!existsSync(${JSON.stringify(releaseFlag)}) && Date.now() < until) {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  });
+}
+`,
+  );
+  await writeFile(join(dir, "subagents.json"), JSON.stringify({ deadlineSeconds: 1.5 }));
+
+  const { session, tool, cancelTool, notifications, statuses, statusUpdates } = await parentSession(
+    t,
+    dir,
+    false,
+    [holdShutdownExt],
+    ["hold_shutdown"],
+    "tui",
+  );
+  const updates = deliveredUpdates(session);
+
+  holdChild();
+  const started = await tool.execute("timeout-target", { task: "HELD_THEN_DONE" });
+  const childId = (started.details as { id?: string }).id;
+  assert.ok(childId);
+  const statusFrom = statusUpdates.length;
+
+  const waitDeadline = Date.now() + 10_000;
+  while (Date.now() < waitDeadline) {
+    try {
+      await readFile(sigtermFlag);
+      break;
+    } catch {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  await readFile(sigtermFlag);
+
+  await session.prompt(`/subagents stop ${childId}`);
+  assert.equal(notifications.at(-1)?.type, "error");
+  assert.equal(notifications.at(-1)?.message, `Subagent ${childId} is already stopping.`);
+
+  await writeFile(releaseFlag, "");
+  const timedOutUpdate = await updates.next("subagent:result", 0);
+  await session.waitForIdle();
+  releaseChild();
+
+  assert.ok(record(timedOutUpdate.details));
+  assert.equal(timedOutUpdate.details.id, childId);
+  assert.equal(timedOutUpdate.details.status, "timed_out");
+  assert.equal(statuses.has("subagents"), false);
+  assert.deepEqual(statusUpdates.slice(statusFrom), [{ key: "subagents", text: undefined }]);
+  const lookup = await cancelTool.execute("lookup-timed-out", { id: childId });
+  assert.ok(record(lookup.details));
+  assert.equal(lookup.details.status, "timed_out");
+});
+
 test("/subagents provides case-sensitive two-stage argument completions", {
   timeout: 30_000,
 }, async (t) => {
@@ -2958,6 +3035,9 @@ test("/subagents provides case-sensitive two-stage argument completions", {
   assert.equal(await command.getArgumentCompletions("s"), null);
   assert.equal(await command.getArgumentCompletions("stop "), null);
 
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+
   holdChild();
   const first = await tool.execute("ac-1", {
     task: "HELD_THEN_DONE\nwith second line",
@@ -2967,9 +3047,7 @@ test("/subagents provides case-sensitive two-stage argument completions", {
   const firstId = (first.details as { id?: string }).id;
   const secondId = (second.details as { id?: string }).id;
   assert.ok(firstId && secondId);
-
-  const realNow = Date.now();
-  t.mock.method(Date, "now", () => realNow + 83_000);
+  now += 83_000;
 
   assert.deepEqual(await command.getArgumentCompletions(""), [
     { value: "stop ", label: "stop", description: "Stop a running subagent (2 running)" },
