@@ -36,9 +36,9 @@ All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
   command output per job (plus truncation and lifecycle markers) and delivering
   collapsible completion notifications.
 - **[subagents](subagents/README.md):** delegates tasks to child Pi CLI
-  processes with fresh context, built-in `explorer` and `librarian` roles,
-  configurable limits/roles, cancellation, and live bidirectional messaging
-  between the root session and running children.
+  processes with fresh context, configurable limits and roles, cancellation,
+  and live bidirectional messaging between the root session and running
+  children.
 - **[statusline](statusline/README.md):** replaces Pi's interactive footer with
   a fixed two-line layout that renders `subagents`, `background`, and other
   extension statuses inline on line 1 above model, context, cost, and

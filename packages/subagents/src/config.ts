@@ -69,32 +69,8 @@ export interface SubagentsConfig {
   maxRequests: number;
   /** Total execution deadline per child in seconds, including startup. */
   deadlineSeconds: number;
-  /** Active subagent role presets (built-in defaults merged with user configuration). */
+  /** Active subagent role presets configured by the user. */
   roles: Record<string, RoleConfig>;
-}
-
-export const BUILTIN_ROLES: Readonly<Record<string, RoleConfig>> = {
-  explorer: {
-    description: "Read-only local codebase search and navigation.",
-    tools: ["read", "grep", "find", "ls"],
-    instructions:
-      "Explore the local codebase without modifying files. Prefer targeted grep, find, ls, and read calls over broad scans, and cite exact file paths and line numbers.",
-  },
-  librarian: {
-    description: "Find documentation and reference material. No local edits or shell commands.",
-    tools: ["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"],
-    instructions:
-      "Find documentation, web sources, and reference code relevant to the task. Cite source URLs or exact file paths. Do not modify local files or run shell commands.",
-  },
-};
-
-export function defaultRoles(): Record<string, RoleConfig> {
-  return Object.fromEntries(
-    Object.entries(BUILTIN_ROLES).map(([name, role]) => [
-      name,
-      { ...role, ...(role.tools ? { tools: [...role.tools] } : {}) },
-    ]),
-  );
 }
 
 export function isToolModifier(entry: string): boolean {
@@ -261,15 +237,10 @@ function parseRoles(value: unknown): Record<string, RoleConfig> {
       );
     }
   }
-  const roles = defaultRoles();
+  const roles: Record<string, RoleConfig> = {};
   for (const [name, entry] of Object.entries(value)) {
-    if (entry === false) {
-      delete roles[name];
-      continue;
-    }
-    const parsed = parseRoleConfig(name, entry);
-    const existing = Object.hasOwn(roles, name) ? roles[name] : undefined;
-    roles[name] = existing ? { ...existing, ...parsed } : parsed;
+    if (entry === false) continue;
+    roles[name] = parseRoleConfig(name, entry);
   }
   return roles;
 }
@@ -295,8 +266,7 @@ export function parseConfig(value: unknown): SubagentsConfig {
     "deadlineSeconds" in value
       ? parseDeadlineSeconds(value.deadlineSeconds, "deadlineSeconds")
       : DEFAULT_DEADLINE_SECONDS;
-  const roles =
-    "roles" in value && value.roles !== undefined ? parseRoles(value.roles) : defaultRoles();
+  const roles = "roles" in value && value.roles !== undefined ? parseRoles(value.roles) : {};
   return { maxConcurrent, maxRequests, deadlineSeconds, roles };
 }
 
@@ -353,7 +323,7 @@ export async function loadConfig(
         maxConcurrent: DEFAULT_MAX_CONCURRENT,
         maxRequests: DEFAULT_MAX_REQUESTS,
         deadlineSeconds: DEFAULT_DEADLINE_SECONDS,
-        roles: defaultRoles(),
+        roles: {},
       };
     }
     throw new Error(`Cannot read subagents configuration: ${path}`, { cause: error });

@@ -28,7 +28,7 @@ The model calls these tools, not shell commands or slash commands:
 ```typescript
 subagent({
   task: "Locate maxJobs validation in src/config.ts and report its constraints with file and line references.",
-  role: "explorer" // optional: built-in "explorer" / "librarian", or a custom role from subagents.json
+  role: "explorer" // optional: a role configured in subagents.json
 })
 
 subagent_list({})
@@ -235,8 +235,9 @@ Pi configuration or a reloadable extension before delegation.
 
 Tools from Pi's built-in MCP support are not required at startup: when a child's
 selected tools include neither MCP tools nor tools that reach other tools (such
-as `explorer`, `tools: []`, or when the parent has no reachable MCP tools), it
-starts with `--no-mcp` and does not connect MCP servers; otherwise each child
+as a local-only role like `tools: ["read", "grep"]`, `tools: []`, or when the
+parent has no reachable MCP tools), it starts with `--no-mcp` and does not
+connect MCP servers; otherwise each child
 connects its own MCP servers and registers their tools as they connect (when the
 selection includes MCP tools from the parent, only those MCP tools remain
 reachable). A server that cannot connect in the child surfaces as a failed tool
@@ -310,23 +311,12 @@ background-shell extensions do not accidentally return before their commands fin
 
 ### Roles and settings
 
-Two built-in roles are available by default without creating a configuration
-file:
-
-- `explorer` — local codebase search and navigation with `["read", "grep", "find", "ls"]`.
-- `librarian` — find documentation and reference material and cite sources. Uses
-  `["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"]`, keeping
-  enabled web, MCP, and messaging tools while removing local edit and shell tools.
-
-Neither role overrides the parent's model or thinking level by default. Omit
-`role` for tasks that require writing code or running experiments. The librarian's
-tool selection is not a read-only sandbox for retained MCP or custom tools.
-
-Optional user configuration at `~/.pi/agent/subagents.json` is re-read on each
-`subagent` launch (and before parent runs to advertise active roles in a
-`<subagent_roles>` system-prompt section while `subagent` is active). A missing
-file uses defaults; invalid or unreadable configuration fails the `subagent`
-call before starting a child.
+No roles are built in by default; omit `role` to start a general-purpose child
+that inherits the parent's model and tools. Optional user configuration at
+`~/.pi/agent/subagents.json` is re-read on each `subagent` launch (and before
+parent runs to advertise active roles in a `<subagent_roles>` system-prompt
+section while `subagent` is active). A missing file uses defaults; invalid or
+unreadable configuration fails the `subagent` call before starting a child.
 
 ```json
 {
@@ -335,11 +325,18 @@ call before starting a child.
   "deadlineSeconds": 1800,
   "roles": {
     "explorer": {
+      "description": "Fast read-only local codebase search.",
       "provider": "anthropic",
       "model": "claude-haiku-4-5",
-      "thinking": "low"
+      "thinking": "low",
+      "tools": ["read", "grep", "find", "ls"],
+      "instructions": "Explore the local codebase without modifying files, and cite exact file paths and line numbers."
     },
-    "librarian": {
+    "reviewer": {
+      "description": "Independent code review.",
+      "provider": "openai",
+      "model": "gpt-5.4",
+      "thinking": "high",
       "maxRequests": 16,
       "deadlineSeconds": 300
     }
@@ -352,12 +349,15 @@ call before starting a child.
 | `maxConcurrent` | `8` | Maximum concurrent children in a root session, including startups. |
 | `maxRequests` | `64` | Maximum admitted model turns per child execution. |
 | `deadlineSeconds` | `1800` | Total child execution deadline in seconds, including startup. |
-| `roles` | `explorer`, `librarian` | Role presets merged over the built-in roles; set a role to `false` to disable it. |
+| `roles` | `{}` | User-defined role presets; set an entry to `false` to disable it. |
 
 Role names use 1–64 ASCII letters, digits, hyphens, or underscores starting with
-a letter or digit. Partial overrides on `explorer` or `librarian` retain their
-other built-in fields; set `"explorer": false` or `"librarian": false` to
-disable a built-in role. Unknown or empty `role` arguments fail before launch.
+a letter or digit. Each configured role is a standalone definition (not merged
+over any built-in preset): omitting `tools` inherits the parent's active tools
+(including `edit`, `write`, and `bash`), and omitting `instructions` adds no
+extra role prompt. Setting a role entry to `false` disables it without deleting
+the key. Unknown or empty `role` arguments fail before launch. Tool selection is
+not a security sandbox for retained MCP or custom tools.
 Each role object supports:
 
 | Role field | Meaning |
