@@ -1,0 +1,28 @@
+{
+  "name": "@rchardx/pi-skills",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Workflow skills for Pi coding agent",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rchardx/pi-packages.git",
+    "directory": "packages/skills"
+  },
+  "keywords": [
+    "pi-package"
+  ],
+  "files": [
+    "skills",
+    "README.md"
+  ],
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}

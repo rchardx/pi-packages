@@ -16,6 +16,7 @@ body:
       options:
         - ask
         - background
+        - skills
         - statusline
         - subagents
         - web-access

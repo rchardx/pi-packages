@@ -57,7 +57,22 @@ export async function loadPackages(root: string): Promise<WorkspacePackage[]> {
   return packages;
 }
 
-export function inspectPack(output: string): string {
+function packKind(manifest: Record<string, unknown>): "extension" | "skill" {
+  const pi = manifest.pi;
+  if (!record(pi)) throw new Error("Package manifest missing pi configuration");
+  const hasExtensions = Array.isArray(pi.extensions) && pi.extensions.length > 0;
+  const hasSkills = Array.isArray(pi.skills) && pi.skills.length > 0;
+  if (hasExtensions === hasSkills) {
+    throw new Error("Expected package manifest to declare either pi.extensions or pi.skills");
+  }
+  return hasSkills ? "skill" : "extension";
+}
+
+export function inspectPack(
+  output: string,
+  manifest: Record<string, unknown> = { pi: { extensions: ["./index.ts"] } },
+): string {
+  const kind = packKind(manifest);
   const results: unknown = JSON.parse(output);
   if (!Array.isArray(results) || results.length !== 1) throw new Error("Expected one npm tarball");
   const result: unknown = results[0];
@@ -72,20 +87,35 @@ export function inspectPack(output: string): string {
     if (!record(file) || typeof file.path !== "string") throw new Error("Invalid npm pack file");
     paths.push(file.path);
   }
-  for (const required of ["index.ts", "package.json", "README.md", "LICENSE"]) {
+  for (const required of ["package.json", "README.md", "LICENSE"]) {
     if (!paths.includes(required)) throw new Error(`Tarball missing ${required}`);
   }
-  // Current packages ship only these root files and TypeScript runtime modules.
-  for (const path of paths) {
-    if (
-      !["index.ts", "package.json", "README.md", "LICENSE"].includes(path) &&
-      !/^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.ts$/u.test(path)
-    ) {
-      throw new Error(`Unexpected tarball file: ${path}`);
+  if (kind === "skill") {
+    // Current skill packages ship root metadata and standalone SKILL.md files only.
+    for (const path of paths) {
+      if (
+        !["package.json", "README.md", "LICENSE"].includes(path) &&
+        !/^skills\/[a-z0-9]+(?:-[a-z0-9]+)*\/SKILL\.md$/u.test(path)
+      ) {
+        throw new Error(`Unexpected tarball file: ${path}`);
+      }
     }
+    if (!paths.some((path) => path.startsWith("skills/")))
+      throw new Error("Tarball missing skills");
+  } else {
+    if (!paths.includes("index.ts")) throw new Error("Tarball missing index.ts");
+    // Extension packages ship root metadata, index.ts, and TypeScript runtime modules.
+    for (const path of paths) {
+      if (
+        !["index.ts", "package.json", "README.md", "LICENSE"].includes(path) &&
+        !/^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.ts$/u.test(path)
+      ) {
+        throw new Error(`Unexpected tarball file: ${path}`);
+      }
+    }
+    if (!paths.some((path) => path.startsWith("src/")))
+      throw new Error("Tarball missing runtime modules");
   }
-  if (!paths.some((path) => path.startsWith("src/")))
-    throw new Error("Tarball missing runtime modules");
   console.log(`Inspected tarball files:\n${paths.join("\n")}`);
   return result.filename;
 }
@@ -111,7 +141,7 @@ export async function packNightly(root: string, destination: string, run: string
         ["pack", "--ignore-scripts", "--json", "--pack-destination", destination],
         { cwd: directory, encoding: "utf8", timeout: 120_000, maxBuffer: 2 * 1024 * 1024 },
       );
-      const filename = inspectPack(output);
+      const filename = inspectPack(output, pkg.manifest);
       await rename(join(destination, filename), join(destination, assetName(pkg.name)));
       console.log(`${pkg.name}@${version} -> ${assetName(pkg.name)}`);
     }
