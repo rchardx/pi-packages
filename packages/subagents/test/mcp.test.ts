@@ -369,6 +369,7 @@ test("children without MCP or reaching tools pass --no-mcp and never connect MCP
     join(dir, "subagents.json"),
     JSON.stringify({
       roles: {
+        explorer: { tools: ["read", "grep", "find", "ls"] },
         solver: { tools: [] },
         no_mcp: { tools: [`-${PING}`, `-${OTHER}`] },
       },
@@ -429,6 +430,7 @@ test("modifier, MCP-selecting, and codemode roles retain MCP access", {
     join(dir, "subagents.json"),
     JSON.stringify({
       roles: {
+        librarian: { tools: ["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"] },
         mcp_reader: { tools: ["read", OTHER] },
         scripter: { tools: ["read", "codemode"] },
       },

@@ -4,11 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import {
-  BUILTIN_ROLES,
   DEFAULT_DEADLINE_SECONDS,
   DEFAULT_MAX_CONCURRENT,
   DEFAULT_MAX_REQUESTS,
-  defaultRoles,
   formatRolesPrompt,
   loadConfig,
   MAX_DEADLINE_SECONDS,
@@ -21,33 +19,23 @@ import {
   MAX_ROLE_TOOLS,
 } from "../src/protocol.ts";
 
-test("parseConfig includes built-in explorer and librarian roles and merges user overrides", () => {
-  assert.deepEqual(Object.keys(BUILTIN_ROLES), ["explorer", "librarian"]);
-  assert.ok(BUILTIN_ROLES.librarian);
-  assert.equal(
-    BUILTIN_ROLES.librarian.description,
-    "Find documentation and reference material. No local edits or shell commands.",
-  );
-  assert.equal(
-    BUILTIN_ROLES.librarian.instructions,
-    "Find documentation, web sources, and reference code relevant to the task. Cite source URLs or exact file paths. Do not modify local files or run shell commands.",
-  );
+test("parseConfig defaults to no built-in roles and parses user role definitions", () => {
   assert.throws(
     () => resolveRole(parseConfig({}), "researcher"),
-    /Unknown subagent role "researcher"\. Configured roles: explorer, librarian\./u,
+    /Unknown subagent role "researcher"\. No roles are configured\./u,
   );
   assert.deepEqual(parseConfig({}), {
     maxConcurrent: DEFAULT_MAX_CONCURRENT,
     maxRequests: DEFAULT_MAX_REQUESTS,
     deadlineSeconds: DEFAULT_DEADLINE_SECONDS,
-    roles: defaultRoles(),
+    roles: {},
   });
   assert.equal(DEFAULT_MAX_CONCURRENT, 8);
   assert.deepEqual(parseConfig({ maxConcurrent: 4, maxRequests: 16, deadlineSeconds: 300 }), {
     maxConcurrent: 4,
     maxRequests: 16,
     deadlineSeconds: 300,
-    roles: defaultRoles(),
+    roles: {},
   });
   assert.equal(parseConfig({ deadlineSeconds: 0.5 }).deadlineSeconds, 0.5);
   assert.equal(
@@ -55,17 +43,19 @@ test("parseConfig includes built-in explorer and librarian roles and merges user
     MAX_DEADLINE_SECONDS,
   );
 
-  // Partial override on built-in `explorer` preserves built-in tools/instructions; `false` disables `librarian`.
+  // `false` disables a role entry; configured roles keep only their declared fields.
   const parsed = parseConfig({
     roles: {
       explorer: {
+        description: "Fast read-only navigation.",
         provider: "openrouter",
         model: "anthropic/claude-haiku-4-5",
         thinking: "low",
+        tools: ["read", "grep", "find", "ls"],
         maxRequests: 12,
         deadlineSeconds: 180,
       },
-      librarian: false,
+      disabled_role: false,
       solver: {
         tools: [],
       },
@@ -73,10 +63,11 @@ test("parseConfig includes built-in explorer and librarian roles and merges user
   });
   assert.deepEqual(parsed.roles, {
     explorer: {
-      ...BUILTIN_ROLES.explorer,
+      description: "Fast read-only navigation.",
       provider: "openrouter",
       model: "anthropic/claude-haiku-4-5",
       thinking: "low",
+      tools: ["read", "grep", "find", "ls"],
       maxRequests: 12,
       deadlineSeconds: 180,
     },
@@ -228,7 +219,7 @@ test("parseConfig rejects invalid input", () => {
 });
 
 test("resolveRole and formatRolesPrompt enforce exact lookup and concise prompt formatting", () => {
-  const empty = parseConfig({ roles: { explorer: false, librarian: false } });
+  const empty = parseConfig({});
   assert.equal(resolveRole(empty, undefined), undefined);
   assert.equal(formatRolesPrompt(empty.roles), undefined);
   assert.throws(() => resolveRole(empty, ""), /nonempty/u);
@@ -245,7 +236,7 @@ test("resolveRole and formatRolesPrompt enforce exact lookup and concise prompt 
         thinking: "low",
         tools: ["read", "grep"],
       },
-      librarian: false,
+      disabled_role: false,
       solver: {
         tools: [],
       },
@@ -271,7 +262,7 @@ test("loadConfig returns defaults when missing and fails closed when invalid", a
     maxConcurrent: DEFAULT_MAX_CONCURRENT,
     maxRequests: DEFAULT_MAX_REQUESTS,
     deadlineSeconds: DEFAULT_DEADLINE_SECONDS,
-    roles: defaultRoles(),
+    roles: {},
   });
 
   await writeFile(path, JSON.stringify({ maxConcurrent: 2, maxRequests: 10 }));
@@ -279,7 +270,7 @@ test("loadConfig returns defaults when missing and fails closed when invalid", a
     maxConcurrent: 2,
     maxRequests: 10,
     deadlineSeconds: DEFAULT_DEADLINE_SECONDS,
-    roles: defaultRoles(),
+    roles: {},
   });
 
   await writeFile(path, "{invalid");

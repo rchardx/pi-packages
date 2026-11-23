@@ -2324,30 +2324,31 @@ test("roles configure child model, instructions, tool selection, limits, and par
     },
   });
 
-  // Built-in `explorer` and `librarian` are advertised out of the box with no subagents.json.
-  await session.prompt("Check default built-in roles.");
+  // No built-in roles are advertised when subagents.json is absent.
+  await session.prompt("Check default roles.");
   const defaultParentPrompt = JSON.stringify(parentRequests[0]?.messages);
-  assert.match(defaultParentPrompt, /<subagent_roles>/u);
-  assert.match(
-    defaultParentPrompt,
-    /- explorer \(tools: read, grep, find, ls\): Read-only local codebase search and navigation\./u,
-  );
-  assert.match(
-    defaultParentPrompt,
-    /- librarian \(tools: \+grep, \+find, \+ls, -edit, -write, -bash, -powershell\): Find documentation and reference material\. No local edits or shell commands\./u,
-  );
+  assert.doesNotMatch(defaultParentPrompt, /<subagent_roles>/u);
 
-  // Partial overrides customize built-in explorer/librarian without losing their built-in tools/instructions.
+  // User-configured roles are advertised and applied without a reload.
   await writeFile(
     join(dir, "subagents.json"),
     JSON.stringify({
       roles: {
         explorer: {
+          description: "Read-only local codebase search and navigation.",
           provider: "fast",
           model: "reader-model",
           thinking: "low",
+          tools: ["read", "grep", "find", "ls"],
+          instructions:
+            "Explore the local codebase without modifying files. Prefer targeted grep, find, ls, and read calls over broad scans, and cite exact file paths and line numbers.",
         },
         librarian: {
+          description:
+            "Find documentation and reference material. No local edits or shell commands.",
+          tools: ["+grep", "+find", "+ls", "-edit", "-write", "-bash", "-powershell"],
+          instructions:
+            "Find documentation, web sources, and reference code relevant to the task. Cite source URLs or exact file paths. Do not modify local files or run shell commands.",
           maxRequests: 1,
         },
         solver: {
@@ -2358,13 +2359,18 @@ test("roles configure child model, instructions, tool selection, limits, and par
     }),
   );
 
-  await session.prompt("Check overridden roles.");
-  const overriddenParentPrompt = JSON.stringify(parentRequests[1]?.messages);
+  await session.prompt("Check configured roles.");
+  const configuredParentPrompt = JSON.stringify(parentRequests[1]?.messages);
+  assert.match(configuredParentPrompt, /<subagent_roles>/u);
   assert.match(
-    overriddenParentPrompt,
+    configuredParentPrompt,
     /- explorer \(fast\/reader-model; thinking: low; tools: read, grep, find, ls\): Read-only local codebase search and navigation\./u,
   );
-  assert.match(overriddenParentPrompt, /- solver \(tools: none\)/u);
+  assert.match(
+    configuredParentPrompt,
+    /- librarian \(tools: \+grep, \+find, \+ls, -edit, -write, -bash, -powershell\): Find documentation and reference material\. No local edits or shell commands\./u,
+  );
+  assert.match(configuredParentPrompt, /- solver \(tools: none\)/u);
 
   const tool = session.agent.state.tools.find((entry) => entry.name === "subagent");
   const listTool = session.agent.state.tools.find((entry) => entry.name === "subagent_list");
@@ -2372,7 +2378,7 @@ test("roles configure child model, instructions, tool selection, limits, and par
 
   const updates = deliveredUpdates(session);
 
-  // 1. Built-in explorer with model override retains built-in read-only tools and instructions, excluding docs_lookup.
+  // 1. Custom explorer with model override applies read-only tools and instructions, excluding docs_lookup.
   holdExplorer = new Promise<void>((resolve) => {
     releaseExplorer = resolve;
   });
@@ -2440,7 +2446,7 @@ test("roles configure child model, instructions, tool selection, limits, and par
   assert.match(solverPrompt, /ROLE_SOLVER_MARKER/u);
   assert.doesNotMatch(solverPrompt, /subagent_send/u);
 
-  // 3. Built-in librarian keeps research/extension and communication tools, enables grep/find/ls, and removes edit/write/bash.
+  // 3. Modifier-based role keeps research/extension and communication tools, enables grep/find/ls, and removes edit/write/bash.
   const originalArgv = process.argv;
   process.argv = [process.execPath, "pi", "-e", docToolPath];
   t.after(() => {
@@ -2476,7 +2482,7 @@ test("roles configure child model, instructions, tool selection, limits, and par
     assert.ok(!librarianTools.includes(forbidden), `librarian leaked ${forbidden}`);
   }
 
-  // 4. Disabling built-in roles with `false` omits <subagent_roles> without a reload.
+  // 4. Disabling roles with `false` omits <subagent_roles> without a reload.
   await writeFile(
     join(dir, "subagents.json"),
     JSON.stringify({ roles: { explorer: false, librarian: false } }),
@@ -2530,7 +2536,7 @@ test("roles fail closed on unknown names, unavailable models, and parent tool re
   );
   await assert.rejects(
     tool.execute("unknown-role", { task: "Inspect.", role: "unknown" }),
-    /Unknown subagent role "unknown"\. Configured roles: explorer, librarian, needs_grep, adds_grep, bad_model, unauthed_model\./u,
+    /Unknown subagent role "unknown"\. Configured roles: needs_grep, adds_grep, bad_model, unauthed_model\./u,
   );
   await assert.rejects(
     tool.execute("restricted-plain", { task: "Inspect.", role: "needs_grep" }),
@@ -2771,6 +2777,10 @@ for (const mode of ["tui", "rpc"] as const) {
     timeout: 45_000,
   }, async (t) => {
     const { dir, holdChild, releaseChild, mainRequests } = await communicationFixture(t);
+    await writeFile(
+      join(dir, "subagents.json"),
+      JSON.stringify({ roles: { explorer: { tools: ["read", "grep", "find", "ls"] } } }),
+    );
     const { session, tool, cancelTool, notifications, statuses } = await parentSession(
       t,
       dir,
@@ -2876,6 +2886,10 @@ test("/subagents stop <id> wakes subagent_wait cleanly and settles once when rac
   timeout: 45_000,
 }, async (t) => {
   const { dir, releaseMain, holdChild, releaseChild } = await communicationFixture(t);
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({ roles: { explorer: { tools: ["read", "grep", "find", "ls"] } } }),
+  );
   const { session, tool, cancelTool, notifications, statuses, statusUpdates } = await parentSession(
     t,
     dir,
@@ -3140,6 +3154,10 @@ test("/subagents provides case-sensitive two-stage argument completions", {
   timeout: 30_000,
 }, async (t) => {
   const { dir, holdChild, releaseChild } = await communicationFixture(t);
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({ roles: { explorer: { tools: ["read", "grep", "find", "ls"] } } }),
+  );
   const { session, tool } = await parentSession(t, dir, false, [], ["grep", "find", "ls"], "tui");
   const command = session.extensionRunner.getCommand("subagents");
   assert.ok(command?.getArgumentCompletions);

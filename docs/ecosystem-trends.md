@@ -72,11 +72,11 @@ transitions appear in the [Signal log](#signal-log).
 | Structured pre-execution clarification | `Strengthening` | Harnesses converged on structured multiple-choice user clarification prompts when an interactive UI or caller input channel is available (Claude Code, OpenCode, Cursor, Google Antigravity) | Dialog primitives (`ctx.ui`), OSC 7501 status; no built-in model tool | **`Maintain`** in [`ask`](../packages/ask/README.md) (1–4 sequential questions with automatic `Other…` in `tui`/`rpc`, hidden in headless `print`/`json` modes via `prepareLoadout`) |
 | Hosted web search and page fetching | `Strengthening` | Moving from brittle local scrapers to hosted web search and page-extraction endpoints (standalone tool APIs such as DeepSeek alongside provider server tools in Anthropic, OpenAI, and Google Gemini) with explicit billing/disclosure boundaries | None built in | **`Maintain`** in [`web-access`](../packages/web-access/README.md) around deterministic standalone tool endpoints (DeepSeek, per-capability opt-in, no fallback; chat-model-wrapped providers removed in `#70`) |
 | Async shell execution and reactive wakeup | `Strengthening` | Long-running shell commands moved off blocking foreground turns via background session handles (OpenAI Codex CLI, Claude Code) and reactive push completion notifications that wake the agent without `sleep` polling (Google Antigravity, Claude Code) | Foreground built-in shell tools (`bash`, `powershell`) | **`Maintain`** in [`background`](../packages/background/README.md) (`bash` override + `/background`) |
-| Steerable parent-child subagents | `Strengthening` | Fire-and-forget delegation evolving into addressable child sessions with live messaging (`send`/`wait`), multi-model parent/child pairing (Devin CLI `Fusion`), and default tool-selection presets (Claude Code, Google Antigravity, OpenAI Codex CLI) | None built in | **`Maintain`** in [`subagents`](../packages/subagents/README.md) (root-routed messaging, `/subagents`, explicit per-role `model` overrides, and `explorer`/`librarian` tool-selection presets—not security sandboxes; leave task personas such as `reviewer` to skills) |
+| Steerable parent-child subagents | `Strengthening` | Fire-and-forget delegation evolving into addressable child sessions with live messaging (`send`/`wait`), multi-model parent/child pairing (Devin CLI `Fusion`), and default tool-selection presets (Claude Code, Google Antigravity, OpenAI Codex CLI) | None built in | **`Maintain`** in [`subagents`](../packages/subagents/README.md) (root-routed messaging, `/subagents`, explicit per-role `model`/tool configuration in `subagents.json` with no built-in role presets—not security sandboxes; leave workflow personas such as `reviewer` to skills) |
 | High-density TUI observability | `Strengthening` | Terminal harnesses surface persistent footer/status telemetry for workspace, active model, context-window usage, and session cost (Pi, Claude Code `statusLine`, OpenCode TUI) | Built-in footer (expands to a 3rd line when extension statuses are active) and `ctx.ui.setFooter` | **`Maintain`** in [`statusline`](../packages/statusline/README.md) (fixed 2-line layout placing `subagents`/`background` statuses inline on line 1 above model, context, cost, and cumulative token/cache counters; zero model tools) |
 | Programmatic tool composition (Codemode) | `Strengthening` | Scripted orchestration over typed tool outputs reduces multi-turn token round-trips for fan-out work (Pi `builtin:codemode`, Anthropic programmatic tool calling) | Native `builtin:codemode` (`outputSchema`, `structuredContent`) | **`Delegate to host`**; expose clean `outputSchema` in [`subagents`](../packages/subagents/README.md) while keeping `subagent_wait` `model-only` |
 | Project instructions and reusable skills | `Strengthening` | Reusable workflows standardized around repository-checked Markdown instruction files and on-demand skills rather than bespoke extensions or machine-local JSON configs (Pi, Claude Code, OpenAI Codex CLI, Devin CLI, OpenCode) | Native `AGENTS.md` / `CLAUDE.md` discovery, skills (`SKILL.md`), and prompt templates | **`Delegate to host`**; express workflow personas, review rubrics, and recipes as skills rather than extension config |
-| Stateless agentic codebase search | `Strengthening` | Terminal harnesses standardize on stateless `grep`/glob/file navigation rather than local background embedding daemons—directly in the host (Pi, OpenAI Codex CLI) or paired with host-provided exploration subagents (Claude Code, Gemini CLI `codebase_investigator`, OpenCode) | Built-in `read`, `bash`, `grep`, `find`, `ls` (no built-in subagent) | **`Delegate to host`** for search primitives (paired with optional `explorer` in [`subagents`](../packages/subagents/README.md)); do not build local vector/RAG indexer packages |
+| Stateless agentic codebase search | `Strengthening` | Terminal harnesses standardize on stateless `grep`/glob/file navigation rather than local background embedding daemons—directly in the host (Pi, OpenAI Codex CLI) or paired with host-provided exploration subagents (Claude Code, Gemini CLI `codebase_investigator`, OpenCode) | Built-in `read`, `bash`, `grep`, `find`, `ls` (no built-in subagent) | **`Delegate to host`** for search primitives (optionally paired with user-configured read-only roles in [`subagents`](../packages/subagents/README.md)); do not build local vector/RAG indexer packages |
 | Workspace and OS sandbox isolation | `Strengthening` | Parallel agents increasingly pair Git worktrees with OS-level process/filesystem sandboxes and network gates (OpenAI Codex CLI, Claude Code, Cursor) | Shared working directory; manual `git worktree` via `bash` | **`Hold`**; prefer `bash`/skill recipes unless worktree or sandbox lifecycle proves impossible without extension state |
 | Per-request automatic model routing | `Strengthening` | Classifier- or heuristic-driven routing of individual requests within one session across fast/cheap and frontier models (Cursor Router `Auto`, Gemini CLI `Auto` Flash/Pro routing, Pi virtual-model hooks) | Multi-provider catalog, manual selection, and per-request routing hooks (`pi.registerVirtualModel()`) without a built-in router policy | **`Hold`** on shipping an opinionated virtual-model router package; `pi.registerVirtualModel()` supplies the host hook while explicit per-role `model` overrides in [`subagents`](../packages/subagents/README.md) cover deterministic tiering |
 | Conversation tree and session branching | `Strengthening` | CLI harnesses support branching or forking session transcripts to explore alternatives without losing context (Pi, Claude Code, Devin CLI, OpenCode) | Native `/tree` and session `fork`; local session storage | **`Delegate to host`**; rely on Pi's built-in `/tree` and `fork` (and Git for file state) |
@@ -121,13 +121,12 @@ When executing a sweep (manually or with an agent), follow these steps in order:
      perform a best-effort spot check of current documentation against the
      matrix; for these targets, `T` records when current docs were last checked
      rather than guaranteeing diff-complete historical coverage.
-   - *Parallel lookup discipline:* when `subagent` is active in the session, an
-     enabled lookup preset (such as `librarian`) can reach the required sources,
-     and every tool exposed to that child is non-mutating, delegate parallel
-     child lookups and use `subagent_wait` (answering child questions or
-     continuing waits as needed) until every delegated lookup reaches a terminal
-     result; otherwise inspect sources directly from the root session or
-     manually.
+   - *Parallel lookup discipline:* when `subagent` is active in the session, a
+     user-configured lookup role can reach the required sources, and every tool
+     exposed to that child is non-mutating, delegate parallel child lookups and
+     use `subagent_wait` (answering child questions or continuing waits as
+     needed) until every delegated lookup reaches a terminal result; otherwise
+     inspect sources directly from the root session or manually.
 2. **Filter noise and enforce the extension-vs-skill boundary** (discard ~90% of
    release items):
    - *Drop product noise:* UI tweaks, pricing/quotas, SaaS dashboards,
@@ -231,20 +230,20 @@ Reverse-chronological record of capability transitions and their impact on
   files (such as `AGENTS.md` and `CLAUDE.md`) and on-demand reusable skills
   instead of static per-machine role configurations.
   - *Impact on `pi-packages`:* Keep [`subagents`](../packages/subagents/README.md)
-    built-in roles limited to default tool-selection presets (`explorer`,
-    `librarian`, which narrow declared local edit/shell tools without acting as
-    security sandboxes) and expose Codemode `outputSchema` (`subagent_wait` kept
-    `model-only`); delegate higher-level personas (such as code reviewers) and
-    playbooks to skills.
+    free of built-in role presets (users configure model/tool roles explicitly
+    in `subagents.json`, without treating tool selection as a security sandbox)
+    and expose Codemode `outputSchema` (`subagent_wait` kept `model-only`);
+    delegate higher-level personas (such as code reviewers) and playbooks to
+    skills.
 - **`Strengthening` — Stateless agentic code search in CLI harnesses**
   (Upstream Pi `1.6.0` and OpenAI Codex CLI built-in file/shell search; Claude Code, Gemini CLI `codebase_investigator`, and OpenCode exploration subagents):
   Terminal harnesses standardized on stateless `grep`/glob file navigation—either
   directly in the host or paired with host-provided exploration
   subagents—rather than bundling local background embedding daemons.
   - *Impact on `pi-packages`:* Delegate search primitives to Pi's built-in tools
-    (paired with optional `explorer` in [`subagents`](../packages/subagents/README.md),
-    since Pi itself omits built-in subagents); do not build local vector/RAG
-    indexer packages.
+    (optionally paired with user-configured read-only roles in
+    [`subagents`](../packages/subagents/README.md), since Pi itself omits
+    built-in subagents); do not build local vector/RAG indexer packages.
 - **`Strengthening` — Per-request automatic model routing**
   (Cursor Router `Auto`, Gemini CLI `Auto` Flash/Pro routing, Upstream Pi `1.6.0` `pi.registerVirtualModel()`):
   Multiple harnesses classify individual prompts within one session across
