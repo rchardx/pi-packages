@@ -79,6 +79,37 @@ test("pack inspection rejects missing runtime files and accidental private files
   assert.throws(() => inspectPack("[]"), /one npm tarball/u);
 });
 
+test("pack inspection accepts skill-only packages and rejects invalid skill paths or manifests", () => {
+  const skillManifest = { pi: { skills: ["./skills"] } };
+  const files = ["skills/review-loop/SKILL.md", "package.json", "README.md", "LICENSE"];
+  const output = (paths: string[], filename = "skills.tgz") =>
+    JSON.stringify([{ filename, files: paths.map((path) => ({ path })) }]);
+  assert.equal(inspectPack(output(files), skillManifest), "skills.tgz");
+  for (const extra of [
+    ".env",
+    "test/skills.test.ts",
+    "skills/BadName/SKILL.md",
+    "skills/review-loop/extra.txt",
+    "index.ts",
+  ]) {
+    assert.throws(
+      () => inspectPack(output([...files, extra]), skillManifest),
+      /Unexpected tarball file/u,
+    );
+  }
+  for (const required of files) {
+    assert.throws(
+      () => inspectPack(output(files.filter((file) => file !== required)), skillManifest),
+      /missing/u,
+    );
+  }
+  assert.throws(() => inspectPack(output(files), {}), /missing pi configuration/u);
+  assert.throws(
+    () => inspectPack(output(files), { pi: { extensions: ["./index.ts"], skills: ["./skills"] } }),
+    /either pi\.extensions or pi\.skills/u,
+  );
+});
+
 test("real npm pack changes only the staged version and retains private package metadata", async (t) => {
   const { root, directory, original, destination } = await fixture(t);
   await packNightly(root, destination, "42", sha);

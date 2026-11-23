@@ -16,6 +16,12 @@ async function verifyInstalled(root: string): Promise<void> {
   const agentDir = join(root, "agent");
   const packages = await loadPackages(repoRoot);
   const sources = packages.map((pkg) => join(root, "node_modules", ...pkg.name.split("/")));
+  const extensionSources = packages
+    .filter((pkg) => {
+      const pi = pkg.manifest.pi;
+      return typeof pi === "object" && pi !== null && "extensions" in pi;
+    })
+    .map((pkg) => join(root, "node_modules", ...pkg.name.split("/")));
   let networkAttempts = 0;
   globalThis.fetch = async () => {
     networkAttempts++;
@@ -39,7 +45,6 @@ async function verifyInstalled(root: string): Promise<void> {
     cwd,
     agentDir,
     settingsManager,
-    noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
@@ -50,8 +55,16 @@ async function verifyInstalled(root: string): Promise<void> {
   assert.deepEqual(loaded.warnings ?? [], [], "Installed extensions must load without warnings");
   assert.deepEqual(
     loaded.extensions.map((extension) => extension.resolvedPath).sort(),
-    sources.map((source) => join(source, "index.ts")).sort(),
+    extensionSources.map((source) => join(source, "index.ts")).sort(),
     "Pi must discover all installed package entrypoints through settings.packages",
+  );
+  const loadedSkills = loader.getSkills();
+  assert.deepEqual(loadedSkills.diagnostics, [], "Installed skills must load without diagnostics");
+  const reviewLoopSkill = loadedSkills.skills.find((skill) => skill.name === "review-loop");
+  assert.ok(reviewLoopSkill, "Pi must discover installed review-loop skill");
+  assert.equal(
+    reviewLoopSkill.filePath,
+    join(root, "node_modules", "@rchardx", "pi-skills", "skills", "review-loop", "SKILL.md"),
   );
 
   const modelRuntime = await ModelRuntime.create({
@@ -137,7 +150,7 @@ async function verifyInstalled(root: string): Promise<void> {
   assert.deepEqual(runtimeErrors, [], "Installed extension lifecycle handlers must not fail");
   assert.equal(networkAttempts, 0, "No model/provider requests are allowed");
   console.log(
-    `Installed smoke passed with Pi ${VERSION} on Node ${process.version}: ${sources.length} package extensions discovered/loaded; ` +
+    `Installed smoke passed with Pi ${VERSION} on Node ${process.version}: ${extensionSources.length} package extensions and ${loadedSkills.skills.length} skill(s) discovered/loaded; ` +
       "foreground bash; ask/background/subagent mode guards; empty subagent cancellation; " +
       "web search/fetch consent guards. Statusline loading only; no model or child-agent execution.",
   );

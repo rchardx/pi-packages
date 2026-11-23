@@ -51,9 +51,11 @@ Both nightly and local tarball installs remain **local Pi sources**, not managed
 
 ## Package layout and tarball checks
 
-Each package under `packages/<capability>/` declares its own `pi` manifest and
-uses `index.ts` for its extension entrypoint, `src/` for supporting modules, and
-`test/*.test.ts` for tests. Add resource directories only when needed.
+Each package under `packages/<capability>/` declares its own `pi` manifest.
+Extension packages use `index.ts` for the extension entrypoint, `src/` for
+supporting modules, and `test/*.test.ts` for tests; skill packages ship
+`skills/<name>/SKILL.md` with validation tests under `test/*.test.ts`. Add
+resource directories only when needed.
 
 When adding or changing a package or installation entrypoint, update:
 
@@ -69,9 +71,12 @@ separately. When changing packaging, inspect the affected tarball:
 npm pack --workspace @rchardx/pi-web-access --dry-run
 ```
 
-Ensure the archive includes `index.ts`, `src/`, `README.md`, `LICENSE`, and
-`package.json`, and excludes local configuration, credentials, tests, and
-generated artifacts.
+Ensure extension archives include `index.ts`, `src/`, `README.md`, `LICENSE`,
+and `package.json`, and skill-only archives include `skills/<name>/SKILL.md`,
+`README.md`, `LICENSE`, and `package.json` (`scripts/nightly-pack.ts` enforces
+this exact allowlist from `package.json#pi`; extend it alongside `files` if a
+skill later adds companion directories), while excluding local configuration,
+credentials, tests, and generated artifacts.
 
 ## Binary assets
 
