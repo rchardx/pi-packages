@@ -38,9 +38,11 @@ async function fixture(t: TestContext, options: Options) {
   const previous = {
     PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
     PI_OFFLINE: process.env.PI_OFFLINE,
+    PI_SUBAGENTS_CHILD: process.env.PI_SUBAGENTS_CHILD,
   };
   process.env.PI_CODING_AGENT_DIR = dir;
   process.env.PI_OFFLINE = "1";
+  delete process.env.PI_SUBAGENTS_CHILD;
   t.after(() => {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];

@@ -46,10 +46,12 @@ const terminal: Terminal = {
 const ui = new TuiMainScreen(terminal);
 let directory: string;
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+const previousSubagentsChild = process.env.PI_SUBAGENTS_CHILD;
 
 before(async () => {
   directory = await mkdtemp(join(tmpdir(), "pi-subagents-render-"));
   process.env.PI_CODING_AGENT_DIR = directory;
+  delete process.env.PI_SUBAGENTS_CHILD;
   const loader = new DefaultResourceLoader({
     cwd: directory,
     agentDir: directory,
@@ -82,6 +84,8 @@ after(async () => {
   ui.stop();
   if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
   else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+  if (previousSubagentsChild === undefined) delete process.env.PI_SUBAGENTS_CHILD;
+  else process.env.PI_SUBAGENTS_CHILD = previousSubagentsChild;
   await rm(directory, { recursive: true, force: true });
 });
 

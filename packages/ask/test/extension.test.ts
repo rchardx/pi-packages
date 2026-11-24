@@ -410,6 +410,12 @@ test("print and json modes hide ask from requests without stripping ask when the
 });
 
 test("delegated subagents in json mode inherit parent toolsets cleanly while hiding ask from child requests", async (t) => {
+  const previousSubagentsChild = process.env.PI_SUBAGENTS_CHILD;
+  delete process.env.PI_SUBAGENTS_CHILD;
+  t.after(() => {
+    if (previousSubagentsChild === undefined) delete process.env.PI_SUBAGENTS_CHILD;
+    else process.env.PI_SUBAGENTS_CHILD = previousSubagentsChild;
+  });
   const { requests, modelsJson } = await startMockOpenAIServer(t);
   const { session: parentSession } = await createAskSession(t, {
     mode: "tui",
