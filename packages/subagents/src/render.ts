@@ -170,11 +170,18 @@ export function renderSendResult(
 }
 
 export function renderWaitCall(
-  args: Partial<{ timeoutSeconds: number; all: boolean }> | undefined,
+  args: Partial<{ timeoutSeconds: number; all: boolean; ids: string[] }> | undefined,
   theme: Theme,
 ) {
+  const ids = Array.isArray(args?.ids)
+    ? args.ids
+        .filter((id): id is string => typeof id === "string")
+        .map((id) => oneLine(id, 64).slice(0, 8))
+        .filter((id) => id.length > 0)
+    : [];
   const summary = [
     ...(args?.all === true ? ["all"] : []),
+    ...(ids.length > 0 ? [ids.join(", ")] : []),
     ...(typeof args?.timeoutSeconds === "number" ? [`${args.timeoutSeconds}s`] : []),
   ].join(" · ");
   return new TruncatedText(
@@ -189,17 +196,24 @@ export function renderWaitResult(
   result: AgentToolResult<WaitOutcome>,
   _options: ToolRenderResultOptions,
   theme: Theme,
-  context: RenderContext,
+  context: RenderContext<Partial<{ ids: string[] }> | undefined>,
 ) {
   if (context.isError) return errorText(result, theme);
   const { details } = result;
+  const scoped = Array.isArray(context.args?.ids) && context.args.ids.length > 0;
   const phrase =
     details.outcome === "woke"
       ? `Update queued · ${formatDuration(details.waitedMs)}`
       : details.outcome === "idle"
-        ? "No running subagents"
+        ? scoped
+          ? "No targeted subagents running"
+          : "No running subagents"
         : "running" in details
-          ? `${details.running} still running after ${formatDuration(details.waitedMs)}`
-          : `No updates within ${formatDuration(details.waitedMs)}`;
+          ? scoped
+            ? `${details.running} targeted still running after ${formatDuration(details.waitedMs)}`
+            : `${details.running} still running after ${formatDuration(details.waitedMs)}`
+          : scoped
+            ? `No matching updates within ${formatDuration(details.waitedMs)}`
+            : `No updates within ${formatDuration(details.waitedMs)}`;
   return new Text(theme.fg("dim", phrase), 0, 0);
 }

@@ -14,7 +14,7 @@ export interface Update {
  * telling extensions, so the pending count here is exact.
  */
 export class Mailbox extends Waitable {
-  private readonly updates: { update: Update; bounded: boolean }[] = [];
+  private readonly updates: { update: Update; bounded: boolean; agentId?: string }[] = [];
   private readonly maxMessages: number;
   protected override readonly maxWaitSeconds = MAX_ROOT_WAIT_SECONDS;
 
@@ -24,16 +24,16 @@ export class Mailbox extends Waitable {
   }
 
   /** Messages from subagents are bounded; a full mailbox rejects instead of dropping. */
-  offerMessage(update: Update): boolean {
+  offerMessage(update: Update, agentId?: string): boolean {
     if (this.updates.filter((entry) => entry.bounded).length >= this.maxMessages) return false;
-    this.updates.push({ update, bounded: true });
+    this.updates.push({ update, bounded: true, ...(agentId !== undefined ? { agentId } : {}) });
     this.wake();
     return true;
   }
 
   /** Completion results are limited by the concurrency limit, not the message bound. */
-  addResult(update: Update): void {
-    this.updates.push({ update, bounded: false });
+  addResult(update: Update, agentId?: string): void {
+    this.updates.push({ update, bounded: false, ...(agentId !== undefined ? { agentId } : {}) });
     this.wake();
   }
 
@@ -42,24 +42,30 @@ export class Mailbox extends Waitable {
   }
 
   /**
-   * Wait for an update, or with `all` until no subagent remains unsettled. Completion
-   * results then stay queued; a message from a subagent still ends the wait, because its
-   * sender may be waiting on an answer.
+   * Wait for an update, or with `all` until no targeted subagent remains unsettled.
+   * When `ids` is provided, only updates from those subagents wake the wait. Completion
+   * results then stay queued; a matching message from a subagent still ends the wait,
+   * because its sender may be waiting on an answer.
    */
   async waitForUpdates(
     timeoutSeconds: number | undefined,
     signal: AbortSignal | undefined,
     unsettled: () => number,
     all: boolean,
+    ids?: ReadonlySet<string>,
   ): Promise<WaitOutcome> {
+    const matches = (entry: { agentId?: string }) =>
+      !ids || (entry.agentId !== undefined && ids.has(entry.agentId));
+    const hasMatchingUpdate = () => this.updates.some(matches);
+    const hasMatchingMessage = () => this.updates.some((entry) => entry.bounded && matches(entry));
     const result = await this.wait(
       timeoutSeconds,
       signal,
       () => unsettled() > 0,
-      all ? () => this.updates.some((entry) => entry.bounded) : undefined,
+      all ? hasMatchingMessage : hasMatchingUpdate,
     );
     // The last subagent's result is queued just after the wake for nothing unsettled.
-    if (result.outcome === "idle" && this.hasQueued())
+    if (result.outcome === "idle" && hasMatchingUpdate())
       return { outcome: "woke", waitedMs: result.waitedMs };
     return all && result.outcome === "timeout" ? { ...result, running: unsettled() } : result;
   }

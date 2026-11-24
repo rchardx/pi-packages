@@ -121,6 +121,76 @@ test("Mailbox.waitForUpdates reports queued completions and can hold them for al
   await assert.rejects(new AgentInbox().wait(MAX_WAIT_SECONDS + 1), /at most 300/u);
 });
 
+test("Mailbox.waitForUpdates with ids filters completions, messages, idle checks, and timeouts", async (t) => {
+  keepAlive(t);
+  const update = (content: string) => ({ customType: "test", content, details: { content } });
+  const settled = async (promise: Promise<unknown>) => {
+    let done = false;
+    void promise.then(() => {
+      done = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    return done;
+  };
+
+  const mailbox = new Mailbox();
+  const active = new Set(["a", "b", "c"]);
+  const targets = new Set(["a", "b"]);
+  const unsettledTargets = () => [...targets].filter((id) => active.has(id)).length;
+
+  // Unrelated updates do not wake a scoped wait (neither any nor all).
+  const waitAny = mailbox.waitForUpdates(5, undefined, unsettledTargets, false, targets);
+  const waitAll = mailbox.waitForUpdates(5, undefined, unsettledTargets, true, targets);
+  assert.equal(mailbox.offerMessage(update("msg from c"), "c"), true);
+  active.delete("c");
+  mailbox.wake();
+  mailbox.addResult(update("result from c"), "c");
+  assert.equal(await settled(waitAny), false, "unrelated updates must not wake scoped any-wait");
+  assert.equal(await settled(waitAll), false, "unrelated updates must not wake scoped all-wait");
+
+  // First targeted completion wakes any-wait, but all-wait keeps holding.
+  active.delete("a");
+  mailbox.wake();
+  mailbox.addResult(update("result from a"), "a");
+  assert.equal((await waitAny).outcome, "woke");
+  assert.equal(await settled(waitAll), false, "first targeted completion must not end all-wait");
+
+  // Second targeted completion ends all-wait; unrelated updates remain queued alongside.
+  active.delete("b");
+  mailbox.wake();
+  mailbox.addResult(update("result from b"), "b");
+  assert.equal((await waitAll).outcome, "woke");
+  assert.deepEqual(
+    mailbox.drain().map((entry) => entry.content),
+    ["msg from c", "result from c", "result from a", "result from b"],
+  );
+
+  // When only unrelated updates are queued and targets are settled, scoped wait returns idle.
+  mailbox.addResult(update("late result from c"), "c");
+  assert.deepEqual(await mailbox.waitForUpdates(5, undefined, unsettledTargets, false, targets), {
+    outcome: "idle",
+    waitedMs: 0,
+  });
+  assert.deepEqual(await mailbox.waitForUpdates(5, undefined, unsettledTargets, true, targets), {
+    outcome: "idle",
+    waitedMs: 0,
+  });
+  mailbox.drain();
+
+  // A message from a targeted subagent wakes a scoped all-wait early.
+  active.add("a");
+  const interrupted = mailbox.waitForUpdates(5, undefined, unsettledTargets, true, targets);
+  assert.equal(mailbox.offerMessage(update("question from a"), "a"), true);
+  assert.equal((await interrupted).outcome, "woke");
+  mailbox.drain();
+
+  // Scoped all-wait timeout counts only unsettled targeted subagents, not unrelated ones.
+  active.add("c");
+  const timedOut = await mailbox.waitForUpdates(0.04, undefined, unsettledTargets, true, targets);
+  assert.equal(timedOut.outcome, "timeout");
+  assert.equal("running" in timedOut && timedOut.running, 1);
+});
+
 test("AgentInbox.wait handles immediate queue hits, idle sessions, wakeups, timeouts, and aborts", async (t) => {
   keepAlive(t);
   const prequeued = new AgentInbox();
@@ -173,9 +243,21 @@ test("formatting helpers produce concise subagent listings and wait outcomes", (
   );
   assert.match(formatWaitOutcome({ outcome: "woke", waitedMs: 10 }), /Incoming update queued/u);
   assert.match(formatWaitOutcome({ outcome: "idle", waitedMs: 0 }), /No running subagents/u);
+  assert.equal(
+    formatWaitOutcome({ outcome: "idle", waitedMs: 0 }, true),
+    "No targeted subagents remain running or have queued updates.",
+  );
   assert.match(formatWaitOutcome({ outcome: "timeout", waitedMs: 5_000 }), /within 5s/u);
+  assert.equal(
+    formatWaitOutcome({ outcome: "timeout", waitedMs: 5_000 }, true),
+    "No matching updates arrived within 5s.",
+  );
   assert.equal(
     formatWaitOutcome({ outcome: "timeout", waitedMs: 600_000, running: 2 }),
     "2 subagent(s) still running after 10m0s.",
+  );
+  assert.equal(
+    formatWaitOutcome({ outcome: "timeout", waitedMs: 600_000, running: 2 }, true),
+    "2 targeted subagent(s) still running after 10m0s.",
   );
 });

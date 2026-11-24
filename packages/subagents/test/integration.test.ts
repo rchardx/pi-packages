@@ -1732,6 +1732,104 @@ test("subagent_wait with all holds completions until every child has finished", 
   assert.match(JSON.stringify(session.messages), /Held child done\./u);
 });
 
+test("subagent_wait with ids filters unrelated children and wakes on targeted completion or stop", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir, releaseMain, holdChild, releaseChild } = await communicationFixture(t);
+  const { session, tool } = await parentSession(
+    t,
+    dir,
+    false,
+    [],
+    ["subagent_list", "subagent_send", "subagent_wait"],
+  );
+  const find = (name: string) => {
+    const found = session.agent.state.tools.find((entry) => entry.name === name);
+    assert.ok(found);
+    return found;
+  };
+  const waitTool = find("subagent_wait");
+  const listTool = find("subagent_list");
+  const cancelTool = find("subagent_cancel");
+
+  await assert.rejects(
+    waitTool.execute("empty-ids", { ids: [] }),
+    /ids must contain at least one subagent ID/u,
+  );
+  await assert.rejects(
+    waitTool.execute("before-any", { ids: ["00000000-0000-4000-8000-000000000000"] }),
+    /No subagents belong to this session/u,
+  );
+
+  const busy = session.prompt("HOLD_MAIN");
+  holdChild();
+  const held = await tool.execute("start-held", { task: "HELD_THEN_DONE" });
+  const heldId = (held.details as { id?: string }).id;
+  assert.ok(heldId);
+  const quick = await tool.execute("start-quick", { task: "QUICK_CHILD" });
+  const quickId = (quick.details as { id?: string }).id;
+  assert.ok(quickId);
+
+  await assert.rejects(
+    waitTool.execute("unknown-id", { ids: ["00000000-0000-4000-8000-000000000000"] }),
+    /No subagent/u,
+  );
+
+  // Scoped wait on heldId ignores quickId finishing.
+  const waitingForHeld = waitTool.execute("wait-held", {
+    ids: [heldId],
+    all: true,
+    timeoutSeconds: 20,
+  });
+  let heldFinished = false;
+  void waitingForHeld.then(() => {
+    heldFinished = true;
+  });
+
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const listed = await listTool.execute("list", {});
+    const agents = (listed.details as { agents: { id: string }[] }).agents;
+    if (agents.length === 1 && agents[0]?.id === heldId) break;
+    assert.ok(Date.now() < deadline, "Timed out waiting for the quick child to finish");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(heldFinished, false, "unrelated child completion must not wake scoped wait");
+
+  // Scoped wait on quickId returns immediately even while heldId is still running.
+  const quickWait = await waitTool.execute("wait-quick", {
+    ids: [quickId],
+    all: true,
+    timeoutSeconds: 5,
+  });
+  assert.deepEqual(quickWait.details, { outcome: "woke", waitedMs: 0 });
+
+  // Cancelling a targeted child resolves its scoped wait as idle even while another child runs.
+  const cancelledTarget = await tool.execute("start-cancel", { task: "HELD_THEN_DONE" });
+  const cancelledId = (cancelledTarget.details as { id?: string }).id;
+  assert.ok(cancelledId);
+  const waitingForCancelled = waitTool.execute("wait-cancelled", {
+    ids: [cancelledId],
+    all: true,
+    timeoutSeconds: 20,
+  });
+  await cancelTool.execute("cancel-target", { id: cancelledId });
+  const cancelledWait = await waitingForCancelled;
+  assert.equal(cancelledWait.details.outcome, "idle");
+  assert.equal(
+    cancelledWait.content[0]?.type === "text" ? cancelledWait.content[0].text : "",
+    "No targeted subagents remain running or have queued updates.",
+  );
+
+  releaseChild();
+  assert.equal((await waitingForHeld).details.outcome, "woke");
+
+  releaseMain();
+  await busy;
+  await session.waitForIdle();
+});
+
 test("an aborted root run records pending updates without starting another run", {
   timeout: 30_000,
 }, async (t) => {
