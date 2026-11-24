@@ -261,13 +261,17 @@ test("workspace skills reference registered extension tools and valid role examp
 
   const previousOffline = process.env.PI_OFFLINE;
   const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousSubagentsChild = process.env.PI_SUBAGENTS_CHILD;
   process.env.PI_OFFLINE = "1";
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  delete process.env.PI_SUBAGENTS_CHILD;
   t.after(() => {
     if (previousOffline === undefined) delete process.env.PI_OFFLINE;
     else process.env.PI_OFFLINE = previousOffline;
     if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousSubagentsChild === undefined) delete process.env.PI_SUBAGENTS_CHILD;
+    else process.env.PI_SUBAGENTS_CHILD = previousSubagentsChild;
   });
 
   const packages = await listWorkspacePackages();

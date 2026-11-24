@@ -4,7 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, type TestContext } from "node:test";
+import { after, before, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
@@ -22,6 +22,15 @@ import { record } from "../src/protocol.ts";
 import { parentOptions } from "../src/cli.ts";
 import { environment } from "../index.ts";
 import { startChild } from "../src/runner.ts";
+
+const previousSubagentsChild = process.env.PI_SUBAGENTS_CHILD;
+before(() => {
+  delete process.env.PI_SUBAGENTS_CHILD;
+});
+after(() => {
+  if (previousSubagentsChild === undefined) delete process.env.PI_SUBAGENTS_CHILD;
+  else process.env.PI_SUBAGENTS_CHILD = previousSubagentsChild;
+});
 
 async function fixture(t: TestContext, commands = false, behavior = "normal") {
   const dir = await mkdtemp(join(tmpdir(), "pi-subagents-test-"));
