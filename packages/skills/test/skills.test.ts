@@ -132,4 +132,8 @@ test("Pi discovers package skills cleanly without diagnostics", async (t: TestCo
   const reviewLoop = loadedSkills.skills.find((skill) => skill.name === "review-loop");
   assert.ok(reviewLoop);
   assert.equal(reviewLoop.disableModelInvocation, true);
+
+  const deepResearch = loadedSkills.skills.find((skill) => skill.name === "deep-research");
+  assert.ok(deepResearch);
+  assert.equal(deepResearch.disableModelInvocation, false);
 });
