@@ -35,6 +35,7 @@ subagent_list({})
 subagent_send({ to: "<full UUID returned by subagent>", message: "Answer a question or correct the task." })
 subagent_wait({ timeoutSeconds: 120 })
 subagent_wait({ all: true, timeoutSeconds: 1800 }) // wait for every child
+subagent_wait({ ids: ["<full UUID>", "<full UUID>"], all: true }) // wait only for specific children
 
 subagent_cancel({ id: "<full UUID returned by subagent>" })
 ```
@@ -111,12 +112,17 @@ In the root session:
 - `subagent_send` delivers a message (at most 16 KiB UTF-8) to one running child
   by UUID. The child treats it as a supplement or correction to its task.
 - `subagent_wait` suspends the current turn until a child message or completion
-  notification arrives, no running children remain, `timeoutSeconds` elapses
-  (default `120`, maximum `3600`), or the turn is aborted. With `all: true`,
-  completions are held until every child has finished and are then handed over
-  together; a message from a child still ends the wait, because that child may
-  need an answer. When such a wait times out, the result reports how many
-  children are still running.
+  notification arrives, no targeted running children remain, `timeoutSeconds`
+  elapses (default `120`, maximum `3600`), or the turn is aborted. Pass `ids`
+  (one or more full UUIDs from this session) to wait only on specific children:
+  unrelated children do not wake or block the wait, and their updates remain
+  queued for delivery at the turn boundary. Already-finished IDs in `ids` are
+  accepted (returning immediately if they have a queued update, or once no
+  targeted children remain running); unknown IDs or an empty `ids` list fail.
+  With `all: true`, completions are held until every targeted child has finished
+  and are then handed over together; a message from a targeted child still ends
+  the wait, because that child may need an answer. When such a wait times out,
+  the result reports how many targeted children are still running.
 
 In a child:
 

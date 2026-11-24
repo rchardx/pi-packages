@@ -77,9 +77,32 @@ export class Tasks {
   }
 
   /** Handed-off children whose process has not yet settled, including those stopping. */
-  unsettledCount(): number {
+  unsettledCount(ids?: ReadonlySet<string>): number {
     if (this.closed) return 0;
-    return [...this.records.values()].filter((task) => task.handedOff && !task.result).length;
+    if (!ids) {
+      return [...this.records.values()].filter((task) => task.handedOff && !task.result).length;
+    }
+    let count = 0;
+    for (const id of ids) {
+      const task = this.records.get(id);
+      if (task?.handedOff && !task.result) count++;
+    }
+    return count;
+  }
+
+  /** Validate and deduplicate subagent IDs for a scoped wait; finished records remain valid. */
+  resolveWaitIds(rawIds: readonly string[]): Set<string> {
+    if (rawIds.length === 0) throw new Error("ids must contain at least one subagent ID.");
+    const resolved = new Set<string>();
+    for (const rawId of rawIds) {
+      const id = rawId.trim();
+      const target = this.records.get(id);
+      if (!target || (!target.handedOff && !target.result)) {
+        throw unknownSubagent(id);
+      }
+      resolved.add(id);
+    }
+    return resolved;
   }
 
   list(now = Date.now()): RunningAgent[] {

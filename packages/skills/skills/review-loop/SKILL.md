@@ -81,12 +81,12 @@ applicable project docs) and reviewer expectations:
   note) and nothing else when merge-ready.
 
 Record both returned subagent IDs and wait until **both tracked reviewers**
-settle (avoid `all: true` when unrelated subagents may be active in the
-session, and do not poll reviewers with messages—only reply briefly if a
-reviewer messages first). If a reviewer fails, times out, or stalls, cancel if
-needed and retry that slot once; if it still fails to complete, mark the slot
-degraded rather than treating it as `CLEAR`. Never edit files while a reviewer
-is still running.
+settle (use `subagent_wait({ ids: [idA, idB], all: true })` so unrelated
+subagents in the session do not wake or block the wait, and do not poll
+reviewers with messages—only reply briefly if a reviewer messages first). If a
+reviewer fails, times out, or stalls, cancel if needed and retry that slot once;
+if it still fails to complete, mark the slot degraded rather than treating it as
+`CLEAR`. Never edit files while a reviewer is still running.
 
 ### 3. Verify, fix, rebut, and checkpoint
 

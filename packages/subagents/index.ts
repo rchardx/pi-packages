@@ -299,11 +299,14 @@ export default function subagents(pi: ExtensionAPI) {
 
   function deliverToMain(envelope: MessageEnvelope): DeliveryAck {
     if (sessionClosed) return { accepted: false, reason: "finished" };
-    const accepted = mailbox.offerMessage({
-      customType: MESSAGE_TYPE,
-      content: formatMessage(envelope),
-      details: envelope,
-    });
+    const accepted = mailbox.offerMessage(
+      {
+        customType: MESSAGE_TYPE,
+        content: formatMessage(envelope),
+        details: envelope,
+      },
+      envelope.from,
+    );
     if (!accepted) return { accepted: false, reason: "queue_full" };
     wakeIdleSession();
     return { accepted: true };
@@ -313,7 +316,10 @@ export default function subagents(pi: ExtensionAPI) {
     if (!tasks) {
       tasks = new Tasks(
         (child, result) => {
-          mailbox.addResult({ customType: NOTIFICATION_TYPE, ...buildNotification(child, result) });
+          mailbox.addResult(
+            { customType: NOTIFICATION_TYPE, ...buildNotification(child, result) },
+            child.id,
+          );
           wakeIdleSession();
         },
         undefined,
@@ -322,7 +328,7 @@ export default function subagents(pi: ExtensionAPI) {
         },
         deliverToMain,
         () => {
-          if ((tasks?.unsettledCount() ?? 0) === 0) mailbox.wake();
+          mailbox.wake();
         },
       );
     }
@@ -581,29 +587,44 @@ export default function subagents(pi: ExtensionAPI) {
     exposure: "model-only",
     description:
       "Wait without polling for a subagent message or completion notification. " +
-      "Returns immediately when updates are already queued or no subagents are running. " +
-      "With all: true, completions are held until every subagent has finished; a message from a subagent still ends the wait.",
+      "Returns immediately when matching updates are already queued or no targeted subagents are running. " +
+      "Pass ids to wait only on specific subagents without unrelated subagents waking or blocking the wait. " +
+      "With all: true, completions are held until every targeted subagent has finished; a message from a targeted subagent still ends the wait.",
     parameters: Type.Object({
       timeoutSeconds: waitTimeoutParameter(MAX_ROOT_WAIT_SECONDS),
       all: Type.Optional(
         Type.Boolean({
           description:
-            "Wait until every running subagent has finished instead of returning on the first completion.",
+            "Wait until every targeted running subagent has finished instead of returning on the first completion.",
+        }),
+      ),
+      ids: Type.Optional(
+        Type.Array(Type.String(), {
+          minItems: 1,
+          description:
+            "Optional list of full agent UUIDs to wait on. Unrelated subagents do not wake or block this wait.",
         }),
       ),
     }),
     renderCall: renderWaitCall,
     renderResult: renderWaitResult,
-    async execute(_callId, { timeoutSeconds, all }, signal, _update, ctx) {
+    async execute(_callId, { timeoutSeconds, all, ids }, signal, _update, ctx) {
       useRootTool(ctx);
+      let filterIds: Set<string> | undefined;
+      if (ids !== undefined) {
+        if (ids.length === 0) throw new Error("ids must contain at least one subagent ID.");
+        if (!tasks) throw new Error("No subagents belong to this session.");
+        filterIds = tasks.resolveWaitIds(ids);
+      }
       const outcome = await mailbox.waitForUpdates(
         timeoutSeconds,
         signal,
-        () => tasks?.unsettledCount() ?? 0,
+        () => tasks?.unsettledCount(filterIds) ?? 0,
         all === true,
+        filterIds,
       );
       return {
-        content: [{ type: "text", text: formatWaitOutcome(outcome) }],
+        content: [{ type: "text", text: formatWaitOutcome(outcome, filterIds !== undefined) }],
         details: outcome,
       };
     },

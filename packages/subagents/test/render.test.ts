@@ -213,6 +213,51 @@ test("subagent_send, subagent_list, subagent_wait, and subagent_cancel render ex
     "2 still running after 10m0s",
   ]);
 
+  const waitIdsCard = card("subagent_wait", {
+    ids: [CHILD_ID, OTHER_CHILD_ID],
+    all: true,
+    timeoutSeconds: 300,
+  });
+  assert.deepEqual(lines(waitIdsCard), ["subagent_wait  all · ebb6911b, 11111111 · 300s"]);
+  waitIdsCard.updateResult({
+    content: [{ type: "text", text: "Incoming update queued." }],
+    details: { outcome: "woke", waitedMs: 2_000 },
+    isError: false,
+  });
+  assert.deepEqual(lines(waitIdsCard), [
+    "subagent_wait  all · ebb6911b, 11111111 · 300s",
+    "Update queued · 2s",
+  ]);
+  waitIdsCard.updateResult({
+    content: [
+      { type: "text", text: "No targeted subagents remain running or have queued updates." },
+    ],
+    details: { outcome: "idle", waitedMs: 0 },
+    isError: false,
+  });
+  assert.deepEqual(lines(waitIdsCard), [
+    "subagent_wait  all · ebb6911b, 11111111 · 300s",
+    "No targeted subagents running",
+  ]);
+  waitIdsCard.updateResult({
+    content: [{ type: "text", text: "1 targeted subagent(s) still running after 5m0s." }],
+    details: { outcome: "timeout", waitedMs: 300_000, running: 1 },
+    isError: false,
+  });
+  assert.deepEqual(lines(waitIdsCard), [
+    "subagent_wait  all · ebb6911b, 11111111 · 300s",
+    "1 targeted still running after 5m0s",
+  ]);
+  waitIdsCard.updateResult({
+    content: [{ type: "text", text: "No matching updates arrived within 5s." }],
+    details: { outcome: "timeout", waitedMs: 5_000 },
+    isError: false,
+  });
+  assert.deepEqual(lines(waitIdsCard), [
+    "subagent_wait  all · ebb6911b, 11111111 · 300s",
+    "No matching updates within 5s",
+  ]);
+
   const cancelCard = card("subagent_cancel", { id: CHILD_ID });
   cancelCard.updateResult({
     content: [{ type: "text", text: "Cancelled." }],

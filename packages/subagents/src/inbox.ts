@@ -169,15 +169,22 @@ export function formatAgentList(agents: readonly RunningAgent[]): string {
   return `Running subagents (${agents.length}):\n${lines.join("\n")}`;
 }
 
-export function formatWaitOutcome(result: WaitOutcome): string {
+export function formatWaitOutcome(result: WaitOutcome, scoped = false): string {
   switch (result.outcome) {
     case "woke":
       return "Incoming update queued; continuing to process it.";
     case "idle":
-      return "No running subagents or queued updates remain.";
+      return scoped
+        ? "No targeted subagents remain running or have queued updates."
+        : "No running subagents or queued updates remain.";
     case "timeout":
-      return "running" in result
-        ? `${result.running} subagent(s) still running after ${formatDuration(result.waitedMs)}.`
+      if ("running" in result) {
+        return scoped
+          ? `${result.running} targeted subagent(s) still running after ${formatDuration(result.waitedMs)}.`
+          : `${result.running} subagent(s) still running after ${formatDuration(result.waitedMs)}.`;
+      }
+      return scoped
+        ? `No matching updates arrived within ${formatDuration(result.waitedMs)}.`
         : `No updates arrived within ${formatDuration(result.waitedMs)}.`;
   }
 }

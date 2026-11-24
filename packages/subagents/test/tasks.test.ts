@@ -474,3 +474,57 @@ test("stop claims cancellation synchronously, preserves in-flight timeouts, and 
   assert.deepEqual(await tasks.stop(startupId), { status: "not_found" });
   assert.equal(tasks.unsettledCount(), 0);
 });
+
+test("Tasks.resolveWaitIds validates session IDs, accepts finished records, and scopes unsettledCount", async () => {
+  const childA = fake();
+  const childB = fake();
+  const startupChild = fake();
+  const queue = [childA, childB, startupChild];
+  const tasks = new Tasks(
+    () => {},
+    () => {
+      const next = queue.shift();
+      assert.ok(next);
+      return next.execution;
+    },
+  );
+
+  const launchA = tasks.launch(launch);
+  childA.ready.resolve();
+  const idA = await launchA;
+
+  const launchB = tasks.launch(launch);
+  childB.ready.resolve();
+  const idB = await launchB;
+
+  const starting = tasks.launch(launch);
+  const startupId = [...tasks.records.keys()].find((id) => id !== idA && id !== idB);
+  assert.ok(startupId);
+
+  assert.throws(() => tasks.resolveWaitIds([]), /at least one subagent ID/u);
+  assert.throws(() => tasks.resolveWaitIds(["unknown-id"]), /No subagent "unknown-id"/u);
+  assert.throws(
+    () => tasks.resolveWaitIds([startupId]),
+    /No subagent/u,
+    "unhanded startup IDs are not valid wait targets yet",
+  );
+
+  // Deduplication and whitespace trimming.
+  const both = tasks.resolveWaitIds([` ${idA} `, idB, idA]);
+  assert.deepEqual([...both], [idA, idB]);
+  assert.equal(tasks.unsettledCount(both), 2);
+  assert.equal(tasks.unsettledCount(new Set([idA])), 1);
+
+  // Finished IDs remain valid targets for resolveWaitIds and count as settled.
+  childA.done.resolve(completed);
+  await setImmediate();
+  assert.deepEqual([...tasks.resolveWaitIds([idA, idB])], [idA, idB]);
+  assert.equal(tasks.unsettledCount(both), 1);
+  assert.equal(tasks.unsettledCount(new Set([idA])), 0);
+  assert.equal(tasks.unsettledCount(new Set([idB])), 1);
+
+  const shutdown = tasks.shutdown();
+  await assert.rejects(starting);
+  await shutdown;
+  assert.equal(tasks.unsettledCount(both), 0);
+});
