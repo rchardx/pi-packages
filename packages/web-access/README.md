@@ -102,8 +102,9 @@ filters, URLs, or fetch objectives to that provider:
   no cross-provider fallback: once the target provider is selected, failures
   report directly without forwarding the query or URL elsewhere.
 - When `exa` or `parallel` is the active provider on load or `/reload`, the
-  registered tool guidelines inform Pi of the configured defaults, per-call
-  override parameters, and user `web-access.json` configuration.
+  registered tool guidelines inform Pi of the configured defaults and
+  provider-specific call constraints (per-call override parameters are declared
+  in the tool schemas).
 
 Omit `search` or `fetch` to disable that tool; a missing file or `{}` enables
 neither. Project settings and tool arguments cannot grant permission.
