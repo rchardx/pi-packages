@@ -280,7 +280,12 @@ still create files and logs.
 ## Lifetime, cancellation, and limits
 
 Background execution requires interactive (`tui`) or RPC mode in the parent.
-Print and JSON parents are rejected. A child itself uses headless JSON mode so
+In `print` and `json` parent sessions, `prepareLoadout` hides standalone tool
+declarations, system-prompt guidelines, and `<subagent_roles>` for the five root
+subagent tools (preserving tool selection if the session later resumes in
+`tui`/`rpc`; under `codemode.mode: "only"`, Pi still lists callable `direct`
+tools inside `codemode`'s description), and direct tool execution is rejected.
+A child itself uses headless JSON mode so
 background-shell extensions do not accidentally return before their commands finish.
 
 - After successful launch, parent turn completion or Esc does not stop the child.
