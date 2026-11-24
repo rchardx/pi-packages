@@ -1173,53 +1173,109 @@ test("root shutdown cancels an active child without notification", {
 test("package discovery and tool execution reject nonpersistent host modes", {
   timeout: 30_000,
 }, async (t) => {
-  const { dir } = await fixture(t);
-  const settingsManager = SettingsManager.inMemory();
-  const loader = new DefaultResourceLoader({
-    cwd: dir,
-    agentDir: dir,
-    settingsManager,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    additionalExtensionPaths: [fileURLToPath(new URL("../", import.meta.url))],
+  const { dir, requests } = await fixture(t);
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  process.env.PI_CODING_AGENT_DIR = dir;
+  t.after(() => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   });
-  await loader.reload();
-  assert.deepEqual(loader.getExtensions().errors, []);
-  const runtime = await ModelRuntime.create({
-    authPath: join(dir, "auth.json"),
-    modelsPath: join(dir, "models.json"),
-    refreshOnCreate: false,
-  });
-  const { session } = await createAgentSession({
-    cwd: dir,
-    agentDir: dir,
-    modelRuntime: runtime,
-    resourceLoader: loader,
-    settingsManager,
-    sessionManager: SessionManager.inMemory(dir),
-    tools: ["subagent", "subagent_cancel", "subagent_list", "subagent_send", "subagent_wait"],
-  });
-  t.after(() => session.dispose());
-  await session.bindExtensions({ mode: "print" });
-  assert.deepEqual(session.getActiveToolNames(), [
+  await writeFile(
+    join(dir, "subagents.json"),
+    JSON.stringify({ roles: { reviewer: { description: "Code reviewer" } } }),
+  );
+  const declaredTools = (request: Record<string, unknown> | undefined) => {
+    const tools = Array.isArray(request?.tools) ? request.tools : [];
+    return tools.flatMap((entry) => {
+      if (!record(entry) || !record(entry.function) || typeof entry.function.name !== "string") {
+        return [];
+      }
+      return [entry.function.name];
+    });
+  };
+  const createSessionForMode = async (mode: "print" | "json" | "tui") => {
+    const settingsManager = SettingsManager.inMemory();
+    const loader = new DefaultResourceLoader({
+      cwd: dir,
+      agentDir: dir,
+      settingsManager,
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      additionalExtensionPaths: [fileURLToPath(new URL("../", import.meta.url))],
+    });
+    await loader.reload();
+    assert.deepEqual(loader.getExtensions().errors, []);
+    const runtime = await ModelRuntime.create({
+      authPath: join(dir, "auth.json"),
+      modelsPath: join(dir, "models.json"),
+      refreshOnCreate: false,
+    });
+    const model = runtime.getModel("mock", "test-model");
+    assert.ok(model);
+    const { session } = await createAgentSession({
+      cwd: dir,
+      agentDir: dir,
+      modelRuntime: runtime,
+      model,
+      resourceLoader: loader,
+      settingsManager,
+      sessionManager: SessionManager.inMemory(dir),
+      tools: ["subagent", "subagent_cancel", "subagent_list", "subagent_send", "subagent_wait"],
+    });
+    t.after(() => session.dispose());
+    await session.bindExtensions({ mode });
+    return session;
+  };
+
+  for (const mode of ["print", "json"] as const) {
+    const session = await createSessionForMode(mode);
+    assert.deepEqual(session.getActiveToolNames(), [
+      "subagent",
+      "subagent_cancel",
+      "subagent_list",
+      "subagent_send",
+      "subagent_wait",
+    ]);
+    assert.doesNotMatch(session.systemPrompt, /Delegate well-scoped independent work/u);
+    assert.doesNotMatch(session.systemPrompt, /Configured subagent roles/u);
+
+    const beforeCount = requests.length;
+    await session.prompt(`Hello in ${mode}`);
+    const request = requests[beforeCount];
+    assert.deepEqual(declaredTools(request), []);
+    assert.doesNotMatch(
+      JSON.stringify(request?.messages),
+      /Delegate well-scoped independent work/u,
+    );
+    assert.doesNotMatch(JSON.stringify(request?.messages), /Configured subagent roles/u);
+
+    for (const [name, args] of [
+      ["subagent", { task: "do work" }],
+      ["subagent_list", {}],
+      ["subagent_send", { to: "child", message: "ping" }],
+      ["subagent_wait", { timeoutSeconds: 1 }],
+    ] as const) {
+      const registered = session.agent.state.tools.find((entry) => entry.name === name);
+      assert.ok(registered);
+      await assert.rejects(registered.execute(`check-${name}`, args), /require tui or rpc/u);
+    }
+  }
+
+  const tuiSession = await createSessionForMode("tui");
+  const beforeTui = requests.length;
+  await tuiSession.prompt("Hello in tui");
+  const tuiRequest = requests[beforeTui];
+  assert.deepEqual(declaredTools(tuiRequest).sort(), [
     "subagent",
     "subagent_cancel",
     "subagent_list",
     "subagent_send",
     "subagent_wait",
   ]);
-  for (const [name, args] of [
-    ["subagent", { task: "do work" }],
-    ["subagent_list", {}],
-    ["subagent_send", { to: "child", message: "ping" }],
-    ["subagent_wait", { timeoutSeconds: 1 }],
-  ] as const) {
-    const registered = session.agent.state.tools.find((entry) => entry.name === name);
-    assert.ok(registered);
-    await assert.rejects(registered.execute(`check-${name}`, args), /require tui or rpc/u);
-  }
+  assert.match(JSON.stringify(tuiRequest?.messages), /Delegate well-scoped independent work/u);
+  assert.match(JSON.stringify(tuiRequest?.messages), /Configured subagent roles/u);
 });
 
 test("installed package outside workspace node_modules launches and completes a real child", {

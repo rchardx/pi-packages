@@ -11,7 +11,7 @@ installable Pi bundle.
 | `@rchardx/pi-ask` | `packages/ask/index.ts` | `ask` tool | None | `tui`, `rpc` (hidden in `print`/`json`) | [ask/README.md](ask/README.md) |
 | `@rchardx/pi-web-access` | `packages/web-access/index.ts` | `web_fetch`, `web_search` tools | `~/.pi/agent/web-access.json` (required to enable tools) | `tui`, `rpc`, `print`, `json` | [web-access/README.md](web-access/README.md) |
 | `@rchardx/pi-background` | `packages/background/index.ts` | `bash` tool override, `/background` | `~/.pi/agent/background.json` | Backgrounding in `tui`/`rpc`; foreground-only in `print`/`json` | [background/README.md](background/README.md) |
-| `@rchardx/pi-subagents` | `packages/subagents/index.ts` | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `~/.pi/agent/subagents.json` | `tui`, `rpc` on Linux/macOS | [subagents/README.md](subagents/README.md) |
+| `@rchardx/pi-subagents` | `packages/subagents/index.ts` | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `~/.pi/agent/subagents.json` | `tui`, `rpc` on Linux/macOS (hidden in `print`/`json`) | [subagents/README.md](subagents/README.md) |
 | `@rchardx/pi-statusline` | `packages/statusline/index.ts` | Custom 2-line footer | None | `tui` only | [statusline/README.md](statusline/README.md) |
 | `@rchardx/pi-skills` | `packages/skills/skills/` | `/skill:review-loop` | Uses `~/.pi/agent/subagents.json` for `review-loop` | Depends on skill (`tui`/`rpc` for `review-loop`) | [skills/README.md](skills/README.md) |
 
