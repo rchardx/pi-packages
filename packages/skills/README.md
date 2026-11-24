@@ -29,7 +29,18 @@ repository root is not an installable Pi bundle.
 
 | Skill | Surface | Summary |
 | --- | --- | --- |
+| [deep-research](skills/deep-research/SKILL.md) | `deep-research` / `/skill:deep-research` (model-invocable) | Read-only, evidence-backed technical research across local code and external primary sources, with optional parallel `subagents` fan-out, `web-access`, and `ask` clarification |
 | [review-loop](skills/review-loop/SKILL.md) | `/skill:review-loop` (`disable-model-invocation: true`) | Multi-round cross-model code review loop (`reviewer_a` + `reviewer_b`) with evidence-based triage, rebuttal, and re-verification until dual `CLEAR` |
+
+### Optional companions for `deep-research`
+
+- Works out of the box with Pi's built-in read-only tools in any mode.
+- [`@rchardx/pi-subagents`](../subagents/README.md) (optional, `tui`/`rpc`) for
+  isolating broad independent research axes in parallel child sessions.
+- [`@rchardx/pi-web-access`](../web-access/README.md) (optional) for primary
+  external documentation, release notes, and specification lookups.
+- [`@rchardx/pi-ask`](../ask/README.md) (optional, `tui`/`rpc`) for upfront
+  scope clarification when a research question is ambiguous.
 
 ### Prerequisites for `review-loop`
 

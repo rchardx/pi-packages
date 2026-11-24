@@ -305,22 +305,29 @@ test("workspace skills reference registered extension tools and valid role examp
   t.after(() => session.dispose());
 
   const registeredTools = new Set(session.getAllTools().map((tool) => tool.name));
-  const skillMarkdown = await readFile(
-    join(packagesRoot, "skills", "skills", "review-loop", "SKILL.md"),
-    "utf8",
-  );
-  const referencedTools = new Set<string>();
-  for (const match of skillMarkdown.matchAll(/`([^`\n]+)`/gu)) {
-    for (const token of (match[1] ?? "").matchAll(/\b(?:subagent(?:_[a-z]+)?|ask)\b/gu)) {
-      referencedTools.add(token[0]);
+  const skillsDir = join(packagesRoot, "skills", "skills");
+  const skillEntries = (await readdir(skillsDir, { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+  assert.ok(skillEntries.length > 0, "Expected at least one workspace skill");
+  for (const skillName of skillEntries) {
+    const skillMarkdown = await readFile(join(skillsDir, skillName, "SKILL.md"), "utf8");
+    const referencedTools = new Set<string>();
+    for (const match of skillMarkdown.matchAll(/`([^`\n]+)`/gu)) {
+      for (const token of (match[1] ?? "").matchAll(
+        /\b(?:subagent(?:_[a-z]+)?|ask|web_[a-z]+)\b/gu,
+      )) {
+        referencedTools.add(token[0]);
+      }
     }
-  }
-  assert.ok(referencedTools.size > 0, "Expected review-loop skill to reference workspace tools");
-  for (const toolName of referencedTools) {
-    assert.ok(
-      registeredTools.has(toolName),
-      `review-loop references unregistered workspace tool: ${toolName}`,
-    );
+    assert.ok(referencedTools.size > 0, `Expected ${skillName} skill to reference workspace tools`);
+    for (const toolName of referencedTools) {
+      assert.ok(
+        registeredTools.has(toolName),
+        `${skillName} references unregistered workspace tool: ${toolName}`,
+      );
+    }
   }
 
   const skillsReadme = await readFile(join(packagesRoot, "skills", "README.md"), "utf8");
