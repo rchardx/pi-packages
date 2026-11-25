@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { readFile, rm, stat } from "node:fs/promises";
+import fs, { readFile, rm, stat } from "node:fs/promises";
 import type { RequestListener } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import { dirname } from "node:path";
 import { test, type TestContext } from "node:test";
 import { gzipSync } from "node:zlib";
@@ -642,3 +643,32 @@ for (const content of ["line\n".repeat(2100), "世界".repeat(12_000)]) {
     }
   });
 }
+
+test("truncated search degrades cleanly when temporary file creation fails", async (t) => {
+  const longContent = `${"line\n".repeat(2100)}Tail marker`;
+  const mkdtempMock = t.mock.method(fs, "mkdtemp", async () => {
+    throw Object.assign(new Error("EACCES: permission denied, mkdtemp '/tmp/pi-web-search-'"), {
+      code: "EACCES",
+    });
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    mkdtempMock.mock.restore();
+    syncBuiltinESMExports();
+  });
+  const result = await searchDeepSeek(
+    { query: "API", need_content: true },
+    key,
+    undefined,
+    async () => response([{ ...entry, content: longContent }]),
+  );
+  assert.equal(result.details.truncated, true);
+  assert.equal(result.details.fullOutputPath, undefined);
+  assert.equal(result.structuredContent.results[0]?.content, longContent);
+  const text = result.content[0]?.text ?? "";
+  assert.match(
+    text,
+    /\[Output truncated\. Full search results could not be saved to a temporary file \(EACCES\)\.\]$/u,
+  );
+  assert.doesNotMatch(text, /saved to:|Tail marker/u);
+});

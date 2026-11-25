@@ -486,7 +486,7 @@ export async function runTuiAsk(
   const [onlyQuestion] = questions;
   const blockedMessage =
     questions.length === 1 && onlyQuestion
-      ? onlyQuestion.question
+      ? singleLine(onlyQuestion.question.split("\n", 1)[0] ?? "")
       : `${questions.length} clarification questions`;
   const details = await ctx.ui.custom<AskDetails>(
     (tui, theme, keybindings, done) =>

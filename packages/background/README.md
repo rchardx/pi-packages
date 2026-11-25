@@ -183,7 +183,7 @@ A missing file uses defaults.
 
 ## Compatibility
 
-With **Pi 1.6.0 on Linux**, package discovery, extension loading, foreground
+With **Pi 1.6.1 on Linux**, package discovery, extension loading, foreground
 commands, and background job completion, logging, and notification were
 verified on **Node 22.19.0 and 26.13.1**. Process-tree cleanup also covers
 macOS (process groups) and Windows (`taskkill /T`), but those platforms are

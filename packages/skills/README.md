@@ -79,6 +79,6 @@ sandbox.
 
 ## Compatibility
 
-Developed against Pi `1.6.0` with Node `>=22.19.0`. Package discovery and skill
-loading have been verified on **Node 22.19.0 and Node 26.13.1 with Pi 1.6.0 on
+Developed against Pi `1.6.1` with Node `>=22.19.0`. Package discovery and skill
+loading have been verified on **Node 22.19.0 and Node 26.13.1 with Pi 1.6.1 on
 Linux**.

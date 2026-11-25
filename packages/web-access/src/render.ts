@@ -154,7 +154,10 @@ export function renderWebResult(
     );
   }
   if (details.truncated) {
-    view.addChild(new Text(theme.fg("warning", "Output truncated; use read to continue."), 0, 0));
+    const notice = details.fullOutputPath
+      ? "Output truncated; use read to continue."
+      : "Output truncated; full output could not be saved.";
+    view.addChild(new Text(theme.fg("warning", notice), 0, 0));
   }
   if (details.fullOutputPath) {
     view.addChild(

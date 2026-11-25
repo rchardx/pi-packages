@@ -272,7 +272,7 @@ test("ask activates in tui and rpc modes with sequential execution and custom/di
       {
         id: "auth",
         header: "Auth",
-        question: "Which auth?",
+        question: "Which auth?\nDevice code works over SSH.",
         options: [{ label: "Device code" }, { label: "Localhost" }],
       },
     ],

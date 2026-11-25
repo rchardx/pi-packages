@@ -300,9 +300,13 @@ saved text on expansion.
   a generic diagnostic.
 - Previews are limited to **2,000 lines / 50 KiB**. Full formatted output is saved
   when truncated to `pi-web-fetch-*/content.txt` or `pi-web-search-*/content.txt`;
-  continue with `read`. Directories are 0700 and files 0600 on POSIX. Failed writes
-  are cleaned up; successful files remain until removed or OS temporary cleanup.
-  Search files contain selected results and omission notices, not discarded entries.
+  continue with `read`. Directories are 0700 and files 0600 on POSIX. If creating
+  or writing the temporary file fails, cleanup of any partial directory is
+  best-effort (a partial file may remain if removal also fails) and the call still
+  returns the bounded preview and `structuredContent` with a sanitized
+  save-failure notice (cancellation and deadlines still abort the call); successful
+  files remain until removed or OS temporary cleanup. Search files contain selected
+  results and omission notices, not discarded entries.
 - The selected provider receives only the query (plus any domain/date filters
   and mode/freshness options) or normalized URL (including path/query, plus any
   `objective` and freshness option) and request source IP, never implicit
@@ -315,7 +319,7 @@ Cancellation cannot undo provider charges or server-side tool usage.
 
 ## Pi compatibility
 
-Verified with **Pi 1.6.0 on Linux** using **Node 22.19.0 and Node 26.13.1**.
+Verified with **Pi 1.6.1 on Linux** using **Node 22.19.0 and Node 26.13.1**.
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
 and execute both tools across Exa, Parallel, and DeepSeek using synthetic

@@ -98,6 +98,12 @@ export function singleLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
+function errorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== "object" || !("code" in error)) return undefined;
+  const { code } = error;
+  return typeof code === "string" && /^[A-Z0-9_]+$/u.test(code) ? code : undefined;
+}
+
 export async function prepareOutput(
   output: FormattedOutput,
   kind: "fetch" | "search",
@@ -108,21 +114,27 @@ export async function prepareOutput(
   let fullOutputPath: string | undefined;
   let text = preview.content;
   if (preview.truncated) {
-    const directory = await mkdtemp(join(tmpdir(), `pi-web-${kind}-`));
-    fullOutputPath = join(directory, "content.txt");
+    let directory: string | undefined;
+    let saveCode: string | undefined;
     try {
-      await writeFile(fullOutputPath, output.text, {
+      directory = await mkdtemp(join(tmpdir(), `pi-web-${kind}-`));
+      const candidate = join(directory, "content.txt");
+      await writeFile(candidate, output.text, {
         encoding: "utf8",
         mode: 0o600,
         ...(signal ? { signal } : {}),
       });
       signal?.throwIfAborted();
+      fullOutputPath = candidate;
     } catch (error) {
-      await rm(directory, { recursive: true, force: true });
-      throw error;
+      if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
+      signal?.throwIfAborted();
+      saveCode = errorCode(error);
     }
     const label = kind === "fetch" ? "Full fetched content" : "Full search results";
-    text += `\n\n[Output truncated. ${label} saved to: ${fullOutputPath}. Use read with offset/limit to continue.]`;
+    text += fullOutputPath
+      ? `\n\n[Output truncated. ${label} saved to: ${fullOutputPath}. Use read with offset/limit to continue.]`
+      : `\n\n[Output truncated. ${label} could not be saved to a temporary file${saveCode ? ` (${saveCode})` : ""}.]`;
   }
   return {
     content: [{ type: "text" as const, text }],

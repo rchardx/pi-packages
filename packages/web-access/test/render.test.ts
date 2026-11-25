@@ -303,6 +303,26 @@ test("fetch expansion stays within the model preview and never reads the full-ou
     assert.match(rendered, /Output truncated; use read to continue/u);
     assert.doesNotMatch(rendered, /OutsidePreview|saved to:/u);
   }
+
+  // When temp-file persistence failed, the card warns without pointing to read or a file path.
+  const { fullOutputPath: _omitted, ...unsavedDetails } = result.details;
+  const unsavedCard = card("fetch");
+  unsavedCard.updateResult({
+    content: [
+      {
+        type: "text",
+        text: `${(result.content[0]?.text ?? "").slice(0, result.details.display.previewLength)}\n\n[Output truncated. Full fetched content could not be saved to a temporary file (ENOSPC).]`,
+      },
+    ],
+    details: unsavedDetails,
+    isError: false,
+  });
+  for (const expanded of [false, true]) {
+    const rendered = text(unsavedCard, expanded);
+    assert.match(rendered, /Output truncated; full output could not be saved\./u);
+    assert.doesNotMatch(rendered, /use read to continue|Full output:|ENOSPC/u);
+  }
+  assert.match(text(unsavedCard, true), /Line/u);
 });
 
 test("search does not expose results outside the byte-limited preview", async (t) => {
