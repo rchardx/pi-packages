@@ -298,7 +298,7 @@ for (const content of ["Line\n".repeat(2100), "世界".repeat(12_000)]) {
   });
 }
 
-for (const ending of ["write failure", "cancellation", "deadline"] as const) {
+for (const ending of ["cancellation", "deadline"] as const) {
   test(`output cleanup removes partial files on ${ending}`, async (t) => {
     const controller = new AbortController();
     const writeFile = fs.writeFile;
@@ -308,7 +308,6 @@ for (const ending of ["write failure", "cancellation", "deadline"] as const) {
       assert.ok(typeof args[0] === "string");
       path = args[0];
       await writeFile(...args);
-      if (ending === "write failure") throw new Error("storage unavailable");
       if (ending === "cancellation") controller.abort(new Error("caller cancelled"));
       if (ending === "deadline") t.mock.timers.tick(60_000);
     });
@@ -319,11 +318,7 @@ for (const ending of ["write failure", "cancellation", "deadline"] as const) {
       if (path) await rm(dirname(path), { recursive: true, force: true });
     });
     const message =
-      ending === "write failure"
-        ? "storage unavailable"
-        : ending === "cancellation"
-          ? "caller cancelled"
-          : "DeepSeek Fetch timed out after 60 seconds.";
+      ending === "cancellation" ? "caller cancelled" : "DeepSeek Fetch timed out after 60 seconds.";
     await assert.rejects(
       fetchDeepSeek(url, credentials, controller.signal, async () =>
         Response.json({ title: "Long", content: "line\n".repeat(2100) }),
@@ -334,3 +329,64 @@ for (const ending of ["write failure", "cancellation", "deadline"] as const) {
     await assert.rejects(access(dirname(path)), { code: "ENOENT" });
   });
 }
+
+test("temporary file write or mkdtemp failures clean up and degrade to preview plus structuredContent", async (t) => {
+  const longBody = `${"line\n".repeat(2100)}Tail after preview`;
+  const writeFile = fs.writeFile;
+  let partialPath: string | undefined;
+  const writeMock = t.mock.method(
+    fs,
+    "writeFile",
+    async (...args: Parameters<typeof writeFile>) => {
+      assert.ok(typeof args[0] === "string");
+      partialPath = args[0];
+      await writeFile(...args);
+      throw Object.assign(new Error("ENOSPC: no space left on device, write '/private/tmp/x'"), {
+        code: "ENOSPC",
+      });
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    const degraded = await fetchDeepSeek(url, credentials, undefined, async () =>
+      Response.json({ title: "Long", content: longBody }),
+    );
+    assert.ok(partialPath);
+    await assert.rejects(access(dirname(partialPath)), { code: "ENOENT" });
+    assert.equal(degraded.details.truncated, true);
+    assert.equal(degraded.details.fullOutputPath, undefined);
+    assert.equal(degraded.structuredContent.content, longBody);
+    const previewText = degraded.content[0]?.text ?? "";
+    assert.match(
+      previewText,
+      /\[Output truncated\. Full fetched content could not be saved to a temporary file \(ENOSPC\)\.\]$/u,
+    );
+    assert.doesNotMatch(previewText, /\/private\/tmp\/x|saved to:|Tail after preview/u);
+  } finally {
+    writeMock.mock.restore();
+    syncBuiltinESMExports();
+    if (partialPath) await rm(dirname(partialPath), { recursive: true, force: true });
+  }
+
+  const mkdtempMock = t.mock.method(fs, "mkdtemp", async () => {
+    throw Object.assign(new Error("unwritable /secret/tmp"), { code: "bad/code" });
+  });
+  syncBuiltinESMExports();
+  try {
+    const degraded = await fetchDeepSeek(url, credentials, undefined, async () =>
+      Response.json({ title: "Long", content: longBody }),
+    );
+    assert.equal(degraded.details.truncated, true);
+    assert.equal(degraded.details.fullOutputPath, undefined);
+    assert.equal(degraded.structuredContent.content, longBody);
+    const previewText = degraded.content[0]?.text ?? "";
+    assert.match(
+      previewText,
+      /\[Output truncated\. Full fetched content could not be saved to a temporary file\.\]$/u,
+    );
+    assert.doesNotMatch(previewText, /\/secret\/tmp|bad\/code/u);
+  } finally {
+    mkdtempMock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});

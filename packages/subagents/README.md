@@ -392,9 +392,9 @@ Completion delivery is attempted once, not persisted for replay.
 
 ## Compatibility
 
-Developed against Pi `1.6.0` with Node `>=22.19.0`. Package discovery, extension
+Developed against Pi `1.6.1` with Node `>=22.19.0`. Package discovery, extension
 loading, and tool execution (including print-mode rejection) have been verified
-on **Node 22.19.0 and Node 26.13.1 with Pi 1.6.0 on Linux**. The
+on **Node 22.19.0 and Node 26.13.1 with Pi 1.6.1 on Linux**. The
 process-group implementation also targets macOS, but macOS is not verified.
 Windows launches are rejected because process-tree cleanup is not implemented.
 
