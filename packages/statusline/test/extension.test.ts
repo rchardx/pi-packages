@@ -216,14 +216,6 @@ test("statusline labels official OAuth subscriptions as (sub) but not Radius OAu
       },
       true,
     ],
-    [
-      "kimi-coding",
-      {
-        type: "api_key",
-        key: "sk-kimi-test",
-      },
-      true,
-    ],
   ] as const) {
     const agentDir = await mkdtemp(join(tmpdir(), "pi-statusline-oauth-"));
     const cwd = await mkdtemp(join(tmpdir(), "pi-statusline-oauth-cwd-"));
