@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   createCodemodeExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   getPackageDir,
   ModelRuntime,
@@ -3386,4 +3387,136 @@ test("/subagents provides case-sensitive two-stage argument completions", {
   releaseChild();
   await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
   assert.equal(await command.getArgumentCompletions("s"), null);
+});
+
+test("builtin:tool-search is forwarded to child when globally disabled in settings", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await fixture(t);
+  await writeFile(
+    join(dir, "settings.json"),
+    JSON.stringify({ extensions: ["-builtin:tool-search"] }),
+  );
+  let api: ExtensionAPI | undefined;
+  const settingsManager = SettingsManager.inMemory();
+  const loader = new DefaultResourceLoader({
+    cwd: dir,
+    agentDir: dir,
+    settingsManager,
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    extensionFactories: [
+      { name: "tool-search", builtin: true, factory: createToolSearchExtension() },
+      (pi) => {
+        api = pi;
+      },
+    ],
+    additionalExtensionPaths: [
+      fileURLToPath(new URL("../", import.meta.url)),
+      "builtin:tool-search",
+    ],
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  const runtime = await ModelRuntime.create({
+    authPath: join(dir, "auth.json"),
+    modelsPath: join(dir, "models.json"),
+    refreshOnCreate: false,
+  });
+  const model = runtime.getModel("mock", "test-model");
+  assert.ok(model);
+  const { session } = await createAgentSession({
+    cwd: dir,
+    agentDir: dir,
+    modelRuntime: runtime,
+    model,
+    resourceLoader: loader,
+    settingsManager,
+    sessionManager: SessionManager.inMemory(dir),
+    tools: ["read", "write", "bash", "subagent", "subagent_cancel", "tool_search"],
+  });
+  t.after(async () => {
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    session.dispose();
+  });
+  await session.bindExtensions({ mode: "rpc" });
+  assert.ok(api);
+
+  const original = process.argv;
+  process.argv = [process.execPath, "pi"];
+  t.after(() => {
+    process.argv = original;
+  });
+  const context = session.extensionRunner.createToolContext("delegate", undefined);
+  const launch = environment(api, context, "Write the file and report.");
+  assert.ok(launch.extensions.includes("builtin:tool-search"));
+  assert.ok(launch.requiredTools.includes("tool_search"));
+
+  const execution = startChild(launch);
+  t.after(() => execution.cancel());
+  await execution.ready;
+  execution.run();
+  const result = await execution.done;
+  assert.equal(result.status, "completed", result.report);
+});
+
+test("virtual models delegate through reloadable extensions and fail fast when runtime-only", {
+  timeout: 30_000,
+}, async (t) => {
+  const { dir } = await fixture(t);
+  const routerExtension = join(dir, "router.ts");
+  await writeFile(
+    routerExtension,
+    `export default function(pi) {
+      pi.registerVirtualModel({
+        provider: "mock",
+        id: "auto",
+        name: "Auto",
+        thinkingLevels: ["off"],
+        route(_req, ctx) {
+          return { model: ctx.modelRegistry.find("mock", "test-model"), thinkingLevel: "off" };
+        }
+      });
+    }`,
+  );
+  const { session, api } = await parentSession(t, dir, false, [routerExtension]);
+  const routerContext = session.extensionRunner.createToolContext("delegate", undefined);
+  const virtualModel = routerContext.modelRegistry.find("mock", "auto");
+  assert.ok(virtualModel);
+  await session.setModel(virtualModel);
+
+  const original = process.argv;
+  t.after(() => {
+    process.argv = original;
+  });
+
+  // Reloadable via explicit -e: child resolves mock/auto and routes to mock/test-model.
+  process.argv = [process.execPath, "pi", "-ne", "-e", routerExtension];
+  const reloadableLaunch = environment(
+    api,
+    session.extensionRunner.createToolContext("delegate", undefined),
+    "Write the file and report.",
+  );
+  const okExecution = startChild(reloadableLaunch);
+  t.after(() => okExecution.cancel());
+  await okExecution.ready;
+  okExecution.run();
+  const okResult = await okExecution.done;
+  assert.equal(okResult.status, "completed", okResult.report);
+
+  // Runtime-only / unforwarded under -ne: child rejects startup before model execution.
+  process.argv = [process.execPath, "pi", "-ne"];
+  const unforwardedLaunch = environment(
+    api,
+    session.extensionRunner.createToolContext("delegate", undefined),
+    "Write the file and report.",
+  );
+  const failedExecution = startChild(unforwardedLaunch);
+  t.after(() => failedExecution.cancel());
+  await assert.rejects(
+    failedExecution.ready,
+    /Model "auto" not found|Child environment unavailable: model mock\/auto; missing tools: none\./u,
+  );
 });

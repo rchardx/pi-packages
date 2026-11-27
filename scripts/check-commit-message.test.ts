@@ -30,6 +30,7 @@ const accepted = {
   "breaking footer": `${valid}\nBREAKING CHANGE: settings changed.\n\nRebuild:\nGenerate fresh configuration.\n`,
   "wrapped summary": valid.replace(summary, "Document the expected\nspacing for commit messages."),
   "wrapped bullet": valid.replace("body layout", "body\nlayout"),
+  "wrapped bullet before validation section": `${valid.replace("body layout", "body\n  layout")}\nValidation:\n- npm test\n`,
   "CRLF input": valid.replaceAll("\n", "\r\n"),
 };
 
@@ -75,6 +76,16 @@ const rejected: [string, string, string][] = [
   [
     "blank between bullets",
     valid.replace("layout\n- Keep", "layout\n\n- Keep"),
+    "between 'Key changes:' bullets",
+  ],
+  [
+    "blank between wrapped bullets",
+    valid.replace("body layout\n- Keep", "body\n  layout\n\n- Keep"),
+    "between 'Key changes:' bullets",
+  ],
+  [
+    "blank before indented continuation and next bullet",
+    valid.replace("body layout\n- Keep", "body\n\n  layout\n- Keep"),
     "between 'Key changes:' bullets",
   ],
   ["breaking marker without rebuild", withSubject("feat!: replace config"), "'Rebuild:' section"],

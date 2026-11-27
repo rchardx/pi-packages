@@ -234,10 +234,12 @@ available in the parent such as `grep`, `find`, and `ls`, or `[]` for no tools)
 or modify the inherited selection with `+name` and `-name` entries. Parent CLI
 restrictions and tool exclusions still apply; roles cannot enable tools blocked
 in the parent or enable `subagent` / `subagent_cancel`.
-Providers must be available from the child's configuration or loaded extensions.
-Runtime-only provider registrations, API-key overrides, custom extension flags,
-and in-memory settings mutations are not copied. Configure these through normal
-Pi configuration or a reloadable extension before delegation.
+Providers and virtual models (`pi.registerVirtualModel()`) must be available
+from the child's configuration or loaded extensions (virtual-model router state
+starts fresh in the child). Runtime-only provider or virtual-model
+registrations, API-key overrides, custom extension flags, and in-memory settings
+mutations are not copied; configure these through normal Pi configuration, a
+reloadable extension, or an explicit `role` model override before delegation.
 
 Tools from Pi's built-in MCP support are not required at startup: when a child's
 selected tools include neither MCP tools nor tools that reach other tools (such
