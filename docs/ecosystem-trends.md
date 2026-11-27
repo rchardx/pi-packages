@@ -54,11 +54,11 @@ best-effort undated documentation).
 
 | Layer | Canonical targets and sources | Baseline / watermark | Primary watch areas |
 | --- | --- | --- | --- |
-| Upstream host | [`earendil-works/pi`](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`, `pi-tui`), [`badlogic/pi-skills`](https://github.com/badlogic/pi-skills) | Pi `1.6.1`, `pi-skills@90bb51c` (`2026-11-25T14:53:00Z`) | Built-in tools, extension hooks, `prepareLoadout`, virtual models, Codemode, `tool_search`, TUI primitives |
-| Peer CLI harnesses | [`anthropics/claude-code`](https://github.com/anthropics/claude-code), [`openai/codex`](https://github.com/openai/codex), [`CognitionAI/devin-cli`](https://github.com/CognitionAI/devin-cli) (`docs.devin.ai`), [`google-gemini/gemini-cli`](https://github.com/google-gemini/gemini-cli), [`anomalyco/opencode`](https://github.com/anomalyco/opencode) | `2026-11-25T14:53:00Z` | Delegation, background execution, OS sandboxing, session branching, TUI ergonomics |
-| IDE and hybrid harnesses | Cursor (`cursor.com/changelog`, IDE + CLI), Google Antigravity (current docs; best-effort) | `2026-11-25T14:53:00Z` | Inner-loop clarification, model routing, worktree isolation, reactive async wakeup |
-| Protocols and conventions | [`agentsmd/agents.md`](https://github.com/agentsmd/agents.md), [`agentskills/agentskills`](https://github.com/agentskills/agentskills), [`modelcontextprotocol/modelcontextprotocol`](https://github.com/modelcontextprotocol/modelcontextprotocol), [`agentclientprotocol/agent-client-protocol`](https://github.com/agentclientprotocol/agent-client-protocol) | `agents.md@d001185`, `agentskills@83021e2` (`2026-11-25T14:53:00Z`) | Progressive context disclosure, deferred/programmatic tool calling vs. static schemas |
-| Model provider APIs | Anthropic, OpenAI, Google Gemini, and DeepSeek API changelogs / release notes (plus best-effort current tool docs when undated) | `2026-11-25T14:53:00Z` | Server-side search/fetch, prompt caching, context compaction, thinking/effort controls |
+| Upstream host | [`earendil-works/pi`](https://github.com/earendil-works/pi) (`@earendil-works/pi-coding-agent`, `pi-tui`), [`badlogic/pi-skills`](https://github.com/badlogic/pi-skills) | Pi `1.6.1`, `pi-skills@90bb51c` (`2026-11-27T14:03:42Z`) | Built-in tools, extension hooks, `prepareLoadout`, virtual models, Codemode, `tool_search`, message threads / cache warming, TUI primitives |
+| Peer CLI harnesses | [`anthropics/claude-code`](https://github.com/anthropics/claude-code), [`openai/codex`](https://github.com/openai/codex), [`CognitionAI/devin-cli`](https://github.com/CognitionAI/devin-cli) (`docs.devin.ai`), [`google-gemini/gemini-cli`](https://github.com/google-gemini/gemini-cli), [`anomalyco/opencode`](https://github.com/anomalyco/opencode) | `2026-11-27T14:03:42Z` | Delegation, background execution, OS sandboxing, scheduled tasks, session branching, TUI ergonomics |
+| IDE and hybrid harnesses | Cursor (`cursor.com/changelog`, IDE + CLI), Google Antigravity (`antigravity.google/docs/changelog.md`, App + `agy` CLI + SDK) | `2026-11-27T14:03:42Z` | Inner-loop clarification, model routing, worktree isolation, reactive async wakeup, swarms and scheduled routines |
+| Protocols and conventions | [`agentsmd/agents.md`](https://github.com/agentsmd/agents.md), [`agentskills/agentskills`](https://github.com/agentskills/agentskills), [`modelcontextprotocol/modelcontextprotocol`](https://github.com/modelcontextprotocol/modelcontextprotocol) (AAIF), [`agentclientprotocol/agent-client-protocol`](https://github.com/agentclientprotocol/agent-client-protocol) | `agents.md@d001185`, `agentskills@83021e2` (`2026-11-27T14:03:42Z`) | Progressive context disclosure, deferred/programmatic tool calling vs. static schemas, MCP server cards, ACP session/subagent schemas |
+| Model and tool provider APIs | Anthropic, OpenAI, Google Gemini, DeepSeek, Exa (`exa.ai/changelog`), and Parallel (`docs.parallel.ai`) API changelogs / release notes (plus best-effort current tool docs when undated) | `2026-11-27T14:03:42Z` | Server-side search/fetch and excerpt extraction, message threads, prompt caching, server-side compaction, tool retrieval, thinking/effort controls |
 
 ## Capability matrix
 
@@ -69,19 +69,23 @@ transitions appear in the [Signal log](#signal-log).
 
 | Capability domain | Signal | Observed ecosystem trajectory | Pi host (`1.6.1`) | `pi-packages` stance |
 | --- | --- | --- | --- | --- |
-| Structured pre-execution clarification | `Strengthening` | Harnesses converged on structured multiple-choice user clarification prompts when an interactive UI or caller input channel is available (Claude Code, OpenCode, Cursor, Google Antigravity) | Dialog primitives (`ctx.ui` with `blockedKind`), OSC 7501 status; no built-in model tool | **`Maintain`** in [`ask`](../packages/ask/README.md) (1–4 sequential questions with automatic `Other…` in `tui`/`rpc`, hidden in headless `print`/`json` modes via `prepareLoadout`) |
-| Hosted web search and page fetching | `Strengthening` | Moving from brittle local scrapers to hosted web search and page-extraction endpoints (standalone tool APIs such as Exa, Parallel, and DeepSeek alongside provider server tools in Anthropic, OpenAI, and Google Gemini) with explicit billing/disclosure boundaries | None built in | **`Maintain`** in [`web-access`](../packages/web-access/README.md) around deterministic standalone tool endpoints (Exa, Parallel, and DeepSeek; per-capability opt-in, no fallback; chat-model-wrapped providers removed in `#70`) |
-| Async shell execution and reactive wakeup | `Strengthening` | Long-running shell commands moved off blocking foreground turns via background session handles (OpenAI Codex CLI, Claude Code) and reactive push completion notifications that wake the agent without `sleep` polling (Google Antigravity, Claude Code) | Foreground built-in shell tools (`bash`, `powershell`) | **`Maintain`** in [`background`](../packages/background/README.md) (`bash` override + `/background`) |
-| Steerable parent-child subagents | `Strengthening` | Fire-and-forget delegation evolving into addressable child sessions with live messaging (`send`/`wait`), multi-model parent/child pairing (Devin CLI `Fusion`), and default tool-selection presets (Claude Code, Google Antigravity, OpenAI Codex CLI) | None built in | **`Maintain`** in [`subagents`](../packages/subagents/README.md) (root-routed messaging, `/subagents`, explicit per-role `model`/tool configuration in `subagents.json` with no built-in role presets—not security sandboxes; leave workflow personas such as `reviewer` to skills) |
+| Structured pre-execution clarification | `Strengthening` | Harnesses converged on structured multiple-choice user clarification prompts and terminal blocked-status reporting when an interactive UI or caller input channel is available (Claude Code, OpenCode, Cursor, Google Antigravity) | Dialog primitives (`ctx.ui` with `blockedKind`), OSC 7501 status; no built-in model tool | **`Maintain`** in [`ask`](../packages/ask/README.md) (1–4 sequential questions with automatic `Other…` in `tui`/`rpc` and OSC 7501 `question` status, hidden in headless `print`/`json` modes via `prepareLoadout`) |
+| Hosted web search and page fetching | `Strengthening` | Moving from brittle local scrapers to hosted web search and targeted excerpt/highlight extraction with explicit freshness and billing boundaries (standalone tool APIs in Exa 3.0 `lite` / Dynamic Highlights, Parallel, and DeepSeek alongside provider server tools in Anthropic, OpenAI, and Google Gemini) | None built in | **`Maintain`** in [`web-access`](../packages/web-access/README.md) around deterministic standalone tool endpoints (Exa, Parallel, and DeepSeek; `objective` excerpts, `max_age_hours` cache control, domain/date filters, per-capability opt-in, no fallback; chat-model-wrapped providers removed in `#70`) |
+| Async shell execution and reactive wakeup | `Strengthening` | Long-running or timed-out shell commands move off blocking foreground turns into background handles instead of being killed (OpenAI Codex CLI, Claude Code, OpenCode V2) with reactive push completion notifications that wake the agent without `sleep` polling (Google Antigravity, Claude Code) | Foreground built-in shell tools (`bash`, `powershell`) | **`Maintain`** in [`background`](../packages/background/README.md) (`bash` override with threshold auto-backgrounding, `bash-job:notification`, and `/background`) |
+| Steerable parent-child subagents | `Strengthening` | Fire-and-forget delegation evolved into addressable background child sessions with live messaging (`send`/`wait`), compact TUI transcript summaries, and multi-model parent/child pairing (Claude Code, Google Antigravity, OpenAI Codex CLI, OpenCode V2, Devin CLI `Fusion`, ACP subagent sessions) | None built in | **`Maintain`** in [`subagents`](../packages/subagents/README.md) (root-routed messaging, selective `subagent_wait({ ids })`, `/subagents`, `prepareLoadout` hiding in `print`/`json`, and explicit per-role `model`/tool configuration in `subagents.json` with no built-in role presets—not security sandboxes) |
 | High-density TUI observability | `Strengthening` | Terminal harnesses surface persistent footer/status telemetry for workspace, active model, context-window usage, and session cost (Pi, Claude Code `statusLine`, OpenCode TUI) | Built-in footer (expands to a 3rd line when extension statuses are active) and `ctx.ui.setFooter` | **`Maintain`** in [`statusline`](../packages/statusline/README.md) (fixed 2-line layout placing `subagents`/`background` statuses inline on line 1 above model, context, cost, and cumulative token/cache counters; zero model tools) |
-| Programmatic tool composition (Codemode) | `Strengthening` | Scripted orchestration over typed tool outputs reduces multi-turn token round-trips for fan-out work (Pi `builtin:codemode`, Anthropic programmatic tool calling and multi-cloud Code Mode, OpenAI Codex CLI Code Mode) | Native `builtin:codemode` (`outputSchema`, `structuredContent`, `models.classify()`) | **`Delegate to host`**; expose clean `outputSchema` in [`subagents`](../packages/subagents/README.md) while keeping `subagent_wait` `model-only` |
-| Project instructions and reusable skills | `Strengthening` | Reusable workflows standardized around repository-checked Markdown instruction files and on-demand skills rather than bespoke extensions or machine-local JSON configs (Pi, Claude Code, OpenAI Codex CLI, Devin CLI, OpenCode) | Native `AGENTS.md` / `CLAUDE.md` discovery, skills (`SKILL.md`), and prompt templates | **`Delegate to host`**; express workflow personas, review rubrics, and recipes as skills rather than extension config |
+| Reusable multi-step workflow skills | `Strengthening` | Multi-turn research and iterative code-review workflows are packaged as zero-runtime-dependency `SKILL.md` playbooks orchestrating host and extension primitives rather than hardcoded extension persona logic (Pi, Claude Code, Google Antigravity, AgentSkills) | Native skill execution (`/skill:<name>` and model-invocable skills) without bundled research or cross-model review loops | **`Maintain`** in [`skills`](../packages/skills/README.md) (`deep-research` and dual-model `/skill:review-loop`, composing [`subagents`](../packages/subagents/README.md), [`web-access`](../packages/web-access/README.md), and [`ask`](../packages/ask/README.md) with zero runtime dependencies) |
+| Programmatic tool composition (Codemode) | `Strengthening` | Scripted orchestration over typed tool outputs reduces multi-turn token round-trips and moves heavy or fan-out calls out of top-level tool declarations (Pi `builtin:codemode`, Anthropic multi-cloud Code Mode, OpenAI Codex CLI Code Mode, OpenCode V2 Code Mode, Google Antigravity `run_workflow`) | Native `builtin:codemode` (`outputSchema`, `structuredContent`, `models.classify()`) | **`Delegate to host`**; expose clean `outputSchema` and `structuredContent` across [`web-access`](../packages/web-access/README.md), [`background`](../packages/background/README.md), and [`subagents`](../packages/subagents/README.md) while keeping `subagent_wait` `model-only` |
+| Project instructions and skill loading | `Strengthening` | Repository instructions and portable skill formats standardized under neutral open governance rather than bespoke per-harness loaders (AAIF `AGENTS.md` and `AgentSkills`, Pi, Claude Code `CLAUDE.md` and MCP-provided skills, OpenAI Codex CLI, Devin CLI, OpenCode) | Native `AGENTS.md` / `CLAUDE.md` discovery, `SKILL.md` loading, and prompt templates | **`Delegate to host`**; rely on Pi's native instruction and skill discovery rather than building custom skill loaders or machine-local persona parsers |
+| Server-side session state, incremental threads, and compaction | `Strengthening` | Model APIs and harnesses shift conversation state, prefix caching, and context compaction onto server-side or non-blocking host pipelines—penalizing mid-session tool-list or prompt-prefix mutations (Anthropic Message Threads and server-side compaction, OpenAI Responses API async compaction and 12h caching, Pi message threads and idle cache warming, OpenCode V2 background compaction) | Native Anthropic message threads, `cacheWarming: "idle"`, compaction, and per-notice cache/reasoning-drop telemetry | **`Delegate to host`**; keep package prompt guidelines and tool loadouts deterministic per host mode (`prepareLoadout`) so extensions do not invalidate prompt caches, drop reasoning prefixes, or break incremental message threads |
+| Editor-decoupled agent protocols (ACP and headless RPC) | `Strengthening` | CLI agents expose structured JSON-RPC / `stdio` protocols so IDEs and headless clients reuse terminal harnesses with synchronized plans, subagent trees, and compaction notices (ACP `schema-v1.35.0`—with subagent, plan, notice, and compaction schemas stabilized across `v1.25.0`–`v1.34.0`—and Zed/JetBrains ACP Registry across Gemini CLI, Google Antigravity `agy acp`, and peers; OpenCode V2 client/server mode) | Native `rpc`, `json`, and `print` modes plus SDK (`AgentSessionRuntime`, RPC extension UI dialogs, OSC 7501) | **`Delegate to host`** for editor/client transport protocols; ensure interactive packages ([`ask`](../packages/ask/README.md), [`background`](../packages/background/README.md), [`subagents`](../packages/subagents/README.md)) support both `tui` and `rpc` cleanly and degrade or hide via `prepareLoadout` in `print`/`json` |
 | Stateless agentic codebase search | `Strengthening` | Terminal harnesses standardize on stateless `grep`/glob/file navigation rather than local background embedding daemons—directly in the host (Pi, OpenAI Codex CLI) or paired with host-provided exploration subagents (Claude Code, Gemini CLI `codebase_investigator`, OpenCode) | Built-in `read`, `bash`, `grep`, `find`, `ls` (no built-in subagent) | **`Delegate to host`** for search primitives (optionally paired with user-configured read-only roles in [`subagents`](../packages/subagents/README.md)); do not build local vector/RAG indexer packages |
-| Workspace and OS sandbox isolation | `Strengthening` | Parallel agents increasingly pair Git worktrees with OS-level process/filesystem sandboxes and network gates (OpenAI Codex CLI, Claude Code, Cursor) | Shared working directory; manual `git worktree` via `bash` | **`Hold`**; prefer `bash`/skill recipes unless worktree or sandbox lifecycle proves impossible without extension state |
-| Per-request automatic model routing | `Strengthening` | Classifier- or heuristic-driven routing of individual requests within one session across fast/cheap and frontier models (Cursor Router `Auto`, Gemini CLI `Auto` Flash/Pro routing, Pi virtual-model hooks) | Multi-provider catalog, manual selection, decision-model classification (`ctx.modelRegistry.classify()`), and per-request routing hooks (`pi.registerVirtualModel()`) without a built-in router policy | **`Hold`** on shipping an opinionated virtual-model router package; `pi.registerVirtualModel()` supplies the host hook while explicit per-role `model` overrides in [`subagents`](../packages/subagents/README.md) cover deterministic tiering |
-| Conversation tree and session branching | `Strengthening` | CLI harnesses support branching or forking session transcripts to explore alternatives without losing context (Pi, Claude Code, Devin CLI, OpenCode) | Native `/tree` and session `fork`; local session storage | **`Delegate to host`**; rely on Pi's built-in `/tree` and `fork` (and Git for file state) |
-| Local-to-cloud session handoff | `Introduced` | Handing off an active local CLI session to a remote cloud sandbox to continue unattended (Devin CLI `/handoff`, Cursor CLI cloud handoff) | Local sessions only | **`Reject`**; requires managed remote sandbox infrastructure outside local package scope |
-| Upfront static MCP tool catalogs | `Attenuating` | Preloading large multi-server MCP schemas consumes context budget, inflates initial request tokens, and degrades tool selection, while catalog mutations invalidate cached prompt prefixes; harnesses are shifting to deferred discovery and lazy server startup (Claude Code Tool Search, OpenAI Codex CLI on-demand stdio MCP startup, Pi `tool_search`) and Codemode | Native `builtin:mcp`, `builtin:tool-search` (`deferred` exposure), and `builtin:codemode` | **`Delegate to host`** for MCP connectivity; declare model tools only when model invocation is needed, keeping tool-exposing packages narrow (UI-only packages such as [`statusline`](../packages/statusline/README.md) declare zero) |
+| Conversation tree and session branching | `Strengthening` | CLI harnesses support branching or forking session transcripts—including across moved directories—to explore alternatives without losing context (Pi, Claude Code, Devin CLI, OpenCode) | Native `/tree` and session `fork` (including missing-directory fork); local session storage | **`Delegate to host`**; rely on Pi's built-in `/tree` and `fork` (and Git for file state) |
+| Workspace and OS sandbox isolation | `Strengthening` | Harnesses harden directory trust gates, Git worktree isolation (`--worktree`, subagent `isolation: "worktree"`), and OS-level process/filesystem/network sandboxes (Claude Code, OpenAI Codex CLI `--trust`, Cursor CLI `privateTmp` and keyring, Gemini CLI Seatbelt) | Project trust prompt, shared working directory, and manual `git worktree` via `bash` | **`Hold`**; OS/network sandboxing belongs in the host or OS boundary rather than extension wrappers, while worktree lifecycle stays in `bash`/skill recipes unless [`subagents`](../packages/subagents/README.md) hits concrete friction without extension state |
+| Per-request automatic model routing | `Strengthening` | Classifier- or orchestrator-driven routing of individual turns across fast/cheap and frontier models within one session (Cursor Router `Auto`, Gemini CLI `Auto`, Google Antigravity Neon Orchestrator, OpenAI Decisions API, Pi virtual-model hooks) | Multi-provider catalog, manual selection, decision-model classification (`ctx.modelRegistry.classify()`), and per-request routing hooks (`pi.registerVirtualModel()`) without a built-in router policy | **`Hold`** on shipping an opinionated virtual-model router package; `pi.registerVirtualModel()` supplies the host hook while explicit per-role `model` overrides in [`subagents`](../packages/subagents/README.md) cover deterministic tiering |
+| Scheduled routines, autonomous goal loops, and multi-agent swarms | `Strengthening` | Harnesses add persistent `/goal` loops, cron/timer/event-triggered automations, and shared-board multi-worker swarms (Devin CLI `/goal`, Claude Code `/loop` and scheduled `/tasks`, OpenCode V2 Automations, Google Antigravity `/goal`, `/schedule`, and `/swarm`, Cursor Agent SDK triggers) | Interactive/headless single-session runs; no built-in scheduler, persistent goal loop, or shared swarm board | **`Hold`** on dedicated scheduler or swarm-board packages; watch real-world friction while bounded multi-round loops live in [`skills`](../packages/skills/README.md), fan-out delegation uses [`subagents`](../packages/subagents/README.md), and unattended schedules invoke `pi -p` via OS `cron`/`systemd` |
+| Local-to-cloud session handoff | `Introduced` | Handing off an active local CLI session or bot definition to a vendor-managed cloud sandbox to continue unattended (Devin CLI `/handoff`, Cursor CLI cloud handoff and Agent SDK `deploy`) | Local sessions only | **`Reject`**; requires managed remote sandbox infrastructure outside local package scope |
+| Upfront static MCP tool catalogs | `Attenuating` | Preloading large multi-server MCP schemas consumes context budget, inflates initial request tokens, and invalidates cached prompt prefixes when catalogs mutate; providers and harnesses shift to server-side tool retrieval, pre-connection server cards, lazy server startup, and Codemode (Google Gemini API Tool Retrieval, MCP `2026-07-28` + `server-card` SEP-2127, Claude Code Tool Search, OpenAI Codex CLI on-demand stdio MCP startup, Pi `tool_search`) | Native `builtin:mcp`, `builtin:tool-search` (`deferred` exposure), and `builtin:codemode` | **`Delegate to host`** for MCP connectivity; declare model tools only when model invocation is needed, keeping tool-exposing packages narrow (UI-only packages such as [`statusline`](../packages/statusline/README.md) declare zero) |
 | Agent-managed LSP integration in CLI harnesses | `Strengthening` | Peers invest in optional or host-managed LSP—Claude Code supports opt-in LSP plugins, and OpenCode shipped per-filetype LSP in V1 with a V2 port tracked in [`anomalyco/opencode#38528`](https://github.com/anomalyco/opencode/issues/38528) (V2 currently advises running project CLI checks until ported)—while minimalist cores (Pi, OpenAI Codex CLI) omit built-in LSP | None built in; project CLI checks via `bash` | **`Reject`** (`@rchardx/pi-lsp` removed in `#67`); stateful language servers drift stale across `bash`, formatter, and subagent edits without full cross-platform watchers—rely on `rg` + batch CLI typecheckers (`tsc --noEmit`) |
 
 ## Running a trend sweep
@@ -101,7 +105,12 @@ When executing a sweep (manually or with an agent), follow these steps in order:
    time `T` in UTC (`YYYY-MM-DDTHH:MM:SSZ`). For each row in [Tracked baselines](#tracked-baselines):
    - *Timestamped release feeds (GitHub Releases `published_at` on `earendil-works/pi`, peer CLI harnesses, `modelcontextprotocol/modelcontextprotocol`, and `agentclientprotocol/agent-client-protocol`):*
      always inspect releases published in the half-open window `(watermark, T]`
-     on every sweep, even when also performing a local Pi dependency bump.
+     on every sweep, even when also performing a local Pi dependency bump. For
+     repositories that also publish high-frequency `alpha`, `preview`, or
+     `nightly` tags (such as `openai/codex`, `google-gemini/gemini-cli`, and
+     `anomalyco/opencode`), evaluate stable releases (`prerelease: false`) as
+     primary signal evidence and treat prerelease tags as early context rather
+     than standalone signal transitions.
    - *Commit-tracked repositories without releases (`badlogic/pi-skills`, `agentsmd/agents.md`, `agentskills/agentskills`):*
      inspect reachable default-branch commits between the recorded commit SHA
      and the current default-branch tip (`<recorded-sha>..HEAD`, re-anchoring
@@ -111,13 +120,13 @@ When executing a sweep (manually or with an agent), follow these steps in order:
      `node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md` sections and
      `docs/` between the previously recorded pinned Pi version and the newly
      installed version so the `Pi host` column reflects the exact pinned target.
-   - *Date-only changelogs and release-note pages (sources publishing `YYYY-MM-DD` without time-of-day or timezone):*
+   - *Date-only changelogs and release-note pages (sources publishing `YYYY-MM-DD` without time-of-day or timezone, such as Cursor, Google Antigravity, model providers, Exa, and Parallel):*
      inspect entries dated on or after one day before the UTC calendar day of
      `watermark` (`UTC_date(watermark) - 1 day`, or in the source's known
      timezone) to cover local-date lag west of UTC; treat web changelogs as
      best-effort against retroactive backfills rather than strict append-only
      feeds.
-   - *Undated documentation pages (such as Google Antigravity or provider guides without chronological changelogs):*
+   - *Undated documentation pages (such as provider tool guides without chronological changelogs):*
      perform a best-effort spot check of current documentation against the
      matrix; for these targets, `T` records when current docs were last checked
      rather than guaranteeing diff-complete historical coverage.
@@ -142,13 +151,16 @@ When executing a sweep (manually or with an agent), follow these steps in order:
      `Delegate to host` once covered) only after the locally pinned Pi version
      includes and verifies it—never by marking an active ecosystem capability
      `Retired`.
-   - *Route workflows to skills, mechanisms to packages:* Propose `Maintain` or
-     `Refine` in `pi-packages` only when solving a concrete user friction
-     requires runtime extension mechanisms—such as host lifecycle hooks, TUI
-     components, child-process control, host-enforced tool/loadout filtering, or
-     model tools that enforce per-call user-consent configs, Pi-resolved
-     provider credentials, and cancellation boundaries. Role personas,
-     multi-step prompts, and CLI conventions belong in skills or project
+   - *Route workflows to skills, mechanisms to extension packages:* Propose
+     `Maintain` or `Refine` for a runtime extension package only when solving a
+     concrete user friction requires runtime extension mechanisms—such as host
+     lifecycle hooks, TUI components, child-process control, host-enforced
+     tool/loadout filtering, or model tools that enforce per-call user-consent
+     configs, Pi-resolved provider credentials, and cancellation boundaries.
+     Delegate `AGENTS.md` / `SKILL.md` discovery and execution to Pi
+     (`Delegate to host`), maintain reusable zero-runtime-dependency multi-step
+     playbooks in [`skills`](../packages/skills/README.md) (`Maintain` /
+     `Refine`), and keep project-specific CLI conventions in repository
      instruction files (`Delegate to host`).
 3. **Synthesize by capability theme and confirm stances.** Merge related changes
    from multiple vendors into one capability-level observation naming those
@@ -181,6 +193,58 @@ When executing a sweep (manually or with an agent), follow these steps in order:
 
 Reverse-chronological record of capability transitions and their impact on
 `pi-packages`.
+
+### 2026-11-27 — Workflow skills, server-side session state, ACP, and automation boundaries
+
+- **`Strengthening` — Zero-runtime-dependency workflow skills separated from host skill loading**
+  (AAIF `AGENTS.md` and `AgentSkills` governance, Claude Code MCP-provided skills, Google Antigravity, Upstream Pi `1.6.1`):
+  Repository instruction and `SKILL.md` formats consolidated under Linux
+  Foundation AAIF governance while harnesses increasingly ship multi-step
+  research and review playbooks as portable Markdown skills rather than custom
+  extension runtimes.
+  - *Impact on `pi-packages`:* Split the capability matrix into **`Delegate to host`**
+    for `AGENTS.md` / `SKILL.md` discovery and **`Maintain`** in
+    [`skills`](../packages/skills/README.md) (`#74`, `#80`) for `deep-research`
+    and dual-model `/skill:review-loop` orchestrating [`subagents`](../packages/subagents/README.md),
+    [`web-access`](../packages/web-access/README.md), and [`ask`](../packages/ask/README.md).
+- **`Strengthening` — Server-side session threads, prompt-cache preservation, and background compaction**
+  (Anthropic Message Threads beta and server-side compaction with `2026-10-21` client-compaction removal, OpenAI Responses API async compaction and 12-hour caching, Upstream Pi `1.5.1`–`1.6.1` message threads + `cacheWarming: "idle"` + per-notice telemetry, OpenCode V2 background compaction):
+  Providers and harnesses moved multi-turn state, cache retention, and context
+  compaction onto server-side or non-blocking host pipelines where mid-session
+  tool-catalog or prompt-prefix mutations break byte-exact caches, drop
+  reasoning prefixes (`prefix_mismatch`), or force full-history thread replays.
+  - *Impact on `pi-packages`:* **`Delegate to host`**; keep package tool
+    visibility and prompt guidelines deterministic per host mode via
+    `prepareLoadout` (including `#79` in [`subagents`](../packages/subagents/README.md))
+    and avoid client-side summarization or dynamic per-turn prompt rewriting.
+- **`Strengthening` — Editor-decoupled agent protocols and multi-surface session modes**
+  (ACP `schema-v1.35.0` with subagent/plan schemas stabilized in `v1.34.0` and notice/compaction schemas stabilized in `v1.25.0`, plus Zed/JetBrains ACP Registry across Gemini CLI, Google Antigravity `agy acp`, and peers; OpenCode V2 client/server mode; Upstream Pi `1.6.1` `rpc`/`json` modes and OSC 7501 `blockedKind`):
+  Terminal harnesses standardized structured JSON-RPC / `stdio` transports so
+  IDEs and headless hosts reuse CLI agents without bespoke editor ports.
+  - *Impact on `pi-packages`:* **`Delegate to host`** for editor/client
+    transport protocols; preserve dual `tui`/`rpc` support (including OSC 7501
+    `blockedKind` alignment in [`ask`](../packages/ask/README.md), `#82`) and
+    explicit `print`/`json` degradation across interactive packages.
+- **`Strengthening` — Scheduled routines, autonomous goal loops, and shared-board swarms**
+  (Devin CLI `/goal`, Claude Code `/loop` and scheduled `/tasks`, OpenCode V2 Automations, Google Antigravity `/goal`, `/schedule`, and `/swarm`, Cursor Agent SDK event/cron triggers):
+  Harnesses added recurring cron/event triggers, persistent multi-turn goal
+  loops, and coordinator/worker swarm boards alongside parent-child subagents.
+  - *Impact on `pi-packages`:* **`Hold`** on shipping scheduler or swarm-board
+    packages while watching real-world friction; express bounded convergence
+    loops in [`skills`](../packages/skills/README.md), fan-out delegation in
+    [`subagents`](../packages/subagents/README.md) (with selective
+    `subagent_wait({ ids })` in `#77`), and unattended schedules via OS
+    `cron`/`systemd` invoking `pi -p`.
+- **`Strengthening` / `Attenuating` — Targeted web excerpts, auto-backgrounded timeouts, worktree sandboxes, and server-side tool retrieval**
+  (Exa 3.0 `lite` and GA Dynamic Highlights, Parallel MCP 2.0 and strict `source_policy`, DeepSeek standalone search/fetch APIs; OpenCode V2 timeout auto-backgrounding and Code Mode tool offloading; Claude Code `--worktree` and subagent `isolation: "worktree"`, OpenAI Codex CLI `--trust` and on-demand stdio MCP startup; Google Gemini API Tool Retrieval and MCP SEP-2127 `server-card`):
+  External APIs and peer CLIs reinforced targeted excerpt extraction over
+  full-page dumps, non-destructive shell backgrounding, OS/worktree isolation,
+  and lazy or server-retrieved tool schemas.
+  - *Impact on `pi-packages`:* Reinforces `objective` excerpts, `max_age_hours`,
+    and structured filters in [`web-access`](../packages/web-access/README.md)
+    (`#73`), threshold auto-backgrounding in [`background`](../packages/background/README.md),
+    **`Hold`** on host/OS sandbox wrappers, and **`Delegate to host`** for
+    deferred MCP discovery and Codemode (`outputSchema` / `structuredContent`).
 
 ### 2026-11-22 — Initial baseline (Pi 1.6.0)
 
