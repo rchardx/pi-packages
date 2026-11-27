@@ -243,9 +243,11 @@ export function isUsingSubscription(
     getProvider(id: string): { auth: { oauth?: { isSubscription?: boolean } } } | undefined;
   },
 ): boolean {
+  // Kimi Coding is subscription-backed despite using API-key authentication.
   return (
-    modelRegistry.isUsingOAuth(model) &&
-    modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true
+    model.provider === "kimi-coding" ||
+    (modelRegistry.isUsingOAuth(model) &&
+      modelRegistry.getProvider(model.provider)?.auth.oauth?.isSubscription === true)
   );
 }
 

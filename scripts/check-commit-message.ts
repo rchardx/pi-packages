@@ -72,13 +72,15 @@ function validateBullets(lines: string[]): string[] {
       continue;
     }
     const isBullet = /^[-*] /u.test(line);
-    if (isBullet && blankSinceBullet) {
-      return ["do not leave blank lines between 'Key changes:' bullets"];
+    if (isBullet) {
+      if (blankSinceBullet) {
+        return ["do not leave blank lines between 'Key changes:' bullets"];
+      }
+      bulletSeen = true;
+      continue;
     }
-    if (!isBullet && !bulletSeen) return ["'Key changes:' must be followed by bullet lines"];
-    if (!isBullet) break;
-    bulletSeen = true;
-    blankSinceBullet = false;
+    if (!bulletSeen) return ["'Key changes:' must be followed by bullet lines"];
+    if (blankSinceBullet) break;
   }
   return bulletSeen ? [] : ["'Key changes:' must include at least one bullet"];
 }

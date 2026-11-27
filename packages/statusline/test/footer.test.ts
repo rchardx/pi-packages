@@ -312,4 +312,12 @@ test("isUsingSubscription distinguishes non-subscription OAuth from subscription
     }),
     false,
   );
+  // Kimi Coding is subscription-backed even when authenticated via API key.
+  assert.equal(
+    isUsingSubscription(makeModel("kimi-coding"), {
+      isUsingOAuth: () => false,
+      getProvider: () => providerWith(undefined),
+    }),
+    true,
+  );
 });

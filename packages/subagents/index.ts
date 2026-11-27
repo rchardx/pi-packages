@@ -182,7 +182,7 @@ export function environment(
       if (
         !options.noExtensions &&
         !(options.noMcp && path === "builtin:mcp") &&
-        ["builtin:mcp", "builtin:codemode", "builtin:tool_search"].includes(path)
+        ["builtin:mcp", "builtin:codemode", "builtin:tool-search"].includes(path)
       )
         extensions.add(path);
     } else if (isAbsolute(path)) {
