@@ -88,6 +88,7 @@ async function verifyInstalled(root: string): Promise<void> {
     for (const [name, owner] of [
       ["ask", "ask"],
       ["bash", "background"],
+      ["bash_cancel", "background"],
       ["subagent", "subagents"],
       ["subagent_cancel", "subagents"],
       ["web_search", "web-access"],
@@ -116,6 +117,10 @@ async function verifyInstalled(root: string): Promise<void> {
     assert.deepEqual(bash.content, [{ type: "text", text: "nightly-installed-bash\n" }]);
     await assert.rejects(
       execute("bash", { command: "exit 99", background: true, timeout: 5 }),
+      /Background execution is unavailable in print mode/u,
+    );
+    await assert.rejects(
+      execute("bash_cancel", { job_id: "bg_00000000" }),
       /Background execution is unavailable in print mode/u,
     );
     await assert.rejects(

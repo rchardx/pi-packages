@@ -6,6 +6,8 @@ import {
   buildNotification,
   formatDuration,
   oneLine,
+  renderCancelCall,
+  renderCancelResult,
   renderNotification,
   tailText,
 } from "../src/notify.ts";
@@ -162,4 +164,82 @@ test("renderNotification draws a one-line card, expandable to the tail", () => {
   assert.equal(renderNotification({}, { expanded: false, outputPad: 1 }, theme), undefined);
   const unpadded = renderNotification({ details }, { expanded: false, outputPad: 0 }, theme);
   assert.ok(unpadded?.render(120)[1]?.startsWith("✓"));
+});
+
+test("renderCancelCall and renderCancelResult format compact and expanded views while stripping escapes", () => {
+  const theme = {
+    fg: (_token: string, text: string) => text,
+    bold: (text: string) => text,
+  };
+  const keyHint = (_action: string, label: string) => `ctrl+o ${label}`;
+
+  const renderTrimmed = (component: { render(width: number): readonly string[] }, width = 120) =>
+    component
+      .render(width)
+      .map((line) => line.trimEnd())
+      .join("\n");
+
+  assert.equal(
+    renderTrimmed(
+      renderCancelCall({ job_id: `  ${ESC}[31mbg_a1b2c3d4${ESC}[0m\u0007  ` }, theme),
+      80,
+    ),
+    "bash_cancel  bg_a1b2c3d4",
+  );
+  assert.equal(renderTrimmed(renderCancelCall(undefined, theme), 80), "bash_cancel");
+
+  const result = {
+    content: [{ type: "text" as const, text: "Cancelled" }],
+    details: {
+      jobId: "bg_a1b2c3d4",
+      command: `npm run ${ESC}[32mdev${ESC}[0m`,
+      logPath: "/tmp/jobs/bg_a1b2c3d4.log",
+      tail: `Server listening on :3000${ESC}[2J\u0007`,
+    },
+  };
+  const collapsed = renderCancelResult(result, { expanded: false, isPartial: false }, theme, {
+    isError: false,
+    durationMs: 120,
+    keyHint,
+  });
+  assert.equal(collapsed.render(120).length, 1);
+  assert.equal(
+    renderTrimmed(collapsed),
+    "Cancelled bg_a1b2c3d4 · 0.1s · npm run dev · ctrl+o to expand",
+  );
+  assert.ok(visibleWidth(collapsed.render(28)[0] ?? "") <= 28);
+
+  const expanded = renderCancelResult(result, { expanded: true, isPartial: false }, theme, {
+    isError: false,
+    durationMs: 120,
+    keyHint,
+  });
+  assert.equal(
+    renderTrimmed(expanded),
+    "Cancelled bg_a1b2c3d4 · 0.1s · npm run dev · ctrl+o to collapse\n" +
+      "/tmp/jobs/bg_a1b2c3d4.log\n\n" +
+      "Server listening on :3000",
+  );
+
+  const noDetails = renderCancelResult(
+    {
+      content: [{ type: "text" as const, text: "Cancelled" }],
+      details: { jobId: "bg_a1b2c3d4", command: "npm run dev", tail: "" },
+    },
+    { expanded: false, isPartial: false },
+    theme,
+    { isError: false, durationMs: undefined, keyHint },
+  );
+  assert.equal(renderTrimmed(noDetails), "Cancelled bg_a1b2c3d4 · npm run dev");
+
+  const errored = renderCancelResult(
+    {
+      content: [{ type: "text" as const, text: `No running job ${ESC}[31mbg_bad${ESC}[0m` }],
+      details: undefined,
+    },
+    { expanded: false, isPartial: false },
+    theme,
+    { isError: true, durationMs: 10, keyHint },
+  );
+  assert.equal(renderTrimmed(errored), "No running job bg_bad");
 });

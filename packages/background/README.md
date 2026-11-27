@@ -7,15 +7,21 @@ and send Pi a message with the exit code and output tail when they finish.
 ## What changes
 
 This package replaces Pi's built-in `bash` tool with a same-named override that
-adds one optional parameter:
+adds one optional parameter, and registers `bash_cancel` for stopping running
+background jobs in interactive (`tui`) and RPC sessions:
 
 - In interactive (`tui`) and RPC modes, `background: true` returns immediately
   with a job id and log path while the command keeps running. Print and JSON
-  modes support foreground execution only.
+  modes support foreground execution only (`bash_cancel` is hidden via
+  `prepareLoadout` and fails closed if called directly).
 - When automatic backgrounding is enabled and no explicit `timeout` is set,
   any command still running after the threshold
   (default **120s**) moves to the background automatically instead of blocking
   the turn. The process is **not** killed.
+- `bash_cancel({ job_id })` stops one running background job owned by the
+  current session, waits for cleanup, appends a `killed: cancelled` trailer to
+  its log, and returns the captured output tail and log path without emitting a
+  `bash-job:notification` wake-up.
 - An explicit `timeout` keeps the built-in semantics: the process tree is
   killed at the deadline and the call fails.
 
@@ -107,18 +113,25 @@ through a Pi UI notification in interactive or RPC mode, without starting a mode
 turn or adding model-context messages. There is no automatic refresh: enter
 `/background` again for a new snapshot.
 
-To stop one running job owned by the current session, enter:
+To stop one running job owned by the current session from the prompt, enter:
 
 ```text
 /background stop bg_6f6bb444
 ```
 
-In interactive TUI mode, argument completion suggests `stop` and running
-`bg_<hex>` job ids with elapsed durations and single-line command previews.
-Stopping a job kills its process tree, updates the `background` status
-indicator, and confirms the stop without waking the model. Missing arguments or
-unknown or finished job ids report an error notification and leave running jobs
-untouched.
+The model can also stop a running job it started (for example a temporary dev
+server) by calling:
+
+```typescript
+bash_cancel({ job_id: "bg_6f6bb444" })
+```
+
+In interactive TUI mode, argument completion on `/background` suggests `stop`
+and running `bg_<hex>` job ids with elapsed durations and single-line command
+previews. Stopping a job kills its process tree, updates the `background`
+status indicator, and confirms the stop without emitting `bash-job:notification`
+or waking the model. Missing arguments or unknown or finished job ids report an
+error and leave running jobs untouched.
 
 ## Settings
 
@@ -145,10 +158,12 @@ A missing file uses defaults.
   still in its foreground window, like the built-in tool; a job that already
   moved to the background is independent of the turn and survives Esc. Aborted
   jobs never send a completion notification.
-- **Print and JSON mode have no background execution.** `background: true` is
-  rejected and commands never auto-background, because the session ends when
-  the turn ends and would kill the job; commands block as with the built-in
-  tool. RPC and interactive sessions are unaffected.
+- **Print and JSON mode have no background execution.** `background: true` and
+  direct `bash_cancel` calls are rejected, `bash_cancel` is hidden from model
+  declarations via `prepareLoadout` (preserving tool selection if the session
+  resumes in `tui` or `rpc`), and commands never auto-background, because the
+  session ends when the turn ends and would kill the job; commands block as with
+  the built-in tool. RPC and interactive sessions are unaffected.
 - **Session end kills jobs.** Quit, `/reload`, `/new`, resume, and fork all
   emit `session_shutdown`, which kills the session's remaining background jobs
   and appends a `killed: session ended` trailer to their logs. A subagent
@@ -166,18 +181,21 @@ A missing file uses defaults.
   process is already running at that point, and killing it would break the
   no-kill promise. `maxJobs` is therefore not a bound on concurrent
   processes; parallel foreground commands can exceed it as well.
-- **Stopping a job:** enter `/background stop <job-id>` in interactive (`tui`)
-  or `rpc` mode to kill that session-owned job's process tree (`SIGKILL` on
-  Unix, `taskkill /F /T` on Windows), append a `killed: stopped by user`
-  trailer to its log when open, and close the log without emitting
-  `bash-job:notification` or waking the model. There is no model-facing cancel
-  tool; ending the session still kills all remaining jobs.
+- **Stopping a job:** enter `/background stop <job-id>` or let the model call
+  `bash_cancel({ job_id })` in interactive (`tui`) or `rpc` mode to kill that
+  session-owned job's process tree (`SIGKILL` on Unix, `taskkill /F /T` on
+  Windows), wait for process and log cleanup, append a `killed: stopped by user`
+  or `killed: cancelled` trailer to its log when open, and close the log without
+  emitting `bash-job:notification` or waking the model. `bash_cancel` returns the
+  command summary, optional log path, and ANSI-stripped output tail. Ending the
+  session still kills all remaining jobs.
 - If several background jobs are running, each completion sends its own
   notification; Pi sees them queued in order.
-- The tool's `outputSchema` accepts the built-in foreground result or
+- `bash`'s `outputSchema` accepts the built-in foreground result or
   `{ job_id, log_path?, output }` for a command still running in the
-  background, where `output` holds what was captured before backgrounding.
-  Codemode scripts receive one of these objects.
+  background, where `output` holds what was captured before backgrounding;
+  `bash_cancel` declares `{ job_id, command, log_path?, output }`. Codemode
+  scripts receive these structured objects directly.
 - If another extension also replaces `bash`, the last one registered wins (Pi
   emits no warning). Do not combine this package with other `bash` overrides.
 

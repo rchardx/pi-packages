@@ -38,6 +38,10 @@ export interface JobRecord {
   readonly tail: TailBuffer;
   /** Last 256KB before log creation; released once the seed is written. */
   readonly seed: TailBuffer;
+  /** Resolves once the underlying shell execution settles after exit or abort. */
+  settled?: Promise<void>;
+  /** Reason recorded when the job was explicitly stopped before natural completion. */
+  stopReason?: string;
   state: JobState;
 }
 
@@ -141,12 +145,21 @@ export function createSessionJobs(
 
   function killRecord(job: JobRecord, reason: string): Promise<void> {
     // Mark first so the in-flight execution's settle handler skips the
-    // completion notification for a user- or session-initiated stop.
+    // completion notification for a user-, model-, or session-initiated stop.
     job.state = "ended";
+    job.stopReason = reason;
+    if (job.seed.bytes > 0) {
+      job.tail.append(job.seed.raw());
+      job.seed.clear();
+    }
     job.controller.abort();
-    return state
-      .appendLog(job, `\n[pi-background] job ${job.id} killed: ${reason}\n`)
-      .then(() => state.closeLog(job))
+    return Promise.allSettled([
+      job.settled ?? Promise.resolve(),
+      state
+        .appendLog(job, `\n[pi-background] job ${job.id} killed: ${reason}\n`)
+        .then(() => state.closeLog(job)),
+    ])
+      .then(() => {})
       .finally(() => {
         jobs.delete(job.id);
       });

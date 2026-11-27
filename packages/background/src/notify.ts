@@ -1,5 +1,17 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Box, Text, TruncatedText } from "@earendil-works/pi-tui";
+import type {
+  AgentToolResult,
+  KeybindingHints,
+  Theme,
+  ToolRenderResultOptions,
+} from "@earendil-works/pi-coding-agent";
+import {
+  Box,
+  Container,
+  Spacer,
+  stripTerminalSequences,
+  Text,
+  TruncatedText,
+} from "@earendil-works/pi-tui";
 import { stripAnsi } from "./ansi.ts";
 import { type JobRecord, LOG_OUTPUT_BYTES } from "./jobs.ts";
 import type { JobOutcome } from "./operations.ts";
@@ -21,6 +33,13 @@ export interface NotificationDetails {
   logPath?: string;
   tail: string;
   error?: string;
+}
+
+export interface CancelDetails {
+  jobId: string;
+  command: string;
+  logPath?: string;
+  tail: string;
 }
 
 export function formatDuration(ms: number): string {
@@ -136,4 +155,66 @@ export function renderNotification(
     if (details.tail) box.addChild(new Text(theme.fg("muted", details.tail), 0, 0));
   }
   return box;
+}
+
+function sanitizeDisplay(text: string): string {
+  return stripTerminalSequences(text)
+    .replace(/\r\n?/gu, "\n")
+    .replace(/[\p{Cc}]/gu, (character) =>
+      character === "\n" || character === "\t" ? character : "",
+    );
+}
+
+export function renderCancelCall(
+  args: Partial<{ job_id: string }> | undefined,
+  theme: Pick<Theme, "fg" | "bold">,
+) {
+  const id = typeof args?.job_id === "string" ? oneLine(sanitizeDisplay(args.job_id), 64) : "";
+  return new TruncatedText(
+    theme.fg("toolTitle", theme.bold("bash_cancel")) + (id ? `  ${theme.fg("muted", id)}` : ""),
+    0,
+    0,
+  );
+}
+
+export function renderCancelResult(
+  result: AgentToolResult<CancelDetails | undefined>,
+  { expanded }: ToolRenderResultOptions,
+  theme: Pick<Theme, "fg">,
+  context: Pick<KeybindingHints, "keyHint"> & {
+    isError: boolean;
+    durationMs: number | undefined;
+  },
+) {
+  if (context.isError || !result.details) {
+    const text = result.content
+      .flatMap((part) => (part.type === "text" ? [part.text] : []))
+      .join("\n");
+    return new Text(theme.fg("error", sanitizeDisplay(text)), 0, 0);
+  }
+  const { jobId, command, logPath, tail } = result.details;
+  const cleanCommand = sanitizeDisplay(command);
+  const cleanLogPath = logPath ? sanitizeDisplay(logPath) : "";
+  const cleanTail = sanitizeDisplay(tail);
+  const hasDetails = Boolean(cleanLogPath || cleanTail);
+  const parts = [
+    `Cancelled ${jobId}`,
+    ...(context.durationMs !== undefined ? [`${(context.durationMs / 1000).toFixed(1)}s`] : []),
+    cleanCommand,
+    ...(hasDetails
+      ? [context.keyHint("app.tools.expand", expanded ? "to collapse" : "to expand")]
+      : []),
+  ];
+  const headline = theme.fg("dim", parts.join(" · "));
+  if (!expanded) {
+    return new TruncatedText(headline, 0, 0);
+  }
+  const view = new Container();
+  view.addChild(new Text(headline, 0, 0));
+  if (cleanLogPath) view.addChild(new Text(theme.fg("dim", cleanLogPath), 0, 0));
+  if (cleanTail) {
+    view.addChild(new Spacer(1));
+    view.addChild(new Text(theme.fg("muted", cleanTail), 0, 0));
+  }
+  return view;
 }

@@ -320,7 +320,7 @@ test("workspace skills reference registered extension tools and valid role examp
     const referencedTools = new Set<string>();
     for (const match of skillMarkdown.matchAll(/`([^`\n]+)`/gu)) {
       for (const token of (match[1] ?? "").matchAll(
-        /\b(?:subagent(?:_[a-z]+)?|ask|web_[a-z]+)\b/gu,
+        /\b(?:subagent(?:_[a-z]+)?|ask|bash_cancel|web_[a-z]+)\b/gu,
       )) {
         referencedTools.add(token[0]);
       }
