@@ -83,6 +83,11 @@ const rejected: [string, string, string][] = [
     valid.replace("body layout\n- Keep", "body\n  layout\n\n- Keep"),
     "between 'Key changes:' bullets",
   ],
+  [
+    "blank before indented continuation and next bullet",
+    valid.replace("body layout\n- Keep", "body\n\n  layout\n- Keep"),
+    "between 'Key changes:' bullets",
+  ],
   ["breaking marker without rebuild", withSubject("feat!: replace config"), "'Rebuild:' section"],
   [
     "breaking footer without rebuild",

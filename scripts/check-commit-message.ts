@@ -80,7 +80,7 @@ function validateBullets(lines: string[]): string[] {
       continue;
     }
     if (!bulletSeen) return ["'Key changes:' must be followed by bullet lines"];
-    if (blankSinceBullet) break;
+    if (blankSinceBullet && !/^\s/u.test(line)) break;
   }
   return bulletSeen ? [] : ["'Key changes:' must include at least one bullet"];
 }

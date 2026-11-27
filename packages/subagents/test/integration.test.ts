@@ -3517,6 +3517,6 @@ test("virtual models delegate through reloadable extensions and fail fast when r
   t.after(() => failedExecution.cancel());
   await assert.rejects(
     failedExecution.ready,
-    /Model "auto" not found|Child environment unavailable/u,
+    /Model "auto" not found|Child environment unavailable: model mock\/auto; missing tools: none\./u,
   );
 });
