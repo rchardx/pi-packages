@@ -10,7 +10,7 @@ installable Pi bundle.
 | --- | --- | --- | --- | --- | --- |
 | `@rchardx/pi-ask` | `packages/ask/index.ts` | `ask` tool | None | `tui`, `rpc` (hidden in `print`/`json`) | [ask/README.md](ask/README.md) |
 | `@rchardx/pi-web-access` | `packages/web-access/index.ts` | `web_fetch`, `web_search` tools | `~/.pi/agent/web-access.json` (required to enable tools) | `tui`, `rpc`, `print`, `json` | [web-access/README.md](web-access/README.md) |
-| `@rchardx/pi-background` | `packages/background/index.ts` | `bash` tool override, `/background` | `~/.pi/agent/background.json` | Backgrounding in `tui`/`rpc`; foreground-only in `print`/`json` | [background/README.md](background/README.md) |
+| `@rchardx/pi-background` | `packages/background/index.ts` | `bash` tool override, `bash_cancel`, `/background` | `~/.pi/agent/background.json` | Backgrounding and `bash_cancel` in `tui`/`rpc`; foreground-only in `print`/`json` | [background/README.md](background/README.md) |
 | `@rchardx/pi-subagents` | `packages/subagents/index.ts` | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | `~/.pi/agent/subagents.json` | `tui`, `rpc` on Linux/macOS (hidden in `print`/`json`) | [subagents/README.md](subagents/README.md) |
 | `@rchardx/pi-statusline` | `packages/statusline/index.ts` | Custom 2-line footer | None | `tui` only | [statusline/README.md](statusline/README.md) |
 | `@rchardx/pi-skills` | `packages/skills/skills/` | `deep-research`, `/skill:review-loop` | Uses `~/.pi/agent/subagents.json` for `review-loop` | Depends on skill (all modes for `deep-research`; `tui`/`rpc` for `review-loop`) | [skills/README.md](skills/README.md) |
@@ -32,8 +32,8 @@ All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
 - **[background](background/README.md):** replaces `bash` with a same-named
   override that supports explicit `background: true` and automatic backgrounding
   after a configurable threshold (default `120s` when no explicit `timeout` is
-  set), logging up to `8MiB` of raw
-  command output per job (plus truncation and lifecycle markers) and delivering
+  set), adds `bash_cancel` for stopping running jobs, logs up to `8MiB` of raw
+  command output per job (plus truncation and lifecycle markers), and delivers
   collapsible completion notifications.
 - **[subagents](subagents/README.md):** delegates tasks to child Pi CLI
   processes with fresh context, configurable limits and roles, cancellation,

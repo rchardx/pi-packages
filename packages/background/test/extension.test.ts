@@ -3,7 +3,9 @@ import childProcess from "node:child_process";
 import { EventEmitter, once } from "node:events";
 import fs from "node:fs";
 import fsPromises, { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { syncBuiltinESMExports } from "node:module";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
@@ -92,11 +94,15 @@ async function loadSession(
   });
   assert.deepEqual(session.getActiveToolNames(), ["bash"]);
   const tool = session.agent.state.tools.find((candidate) => candidate.name === "bash");
+  const cancelTool = session.agent.state.tools.find(
+    (candidate) => candidate.name === "bash_cancel",
+  );
   assert.ok(tool);
   return {
     session,
     directory,
     tool,
+    cancelTool,
     notices,
     notifications,
     statuses,
@@ -907,4 +913,428 @@ test("stopping a job during openLog reports an error with captured output instea
   assert.equal(streamMock.mock.callCount(), 0);
   assert.equal(statuses.has("background"), false);
   assert.equal(notificationMessages(session).length, 0);
+});
+
+async function loadDefaultToolsSession(
+  t: TestContext,
+  options: {
+    directory?: string;
+    mode?: "tui" | "rpc" | "print" | "json";
+    sessionManager?: SessionManager;
+    modelsJson?: string;
+    extraExtensionPaths?: string[];
+  } = {},
+) {
+  const directory = options.directory ?? (await mkdtemp(join(tmpdir(), "pi-background-default-")));
+  if (!options.directory) {
+    t.after(() => rm(directory, { recursive: true, force: true }));
+  }
+  const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOffline = process.env.PI_OFFLINE;
+  process.env.PI_CODING_AGENT_DIR = directory;
+  process.env.PI_OFFLINE = "1";
+  t.after(() => {
+    if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+    if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+    else process.env.PI_OFFLINE = previousOffline;
+  });
+  if (options.modelsJson) {
+    await writeFile(join(directory, "models.json"), options.modelsJson);
+  }
+  const settingsManager = SettingsManager.inMemory();
+  const loader = new DefaultResourceLoader({
+    cwd: directory,
+    agentDir: directory,
+    settingsManager,
+    additionalExtensionPaths: [
+      fileURLToPath(new URL("../", import.meta.url)),
+      ...(options.extraExtensionPaths ?? []),
+    ],
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
+  });
+  await loader.reload();
+  assert.deepEqual(loader.getExtensions().errors, []);
+  const modelRuntime = await ModelRuntime.create({
+    authPath: join(directory, "auth.json"),
+    modelsPath: join(directory, "models.json"),
+    modelsStorePath: join(directory, "catalog.json"),
+    refreshOnCreate: false,
+    allowModelNetwork: false,
+  });
+  const model = options.modelsJson ? modelRuntime.getModel("mock", "test-model") : undefined;
+  const { session } = await createAgentSession({
+    cwd: directory,
+    agentDir: directory,
+    resourceLoader: loader,
+    modelRuntime,
+    ...(model ? { model } : {}),
+    settingsManager,
+    sessionManager: options.sessionManager ?? SessionManager.inMemory(directory),
+  });
+  t.after(async () => {
+    await session.abort();
+    await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+    session.dispose();
+  });
+  const notices: string[] = [];
+  const statuses = new Map<string, string>();
+  await session.bindExtensions({
+    mode: options.mode ?? "tui",
+    uiContext: {
+      ...session.extensionRunner.createContext().ui,
+      notify: (message) => {
+        notices.push(message);
+      },
+      setStatus: (key, text) => {
+        if (text === undefined) statuses.delete(key);
+        else statuses.set(key, text);
+      },
+    },
+  });
+  const bashTool = session.agent.state.tools.find((candidate) => candidate.name === "bash");
+  const cancelTool = session.agent.state.tools.find(
+    (candidate) => candidate.name === "bash_cancel",
+  );
+  assert.ok(bashTool && cancelTool);
+  return { session, directory, bashTool, cancelTool, notices, statuses };
+}
+
+for (const mode of ["tui", "rpc"] as const) {
+  test(`bash_cancel kills the target process tree, waits for cleanup, and preserves siblings in ${mode}`, async (t) => {
+    const { session, directory, bashTool, cancelTool, statuses } = await loadDefaultToolsSession(
+      t,
+      { mode },
+    );
+    await writeFile(join(directory, "background.json"), JSON.stringify({ maxJobs: 2 }));
+
+    // Probe a free local TCP port so we verify the killed child releases resources before bash_cancel returns.
+    const probe = net.createServer();
+    await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+    const port = (probe.address() as net.AddressInfo).port;
+    await new Promise<void>((resolve, reject) =>
+      probe.close((err) => (err ? reject(err) : resolve())),
+    );
+
+    const serverScript = nodeScript(
+      `const http = require('node:http');
+       const srv = http.createServer((_req, res) => res.end('ok'));
+       srv.listen(${port}, '127.0.0.1', () => console.log('listening:${port}'));`.replaceAll(
+        "\n",
+        " ",
+      ),
+    );
+    const siblingScript = nodeScript(
+      `const fs = require('node:fs');
+       const finish = () => {
+         if (!fs.existsSync('finish-sibling')) return;
+         watcher.close();
+         console.log('sibling done');
+         process.exitCode = 0;
+       };
+       const watcher = fs.watch('.', finish);
+       finish();`.replaceAll("\n", " "),
+    );
+
+    const started = await bashTool.execute("srv-1", { command: serverScript, background: true });
+    const sibling = await bashTool.execute("sib-1", { command: siblingScript, background: true });
+    const jobId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(started))?.[1];
+    const siblingId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(sibling))?.[1];
+    const logPath = /Log: (\S+)/u.exec(textOf(started))?.[1];
+    assert.ok(jobId && siblingId && logPath);
+    assert.equal(statuses.get("background"), "background: 2 running");
+
+    await waitFor(async () =>
+      (await readFile(logPath, "utf8").catch(() => "")).includes(`listening:${port}`)
+        ? true
+        : undefined,
+    );
+
+    const cancelled = await cancelTool.execute("cancel-1", { job_id: `  ${jobId}  ` });
+    assert.equal(statuses.get("background"), "background: 1 running");
+    assert.ok(cancelTool.outputSchema);
+    assert.equal(Check(cancelTool.outputSchema, cancelled.structuredContent), true);
+    assert.equal((cancelled.structuredContent as { job_id: string }).job_id, jobId);
+    assert.equal((cancelled.structuredContent as { log_path?: string }).log_path, logPath);
+    assert.equal((cancelled.structuredContent as { output: string }).output, `listening:${port}`);
+    assert.match(textOf(cancelled), new RegExp(`^Cancelled background job ${jobId}: `, "u"));
+    assert.match(
+      textOf(cancelled),
+      new RegExp(`Log: ${logPath.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}`, "u"),
+    );
+    assert.match(textOf(cancelled), new RegExp(`Last output:\nlistening:${port}$`, "u"));
+    assert.match(
+      await readFile(logPath, "utf8"),
+      new RegExp(
+        `^listening:${port}\\n\\n\\[pi-background\\] job ${jobId} killed: cancelled\\n$`,
+        "u",
+      ),
+    );
+
+    // Port and maxJobs capacity are released before bash_cancel resolves.
+    const rebound = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      rebound.once("error", reject);
+      rebound.listen(port, "127.0.0.1", resolve);
+    });
+    await new Promise<void>((resolve, reject) =>
+      rebound.close((err) => (err ? reject(err) : resolve())),
+    );
+    const replacement = await bashTool.execute("rep-1", {
+      command: nodeScript("setTimeout(() => {}, 5000)"),
+      background: true,
+    });
+    const replacementId = /Started background job (bg_[0-9a-f]{8})\./u.exec(
+      textOf(replacement),
+    )?.[1];
+    assert.ok(replacementId);
+    await cancelTool.execute("cancel-rep", { job_id: replacementId });
+
+    // Sibling completes normally; cancelled jobs never emit bash-job:notification.
+    await writeFile(join(directory, "finish-sibling"), "done");
+    const completion = await waitFor(() => notificationMessages(session)[0]);
+    assert.match(completion.content, new RegExp(`${siblingId} exited with code 0`, "u"));
+    assert.equal(notificationMessages(session).length, 1);
+    assert.equal(statuses.has("background"), false);
+  });
+}
+
+test("bash_cancel rejects blank, unknown, finished, duplicate, and pre-aborted calls without side effects", async (t) => {
+  const { session, bashTool, cancelTool, statuses } = await loadDefaultToolsSession(t, {
+    mode: "tui",
+  });
+
+  // Empty session
+  await assert.rejects(
+    cancelTool.execute("c-empty-session", { job_id: "bg_00000000" }),
+    /^Error: No running background job bg_00000000 in this session\.$/u,
+  );
+  await assert.rejects(
+    cancelTool.execute("c-blank", { job_id: "   " }),
+    /^Error: No running background job \(empty\) in this session\.$/u,
+  );
+
+  const running = await bashTool.execute("keep", {
+    command: nodeScript("setTimeout(() => {}, 30000)"),
+    background: true,
+  });
+  const runningId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(running))?.[1];
+  const fast = await bashTool.execute("fast", {
+    command: nodeScript('setTimeout(() => console.log("done"), 40)'),
+    background: true,
+  });
+  const finishedId = /Started background job (bg_[0-9a-f]{8})\./u.exec(textOf(fast))?.[1];
+  assert.ok(runningId && finishedId);
+  await waitFor(() =>
+    notificationMessages(session).find((msg) => msg.content.includes(finishedId)),
+  );
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    cancelTool.execute("c-aborted", { job_id: runningId }, preAborted.signal),
+    /abort/iu,
+  );
+  assert.equal(statuses.get("background"), "background: 1 running");
+
+  await assert.rejects(
+    cancelTool.execute("c-finished", { job_id: finishedId }),
+    new RegExp(`^Error: No running background job ${finishedId} in this session\\.$`, "u"),
+  );
+  assert.equal(statuses.get("background"), "background: 1 running");
+
+  await cancelTool.execute("c-valid", { job_id: runningId });
+  assert.equal(statuses.has("background"), false);
+  await assert.rejects(
+    cancelTool.execute("c-dup", { job_id: runningId }),
+    new RegExp(`^Error: No running background job ${runningId} in this session\\.$`, "u"),
+  );
+});
+
+test("cancelling a job via bash_cancel during openLog reports cancelled status without opening a stream", async (t) => {
+  const { session, directory, bashTool, cancelTool, notices, statuses } =
+    await loadDefaultToolsSession(t, { mode: "rpc" });
+
+  const gate = new EventEmitter();
+  const entered = once(gate, "entered");
+  const released = once(gate, "release");
+  const mkdir = fsPromises.mkdir;
+  const mkdirMock = t.mock.method(
+    fsPromises,
+    "mkdir",
+    async (...args: Parameters<typeof mkdir>) => {
+      if (String(args[0]).startsWith(join(directory, "bash-jobs"))) {
+        gate.emit("entered");
+        await released;
+      }
+      return mkdir(...args);
+    },
+  );
+  const streamMock = t.mock.method(fs, "createWriteStream");
+  syncBuiltinESMExports();
+  t.after(() => {
+    gate.emit("release");
+    mkdirMock.mock.restore();
+    streamMock.mock.restore();
+    syncBuiltinESMExports();
+  });
+
+  const startPromise = bashTool.execute("cancel-during-openlog", {
+    command: nodeScript("setTimeout(() => {}, 30000)"),
+    background: true,
+  });
+  await entered;
+  await session.prompt("/background");
+  const jobId = /(bg_[0-9a-f]{8})\s+running/u.exec(notices.at(-1) ?? "")?.[1];
+  assert.ok(jobId);
+
+  const cancelled = await cancelTool.execute("cancel-openlog", { job_id: jobId });
+  assert.match(textOf(cancelled), new RegExp(`^Cancelled background job ${jobId}: `, "u"));
+  assert.equal(statuses.has("background"), false);
+
+  gate.emit("release");
+  const started = await startPromise;
+  await setImmediate();
+  assert.equal(started.isError, true);
+  assert.equal(started.structuredContent, undefined);
+  assert.equal(textOf(started), `Background job ${jobId} was cancelled.`);
+  assert.equal(streamMock.mock.callCount(), 0);
+  assert.equal(notificationMessages(session).length, 0);
+});
+
+test("print and json modes hide bash_cancel via prepareLoadout, preserve resume selection, and hide from child subagents", async (t) => {
+  const previousSubagentsChild = process.env.PI_SUBAGENTS_CHILD;
+  delete process.env.PI_SUBAGENTS_CHILD;
+  t.after(() => {
+    if (previousSubagentsChild === undefined) delete process.env.PI_SUBAGENTS_CHILD;
+    else process.env.PI_SUBAGENTS_CHILD = previousSubagentsChild;
+  });
+
+  const requests: Record<string, unknown>[] = [];
+  const server = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    requests.push(JSON.parse(body) as Record<string, unknown>);
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const chunk = {
+      id: "mock",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "test-model",
+      choices: [{ index: 0, delta: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+    };
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(
+    () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      ),
+  );
+  const port = (server.address() as net.AddressInfo).port;
+  const modelsJson = JSON.stringify({
+    providers: {
+      mock: {
+        baseUrl: `http://127.0.0.1:${port}/v1`,
+        api: "openai-completions",
+        apiKey: "test-only",
+        models: [
+          {
+            id: "test-model",
+            name: "Test",
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 32000,
+            maxTokens: 1000,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          },
+        ],
+      },
+    },
+  });
+  const declaredTools = (payload: Record<string, unknown>): string[] => {
+    const tools = Array.isArray(payload.tools) ? payload.tools : [];
+    return tools.flatMap((entry) => {
+      const fn = (entry as { function?: { name?: unknown } }).function;
+      return typeof fn?.name === "string" ? [fn.name] : [];
+    });
+  };
+
+  const directory = await mkdtemp(join(tmpdir(), "pi-background-modes-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const sessionManager = SessionManager.create(directory, directory);
+
+  // 1. tui mode declares bash_cancel
+  const step1 = await loadDefaultToolsSession(t, {
+    directory,
+    mode: "tui",
+    sessionManager,
+    modelsJson,
+  });
+  assert.ok(step1.session.getActiveToolNames().includes("bash_cancel"));
+  assert.match(step1.session.systemPrompt, /- bash_cancel:/u);
+  await step1.session.prompt("Start in tui");
+  assert.ok(declaredTools(requests[0] ?? {}).includes("bash_cancel"));
+  const sessionFile = sessionManager.getSessionFile();
+  assert.ok(sessionFile);
+
+  // 2. print mode hides bash_cancel and rejects direct execution, keeping selection on disk
+  const step2 = await loadDefaultToolsSession(t, {
+    directory,
+    mode: "print",
+    sessionManager: SessionManager.open(sessionFile, directory),
+    modelsJson,
+  });
+  assert.ok(step2.session.getActiveToolNames().includes("bash_cancel"));
+  assert.doesNotMatch(step2.session.systemPrompt, /- bash_cancel:/u);
+  await step2.session.prompt("Continue in print");
+  assert.ok(!declaredTools(requests[1] ?? {}).includes("bash_cancel"));
+  await assert.rejects(
+    step2.cancelTool.execute("direct-print", { job_id: "bg_00000000" }),
+    /unavailable in print mode/u,
+  );
+
+  // 3. Resuming back in tui restores bash_cancel
+  const step3 = await loadDefaultToolsSession(t, {
+    directory,
+    mode: "tui",
+    sessionManager: SessionManager.open(sessionFile, directory),
+    modelsJson,
+  });
+  assert.match(step3.session.systemPrompt, /- bash_cancel:/u);
+  await step3.session.prompt("Back in tui");
+  assert.ok(declaredTools(requests[2] ?? {}).includes("bash_cancel"));
+
+  // 4. Delegated subagent in json mode starts cleanly with bash_cancel in parent loadout while hiding it in child
+  const subagentsRoot = fileURLToPath(new URL("../../subagents", import.meta.url));
+  const step4 = await loadDefaultToolsSession(t, {
+    mode: "tui",
+    modelsJson,
+    extraExtensionPaths: [subagentsRoot],
+  });
+  const completion = new Promise<string>((resolve) => {
+    const unsubscribe = step4.session.subscribe((event) => {
+      if (
+        event.type === "message_end" &&
+        event.message.role === "custom" &&
+        event.message.customType === "subagent:result"
+      ) {
+        unsubscribe();
+        resolve(JSON.stringify(event.message));
+      }
+    });
+  });
+  const subagentTool = step4.session.agent.state.tools.find((tool) => tool.name === "subagent");
+  assert.ok(subagentTool);
+  await subagentTool.execute("delegate-bg", { task: "Verify child tools." });
+  assert.match(await completion, /"status":"completed"/u);
+  assert.ok(declaredTools(requests[3] ?? {}).includes("bash"));
+  assert.ok(!declaredTools(requests[3] ?? {}).includes("bash_cancel"));
 });

@@ -19,15 +19,20 @@ import {
 } from "./src/jobs.ts";
 import {
   buildNotification,
+  type CancelDetails,
   formatDuration,
   NOTIFICATION_TYPE,
   type JobOutcome,
   type NotificationDetails,
   oneLine,
+  renderCancelCall,
+  renderCancelResult,
   renderNotification,
   tailText,
 } from "./src/notify.ts";
 import { createTeeOperations } from "./src/operations.ts";
+
+const CANCEL_TOOL_NAME = "bash_cancel";
 
 const parameters = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),
@@ -44,11 +49,27 @@ const parameters = Type.Object({
   ),
 });
 
+const cancelParameters = Type.Object({
+  job_id: Type.String({
+    description: "Background job ID returned by bash (bg_<8 hex chars>)",
+  }),
+});
+
 /** Structured result of a command that is still running as a background job. */
 const backgroundOutputSchema = Type.Object({
   job_id: Type.String(),
   log_path: Type.Optional(Type.String()),
   output: Type.String({ description: "Output captured before the job moved to the background" }),
+});
+
+/** Structured result of cancelling a running background job. */
+const bashCancelOutputSchema = Type.Object({
+  job_id: Type.String(),
+  command: Type.String(),
+  log_path: Type.Optional(Type.String()),
+  output: Type.String({
+    description: "Recent output tail captured before the job was cancelled",
+  }),
 });
 
 function sleep(ms: number): { promise: Promise<void>; cancel: () => void } {
@@ -103,6 +124,7 @@ function completeBackgroundArgs(
 export default function background(pi: ExtensionAPI) {
   // Pi creates a new extension instance for each replacement session.
   let current: SessionJobs | undefined;
+  let persistentModeAvailable = false;
   // Renderers, prompt metadata, and sampling config come from the built-in
   // definition; only the description, schema, and execute behavior differ.
   const builtin = createBashToolDefinition(process.cwd(), {});
@@ -113,6 +135,13 @@ export default function background(pi: ExtensionAPI) {
   }
 
   pi.on("session_start", (_event, ctx) => {
+    persistentModeAvailable = backgroundAllowed(ctx);
+    // createAgentSession evaluates prepareLoadout before bindExtensions sets ctx.mode;
+    // re-apply active tools so session.systemPrompt and before_agent_start reflect the bound mode.
+    const active = pi.getActiveTools();
+    if (active.includes(CANCEL_TOOL_NAME)) {
+      pi.setActiveTools(active);
+    }
     const session = sessionJobs(ctx);
     updateStatus(ctx, session);
     void pruneOldLogs(undefined, undefined, undefined, session.sessionId).catch(() => {});
@@ -310,6 +339,10 @@ export default function background(pi: ExtensionAPI) {
           : undefined,
         ctx,
       );
+      job.settled = execPromise.then(
+        () => {},
+        () => {},
+      );
 
       const thresholdMs = background === true ? 0 : config.thresholdSeconds * 1000;
       const timer = sleep(Math.max(thresholdMs, 0));
@@ -349,7 +382,9 @@ export default function background(pi: ExtensionAPI) {
       if (job.state !== "running") {
         const status = session.shuttingDown
           ? `Background job ${job.id} was stopped because the session ended.`
-          : `Background job ${job.id} was stopped by user.`;
+          : job.stopReason === "cancelled"
+            ? `Background job ${job.id} was cancelled.`
+            : `Background job ${job.id} was stopped by user.`;
         return {
           content: [{ type: "text", text: tail ? `${tail}\n\n${status}` : status }],
           details: undefined,
@@ -392,6 +427,65 @@ export default function background(pi: ExtensionAPI) {
         structuredContent: {
           job_id: job.id,
           ...(job.logPath ? { log_path: job.logPath } : {}),
+          output: tail,
+        },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: CANCEL_TOOL_NAME,
+    label: CANCEL_TOOL_NAME,
+    description:
+      "Stop a running background bash job owned by this session and wait for cleanup. " +
+      "Does not emit a completion notification.",
+    promptSnippet: "Stop a running background bash job owned by this session",
+    parameters: cancelParameters,
+    outputSchema: bashCancelOutputSchema,
+    prepareLoadout: () =>
+      persistentModeAvailable ? undefined : { hiddenDeclarations: [CANCEL_TOOL_NAME] },
+    renderCall: renderCancelCall,
+    renderResult: renderCancelResult,
+    async execute(_toolCallId, { job_id }, signal, _onUpdate, ctx) {
+      if (!backgroundAllowed(ctx)) {
+        throw new Error(
+          `Background execution is unavailable in ${ctx.mode} mode: the session ` +
+            "ends when the turn ends, so no background jobs run.",
+        );
+      }
+      signal?.throwIfAborted();
+      const trimmedId = job_id.trim();
+      const displayId = oneLine(trimmedId, 64) || "(empty)";
+      const session = current;
+      if (!trimmedId || !session) {
+        throw new Error(`No running background job ${displayId} in this session.`);
+      }
+      const stopped = await session.stopJob(trimmedId, "cancelled");
+      if (!stopped) {
+        throw new Error(`No running background job ${displayId} in this session.`);
+      }
+      if (!session.shuttingDown) {
+        updateStatus(ctx, session);
+      }
+      const command = oneLine(stopped.command);
+      const tail = tailText(stopped.tail.text());
+      const details: CancelDetails = {
+        jobId: stopped.id,
+        command,
+        tail,
+        ...(stopped.logPath ? { logPath: stopped.logPath } : {}),
+      };
+      const text =
+        `Cancelled background job ${stopped.id}: ${command}` +
+        (stopped.logPath ? `\nLog: ${stopped.logPath}` : "") +
+        (tail ? `\n\nLast output:\n${tail}` : "");
+      return {
+        content: [{ type: "text", text }],
+        details,
+        structuredContent: {
+          job_id: stopped.id,
+          command,
+          ...(stopped.logPath ? { log_path: stopped.logPath } : {}),
           output: tail,
         },
       };

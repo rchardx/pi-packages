@@ -22,7 +22,7 @@ is not an installable Pi bundle.
 | --- | --- | --- |
 | [ask](packages/ask/README.md) | `ask` | Structured 1–4 question multiple-choice user clarification in TUI and RPC sessions |
 | [web-access](packages/web-access/README.md) | `web_fetch`, `web_search` | Opt-in hosted web search (with domain/date filters) and page or objective-excerpt fetching across Exa, Parallel, and DeepSeek |
-| [background](packages/background/README.md) | `bash` (override), `/background` | Background execution for long `bash` commands with bounded logs and completion notifications |
+| [background](packages/background/README.md) | `bash` (override), `bash_cancel`, `/background` | Background execution and cancellation for long `bash` commands with bounded logs and completion notifications |
 | [subagents](packages/subagents/README.md) | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | Session-owned child Pi agents with fresh context, role presets, and live parent-child messaging |
 | [statusline](packages/statusline/README.md) | Interactive TUI footer | Fixed two-line TUI footer with inline `subagents` and `background` statuses above model, context, cost, and token stats |
 | [skills](packages/skills/README.md) | `deep-research`, `/skill:review-loop` | Zero-runtime-dependency workflow skills (`deep-research` for evidence-backed technical research and `review-loop` for multi-round cross-model code review) |
