@@ -148,6 +148,10 @@ export function createSessionJobs(
     // completion notification for a user-, model-, or session-initiated stop.
     job.state = "ended";
     job.stopReason = reason;
+    if (job.seed.bytes > 0) {
+      job.tail.append(job.seed.raw());
+      job.seed.clear();
+    }
     job.controller.abort();
     return Promise.allSettled([
       job.settled ?? Promise.resolve(),

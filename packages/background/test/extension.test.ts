@@ -1155,7 +1155,7 @@ test("bash_cancel rejects blank, unknown, finished, duplicate, and pre-aborted c
   );
 });
 
-test("cancelling a job via bash_cancel during openLog reports cancelled status without opening a stream", async (t) => {
+test("cancelling a job via bash_cancel during openLog preserves seed output in both results without opening a stream", async (t) => {
   const { session, directory, bashTool, cancelTool, notices, statuses } =
     await loadDefaultToolsSession(t, { mode: "rpc" });
 
@@ -1174,26 +1174,40 @@ test("cancelling a job via bash_cancel during openLog reports cancelled status w
       return mkdir(...args);
     },
   );
+  let captured = "";
+  const spawn = childProcess.spawn;
+  const spawnMock = t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+    const child = spawn(...args);
+    child.stdout?.on("data", (chunk: Buffer) => {
+      captured += chunk.toString("utf8");
+    });
+    return child;
+  });
   const streamMock = t.mock.method(fs, "createWriteStream");
   syncBuiltinESMExports();
   t.after(() => {
     gate.emit("release");
     mkdirMock.mock.restore();
+    spawnMock.mock.restore();
     streamMock.mock.restore();
     syncBuiltinESMExports();
   });
 
   const startPromise = bashTool.execute("cancel-during-openlog", {
-    command: nodeScript("setTimeout(() => {}, 30000)"),
+    command: nodeScript('console.log("seed-before-cancel"); setTimeout(() => {}, 30000)'),
     background: true,
   });
   await entered;
+  await waitFor(() => (captured.includes("seed-before-cancel") ? true : undefined));
+  await setImmediate();
   await session.prompt("/background");
   const jobId = /(bg_[0-9a-f]{8})\s+running/u.exec(notices.at(-1) ?? "")?.[1];
   assert.ok(jobId);
 
   const cancelled = await cancelTool.execute("cancel-openlog", { job_id: jobId });
   assert.match(textOf(cancelled), new RegExp(`^Cancelled background job ${jobId}: `, "u"));
+  assert.match(textOf(cancelled), /\n\nLast output:\nseed-before-cancel$/u);
+  assert.equal((cancelled.structuredContent as { output: string }).output, "seed-before-cancel");
   assert.equal(statuses.has("background"), false);
 
   gate.emit("release");
@@ -1201,7 +1215,7 @@ test("cancelling a job via bash_cancel during openLog reports cancelled status w
   await setImmediate();
   assert.equal(started.isError, true);
   assert.equal(started.structuredContent, undefined);
-  assert.equal(textOf(started), `Background job ${jobId} was cancelled.`);
+  assert.equal(textOf(started), `seed-before-cancel\n\nBackground job ${jobId} was cancelled.`);
   assert.equal(streamMock.mock.callCount(), 0);
   assert.equal(notificationMessages(session).length, 0);
 });
