@@ -334,6 +334,5 @@ test("workspace skills reference registered extension tools and valid role examp
   const jsonMatch = /```json\n([\s\S]*?)\n```/u.exec(skillsReadme);
   assert.ok(jsonMatch?.[1], "Expected subagents.json example in packages/skills/README.md");
   const parsedConfig = parseSubagentsConfig(JSON.parse(jsonMatch[1]));
-  assert.ok(parsedConfig.roles.reviewer_a, "Expected reviewer_a in documented subagents.json");
-  assert.ok(parsedConfig.roles.reviewer_b, "Expected reviewer_b in documented subagents.json");
+  assert.ok(parsedConfig.roles.reviewer, "Expected reviewer in documented subagents.json");
 });

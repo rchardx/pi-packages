@@ -81,7 +81,7 @@ test("pack inspection rejects missing runtime files and accidental private files
 
 test("pack inspection accepts skill-only packages and rejects invalid skill paths or manifests", () => {
   const skillManifest = { pi: { skills: ["./skills"] } };
-  const files = ["skills/review-loop/SKILL.md", "package.json", "README.md", "LICENSE"];
+  const files = ["skills/review-and-resolve/SKILL.md", "package.json", "README.md", "LICENSE"];
   const output = (paths: string[], filename = "skills.tgz") =>
     JSON.stringify([{ filename, files: paths.map((path) => ({ path })) }]);
   assert.equal(inspectPack(output(files), skillManifest), "skills.tgz");
@@ -89,7 +89,7 @@ test("pack inspection accepts skill-only packages and rejects invalid skill path
     ".env",
     "test/skills.test.ts",
     "skills/BadName/SKILL.md",
-    "skills/review-loop/extra.txt",
+    "skills/review-and-resolve/extra.txt",
     "index.ts",
   ]) {
     assert.throws(

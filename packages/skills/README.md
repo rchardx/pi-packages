@@ -30,7 +30,7 @@ repository root is not an installable Pi bundle.
 | Skill | Surface | Summary |
 | --- | --- | --- |
 | [deep-research](skills/deep-research/SKILL.md) | `deep-research` / `/skill:deep-research` (model-invocable) | Read-only, evidence-backed technical research across local code and external primary sources, with optional parallel `subagents` fan-out, `web-access`, and `ask` clarification |
-| [review-loop](skills/review-loop/SKILL.md) | `/skill:review-loop` (`disable-model-invocation: true`) | Multi-round cross-model code review loop (`reviewer_a` + `reviewer_b`) with evidence-based triage, rebuttal, and re-verification until dual `CLEAR` |
+| [review-and-resolve](skills/review-and-resolve/SKILL.md) | `/skill:review-and-resolve` (`disable-model-invocation: true`) | Multi-round blind code review (`reviewer`) resolving findings through fixes or code-backed rebuttals until `CLEAR` |
 
 ### Optional companions for `deep-research`
 
@@ -42,36 +42,31 @@ repository root is not an installable Pi bundle.
 - [`@rchardx/pi-ask`](../ask/README.md) (optional, `tui`/`rpc`) for upfront
   scope clarification when a research question is ambiguous.
 
-### Prerequisites for `review-loop`
+### Prerequisites for `review-and-resolve`
 
 - [`@rchardx/pi-subagents`](../subagents/README.md) active in an interactive
   (`tui`) or `rpc` session.
 - [`@rchardx/pi-ask`](../ask/README.md) (optional) for escalating genuine design
   or contract trade-offs; falls back to a concise plain-text prompt when
   unavailable.
-- `reviewer_a` and `reviewer_b` configured on distinct models in
-  `~/.pi/agent/subagents.json` (honors `--agent-dir` and `PI_CODING_AGENT_DIR`):
+- `reviewer` configured in `~/.pi/agent/subagents.json` (honors `--agent-dir`
+  and `PI_CODING_AGENT_DIR`), preferably bound to a model family distinct from
+  your primary coding model:
 
 ```json
 {
   "roles": {
-    "reviewer_a": {
-      "description": "Independent code reviewer A",
+    "reviewer": {
+      "description": "Independent code reviewer",
       "provider": "openai",
       "model": "gpt-6.2-astra",
-      "thinking": "medium"
-    },
-    "reviewer_b": {
-      "description": "Independent code reviewer B",
-      "provider": "anthropic",
-      "model": "claude-fable-5-2",
       "thinking": "medium"
     }
   }
 }
 ```
 
-Reviewer roles intentionally omit `tools` restrictions so each reviewer stays
+The `reviewer` role intentionally omits `tools` restrictions so it stays
 flexible for deep codebase investigation and isolated `/tmp` reproductions;
 checkout preservation relies on natural-language instructions backed by the
 parent session's pre/post `git status` comparison rather than a hard tool

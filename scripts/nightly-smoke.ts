@@ -57,12 +57,14 @@ async function verifyInstalled(root: string): Promise<void> {
   );
   const loadedSkills = loader.getSkills();
   assert.deepEqual(loadedSkills.diagnostics, [], "Installed skills must load without diagnostics");
-  const reviewLoopSkill = loadedSkills.skills.find((skill) => skill.name === "review-loop");
-  assert.ok(reviewLoopSkill, "Pi must discover installed review-loop skill");
-  assert.equal(
-    reviewLoopSkill.filePath,
-    join(root, "node_modules", "@rchardx", "pi-skills", "skills", "review-loop", "SKILL.md"),
-  );
+  for (const skillName of ["deep-research", "review-and-resolve"]) {
+    const discovered = loadedSkills.skills.find((skill) => skill.name === skillName);
+    assert.ok(discovered, `Pi must discover installed ${skillName} skill`);
+    assert.equal(
+      discovered.filePath,
+      join(root, "node_modules", "@rchardx", "pi-skills", "skills", skillName, "SKILL.md"),
+    );
+  }
 
   const modelRuntime = await ModelRuntime.create({
     authPath: join(agentDir, "auth.json"),
