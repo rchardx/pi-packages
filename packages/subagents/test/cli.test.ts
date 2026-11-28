@@ -80,6 +80,16 @@ test("retains context/skill and tool exclusions without forwarding unrelated CLI
   );
 });
 
+test("strips --agent-dir values before parseArgs, matching Pi main() pre-parsing", () => {
+  const dashPrefixed = parentOptions(
+    ["--agent-dir", "-ne", "--agent-dir", "@profile", "-e", "./ext.ts", "--", "--agent-dir", "-ne"],
+    process.cwd(),
+  );
+  assert.equal(dashPrefixed.noExtensions, false);
+  assert.deepEqual(dashPrefixed.extensions, ["./ext.ts"]);
+  assert.deepEqual(dashPrefixed.flags, []);
+});
+
 test("forwards explicit prompt inputs once, keeping append order and fixing existing file paths", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "pi-subagents-cli-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

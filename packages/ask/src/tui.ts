@@ -53,6 +53,64 @@ function materializeAnswer(entry: QuestionState): QuestionAnswer {
   };
 }
 
+const SELECT_ACTIONS = [
+  "tui.select.cancel",
+  "tui.select.up",
+  "tui.select.down",
+  "tui.select.confirm",
+] as const;
+
+function isClaimedBySelect(keybindings: KeybindingsManager, data: string): boolean {
+  return SELECT_ACTIONS.some((action) => keybindings.matches(data, action));
+}
+
+function formatKeyPart(part: string): string {
+  return process.platform === "darwin" && part.toLowerCase() === "alt" ? "option" : part;
+}
+
+function bindingLabel(
+  keybindings: KeybindingsManager,
+  action:
+    | "tui.input.submit"
+    | "tui.select.confirm"
+    | "tui.select.cancel"
+    | "tui.select.up"
+    | "tui.select.down",
+): string | undefined {
+  const keys = keybindings.getKeys(action);
+  if (keys.length === 0) return undefined;
+  return keys.map((key) => key.split("+").map(formatKeyPart).join("+")).join("/");
+}
+
+function moveKeysLabel(keybindings: KeybindingsManager): string | undefined {
+  const up = keybindings.getKeys("tui.select.up");
+  const down = keybindings.getKeys("tui.select.down");
+  if (up.length === 1 && up[0] === "up" && down.length === 1 && down[0] === "down") {
+    return "↑↓ move";
+  }
+  const upLabel = bindingLabel(keybindings, "tui.select.up");
+  const downLabel = bindingLabel(keybindings, "tui.select.down");
+  if (upLabel && downLabel) return `${upLabel}/${downLabel} move`;
+  if (upLabel) return `${upLabel} up`;
+  if (downLabel) return `${downLabel} down`;
+  return undefined;
+}
+
+function tabSwitchLabel(keybindings: KeybindingsManager): string | undefined {
+  const tab = !isClaimedBySelect(keybindings, "\t");
+  const shiftTab = !isClaimedBySelect(keybindings, "\u001b[Z");
+  const left = !isClaimedBySelect(keybindings, "\u001b[D");
+  const right = !isClaimedBySelect(keybindings, "\u001b[C");
+  if (tab && shiftTab && left && right) return "Tab/←→";
+  const parts: string[] = [];
+  if (tab) parts.push("Tab");
+  if (shiftTab) parts.push("Shift+Tab");
+  if (left && right) parts.push("←→");
+  else if (left) parts.push("←");
+  else if (right) parts.push("→");
+  return parts.length > 0 ? parts.join("/") : undefined;
+}
+
 function pushPrefixedWrapped(
   lines: string[],
   prefix: string,
@@ -215,31 +273,29 @@ export function createAskComponent(
     refresh();
   }
 
+  function switchTabByInput(data: string): boolean {
+    if (!isMultiQuestion || isClaimedBySelect(keybindings, data)) return false;
+    if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
+      currentTab = (currentTab + 1) % totalTabs;
+      cursorIndex = 0;
+      refresh();
+      return true;
+    }
+    if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
+      currentTab = (currentTab - 1 + totalTabs) % totalTabs;
+      cursorIndex = 0;
+      refresh();
+      return true;
+    }
+    return false;
+  }
+
   function handleInput(data: string): void {
     if (finished) return;
     if (editingCustom) {
-      if (keybindings.matches(data, "tui.select.cancel")) {
-        input.onEscape?.();
-        return;
-      }
       input.handleInput(data);
-      refresh();
+      if (!finished) refresh();
       return;
-    }
-
-    if (isMultiQuestion) {
-      if (matchesKey(data, Key.tab) || matchesKey(data, Key.right)) {
-        currentTab = (currentTab + 1) % totalTabs;
-        cursorIndex = 0;
-        refresh();
-        return;
-      }
-      if (matchesKey(data, Key.shift("tab")) || matchesKey(data, Key.left)) {
-        currentTab = (currentTab - 1 + totalTabs) % totalTabs;
-        cursorIndex = 0;
-        refresh();
-        return;
-      }
     }
 
     if (keybindings.matches(data, "tui.select.cancel")) {
@@ -259,7 +315,9 @@ export function createAskComponent(
             refresh();
           }
         }
+        return;
       }
+      switchTabByInput(data);
       return;
     }
 
@@ -278,22 +336,6 @@ export function createAskComponent(
     if (keybindings.matches(data, "tui.select.down")) {
       cursorIndex = (cursorIndex + 1) % itemCount;
       refresh();
-      return;
-    }
-
-    if (question.multiSelect && matchesKey(data, Key.space)) {
-      if (cursorIndex < otherIndex) {
-        togglePresetOption(state, cursorIndex);
-      } else if (cursorIndex === otherIndex) {
-        if (state.customText) {
-          state.useCustom = !state.useCustom;
-          refresh();
-        } else {
-          enterCustomEditor(state);
-        }
-      } else if (cursorIndex === confirmIndex && isAnswered(state)) {
-        advanceAfterAnswer();
-      }
       return;
     }
 
@@ -321,13 +363,35 @@ export function createAskComponent(
       if (cursorIndex === confirmIndex && isAnswered(state)) {
         advanceAfterAnswer();
       }
+      return;
     }
+
+    if (question.multiSelect && matchesKey(data, Key.space)) {
+      if (cursorIndex < otherIndex) {
+        togglePresetOption(state, cursorIndex);
+      } else if (cursorIndex === otherIndex) {
+        if (state.customText) {
+          state.useCustom = !state.useCustom;
+          refresh();
+        } else {
+          enterCustomEditor(state);
+        }
+      } else if (cursorIndex === confirmIndex && isAnswered(state)) {
+        advanceAfterAnswer();
+      }
+      return;
+    }
+
+    switchTabByInput(data);
   }
 
   function render(width: number): string[] {
     const safeWidth = Math.max(1, width);
     if (cachedLines && cachedWidth === safeWidth) return cachedLines;
 
+    const confirmKey = bindingLabel(keybindings, "tui.select.confirm");
+    const cancelKey = bindingLabel(keybindings, "tui.select.cancel");
+    const tabKey = isMultiQuestion ? tabSwitchLabel(keybindings) : undefined;
     const lines: string[] = [];
     lines.push(theme.fg("border", "─".repeat(safeWidth)));
 
@@ -370,12 +434,24 @@ export function createAskComponent(
           safeWidth,
         );
       }
-      lines.push("");
-      const hint = allQuestionsAnswered()
-        ? theme.fg("success", "Enter submit") + theme.fg("dim", " · Tab/←→ review · Esc cancel")
-        : theme.fg("warning", "Enter jump to unanswered") +
-          theme.fg("dim", " · Tab/←→ navigate · Esc cancel");
-      pushPrefixedWrapped(lines, " ", hint, safeWidth);
+      const reviewPrimary = confirmKey
+        ? allQuestionsAnswered()
+          ? theme.fg("success", `${confirmKey} submit`)
+          : theme.fg("warning", `${confirmKey} jump to unanswered`)
+        : undefined;
+      const reviewTail = [
+        ...(tabKey ? [`${tabKey} ${allQuestionsAnswered() ? "review" : "navigate"}`] : []),
+        ...(cancelKey ? [`${cancelKey} cancel`] : []),
+      ];
+      if (reviewPrimary || reviewTail.length > 0) {
+        lines.push("");
+        const tailText = reviewTail.join(" · ");
+        const hint =
+          reviewPrimary && tailText
+            ? `${reviewPrimary}${theme.fg("dim", ` · ${tailText}`)}`
+            : (reviewPrimary ?? theme.fg("dim", tailText));
+        pushPrefixedWrapped(lines, " ", hint, safeWidth);
+      }
       lines.push(theme.fg("border", "─".repeat(safeWidth)));
       cachedWidth = safeWidth;
       cachedLines = lines;
@@ -434,6 +510,11 @@ export function createAskComponent(
     }
 
     if (editingCustom) {
+      const submitKey = bindingLabel(keybindings, "tui.input.submit");
+      const editParts = [
+        ...(submitKey ? [`${submitKey} save`] : []),
+        ...(cancelKey ? [`${cancelKey} back`] : []),
+      ];
       lines.push("");
       if (safeWidth > 1) {
         for (const inputLine of input.render(safeWidth - 1)) {
@@ -442,17 +523,34 @@ export function createAskComponent(
       } else {
         lines.push(...input.render(safeWidth));
       }
-      lines.push("");
-      pushPrefixedWrapped(lines, " ", theme.fg("dim", "Enter save · Esc back"), safeWidth);
+      if (editParts.length > 0) {
+        lines.push("");
+        pushPrefixedWrapped(lines, " ", theme.fg("dim", editParts.join(" · ")), safeWidth);
+      }
     } else {
-      lines.push("");
+      const moveLabel = moveKeysLabel(keybindings);
+      const spaceFree = !isClaimedBySelect(keybindings, " ");
+      const selectLabel = question.multiSelect
+        ? spaceFree && confirmKey
+          ? `Space/${confirmKey} toggle`
+          : spaceFree
+            ? "Space toggle"
+            : confirmKey
+              ? `${confirmKey} toggle`
+              : undefined
+        : confirmKey
+          ? `${confirmKey} select`
+          : undefined;
       const navParts = [
-        ...(isMultiQuestion ? ["Tab/←→ switch"] : []),
-        "↑↓ move",
-        ...(question.multiSelect ? ["Space/Enter toggle"] : ["Enter select"]),
-        "Esc cancel",
+        ...(tabKey ? [`${tabKey} switch`] : []),
+        ...(moveLabel ? [moveLabel] : []),
+        ...(selectLabel ? [selectLabel] : []),
+        ...(cancelKey ? [`${cancelKey} cancel`] : []),
       ];
-      pushPrefixedWrapped(lines, " ", theme.fg("dim", navParts.join(" · ")), safeWidth);
+      if (navParts.length > 0) {
+        lines.push("");
+        pushPrefixedWrapped(lines, " ", theme.fg("dim", navParts.join(" · ")), safeWidth);
+      }
     }
 
     lines.push(theme.fg("border", "─".repeat(safeWidth)));

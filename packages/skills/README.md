@@ -50,7 +50,7 @@ repository root is not an installable Pi bundle.
   or contract trade-offs; falls back to a concise plain-text prompt when
   unavailable.
 - `reviewer_a` and `reviewer_b` configured on distinct models in
-  `~/.pi/agent/subagents.json` (honors `PI_CODING_AGENT_DIR`):
+  `~/.pi/agent/subagents.json` (honors `--agent-dir` and `PI_CODING_AGENT_DIR`):
 
 ```json
 {
@@ -79,6 +79,6 @@ sandbox.
 
 ## Compatibility
 
-Developed against Pi `1.6.1` with Node `>=22.19.0`. Package discovery and skill
-loading have been verified on **Node 22.19.0 and Node 26.13.1 with Pi 1.6.1 on
+Developed against Pi `1.7.0` with Node `>=22.19.0`. Package discovery and skill
+loading have been verified on **Node 22.19.0 and Node 26.13.1 with Pi 1.7.0 on
 Linux**.

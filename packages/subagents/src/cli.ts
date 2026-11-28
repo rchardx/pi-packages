@@ -2,9 +2,27 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "@earendil-works/pi-coding-agent";
 
+function stripAgentDirArgs(argv: readonly string[]): string[] {
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === undefined) continue;
+    if (arg === "--") {
+      rest.push(...argv.slice(i));
+      break;
+    }
+    if (arg === "--agent-dir") {
+      i++;
+      continue;
+    }
+    rest.push(arg);
+  }
+  return rest;
+}
+
 /** Project only supported launch inputs, using Pi's parser (including its `--` boundary). */
 export function parentOptions(argv: string[], cwd: string) {
-  const args = parseArgs(argv);
+  const args = parseArgs(stripAgentDirArgs(argv));
   if (args.apiKey !== undefined) {
     throw new Error(
       "A command-line API-key override cannot be transferred safely. Configure model access in Pi before delegation.",

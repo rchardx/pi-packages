@@ -15,7 +15,8 @@ installable Pi bundle.
 | `@rchardx/pi-statusline` | `packages/statusline/index.ts` | Custom 2-line footer | None | `tui` only | [statusline/README.md](statusline/README.md) |
 | `@rchardx/pi-skills` | `packages/skills/skills/` | `deep-research`, `/skill:review-loop` | Uses `~/.pi/agent/subagents.json` for `review-loop` | Depends on skill (all modes for `deep-research`; `tui`/`rpc` for `review-loop`) | [skills/README.md](skills/README.md) |
 
-All user configuration paths honor `PI_CODING_AGENT_DIR` when set.
+All user configuration paths honor `--agent-dir` and `PI_CODING_AGENT_DIR` when
+set.
 
 ## Summaries
 

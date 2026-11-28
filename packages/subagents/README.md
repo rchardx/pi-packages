@@ -216,8 +216,9 @@ Parent CLI restrictions are retained: `-ne`/`--no-extensions`, `--no-mcp`,
 `-xt`/`--exclude-tools`. Under `-ne`, only explicit extension sources (plus the
 internal child lifecycle extension) load; tool metadata does not reopen discovery.
 `--no-mcp` also overrides an explicit `-e builtin:mcp`, following Pi's behavior.
-An inherited `PI_OFFLINE` remains effective. Pi's offline mode limits automatic
-network activity; it is not a network sandbox for arbitrary tools.
+An inherited `--agent-dir` / `PI_CODING_AGENT_DIR` and `PI_OFFLINE` remain
+effective. Pi's offline mode limits automatic network activity; it is not a
+network sandbox for arbitrary tools.
 
 The current provider/model and thinking level are selected explicitly unless
 overridden by a configured `role`. When a role overrides `provider` and `model`
@@ -326,10 +327,11 @@ background-shell extensions do not accidentally return before their commands fin
 
 No roles are built in by default; omit `role` to start a general-purpose child
 that inherits the parent's model and tools. Optional user configuration at
-`~/.pi/agent/subagents.json` is re-read on each `subagent` launch (and before
-parent runs to advertise active roles in a `<subagent_roles>` system-prompt
-section while `subagent` is active). A missing file uses defaults; invalid or
-unreadable configuration fails the `subagent` call before starting a child.
+`~/.pi/agent/subagents.json` (honors `--agent-dir` and `PI_CODING_AGENT_DIR`)
+is re-read on each `subagent` launch (and before parent runs to advertise active
+roles in a `<subagent_roles>` system-prompt section while `subagent` is active).
+A missing file uses defaults; invalid or unreadable configuration fails the
+`subagent` call before starting a child.
 
 ```json
 {
@@ -394,9 +396,9 @@ Completion delivery is attempted once, not persisted for replay.
 
 ## Compatibility
 
-Developed against Pi `1.6.1` with Node `>=22.19.0`. Package discovery, extension
+Developed against Pi `1.7.0` with Node `>=22.19.0`. Package discovery, extension
 loading, and tool execution (including print-mode rejection) have been verified
-on **Node 22.19.0 and Node 26.13.1 with Pi 1.6.1 on Linux**. The
+on **Node 22.19.0 and Node 26.13.1 with Pi 1.7.0 on Linux**. The
 process-group implementation also targets macOS, but macOS is not verified.
 Windows launches are rejected because process-tree cleanup is not implemented.
 

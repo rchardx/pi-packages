@@ -85,7 +85,7 @@ function fixture() {
     join(root, "package.json"),
     JSON.stringify({
       engines: { node: ">=22.19.0" },
-      devDependencies: { "@earendil-works/pi-coding-agent": "1.6.1" },
+      devDependencies: { "@earendil-works/pi-coding-agent": "1.7.0" },
     }),
   );
   writeFileSync(join(root, ".node-version"), "26.13.0\n");
@@ -272,7 +272,7 @@ function checkReleaseBody(body: string, expectedDate: string): void {
   assert.ok(body.includes(`| @rchardx/pi-ask | 1.0.0-nightly.42.g${sha} |`));
   assert.ok(body.includes(`| @rchardx/pi-background | 1.1.0-nightly.42.g${sha} |`));
   assert.ok(body.includes(">=22.19.0"));
-  assert.ok(body.includes("tested Pi: `1.6.1`"));
+  assert.ok(body.includes("tested Pi: `1.7.0`"));
 }
 
 test("existing release stages temporary draft, cuts over release and annotated tag, and sweeps stale drafts", async () => {

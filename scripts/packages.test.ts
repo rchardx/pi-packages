@@ -107,10 +107,7 @@ async function renderStartupBanner(
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   });
 
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({ packages: packageSources, enableInstallTelemetry: false }),
-  );
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: packageSources }));
 
   const runtime = await createAgentSessionRuntime(
     async ({ cwd: targetCwd, agentDir: targetAgentDir, sessionManager }) => {
@@ -279,7 +276,6 @@ test("workspace skills reference registered extension tools and valid role examp
     join(agentDir, "settings.json"),
     JSON.stringify({
       packages: packages.map((pkg) => pkg.root),
-      enableInstallTelemetry: false,
     }),
   );
 
