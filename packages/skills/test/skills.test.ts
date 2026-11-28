@@ -126,9 +126,9 @@ test("Pi discovers package skills cleanly without diagnostics", async (t: TestCo
 
   assert.deepEqual(loadedSkills.diagnostics, []);
   assert.deepEqual(loadedSkills.skills.map((skill) => skill.name).sort(), expectedDirs);
-  const reviewLoop = loadedSkills.skills.find((skill) => skill.name === "review-loop");
-  assert.ok(reviewLoop);
-  assert.equal(reviewLoop.disableModelInvocation, true);
+  const reviewAndResolve = loadedSkills.skills.find((skill) => skill.name === "review-and-resolve");
+  assert.ok(reviewAndResolve);
+  assert.equal(reviewAndResolve.disableModelInvocation, true);
 
   const deepResearch = loadedSkills.skills.find((skill) => skill.name === "deep-research");
   assert.ok(deepResearch);

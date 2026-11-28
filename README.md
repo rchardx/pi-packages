@@ -25,7 +25,7 @@ is not an installable Pi bundle.
 | [background](packages/background/README.md) | `bash` (override), `bash_cancel`, `/background` | Background execution and cancellation for long `bash` commands with bounded logs and completion notifications |
 | [subagents](packages/subagents/README.md) | `subagent`, `subagent_cancel`, `subagent_list`, `subagent_send`, `subagent_wait`, `/subagents` | Session-owned child Pi agents with fresh context, role presets, and live parent-child messaging |
 | [statusline](packages/statusline/README.md) | Interactive TUI footer | Fixed two-line TUI footer with inline `subagents` and `background` statuses above model, context, cost, and token stats |
-| [skills](packages/skills/README.md) | `deep-research`, `/skill:review-loop` | Zero-runtime-dependency workflow skills (`deep-research` for evidence-backed technical research and `review-loop` for multi-round cross-model code review) |
+| [skills](packages/skills/README.md) | `deep-research`, `/skill:review-and-resolve` | Zero-runtime-dependency workflow skills (`deep-research` for evidence-backed technical research and `review-and-resolve` for multi-round blind code review) |
 
 See [`packages/README.md`](packages/README.md) for package overviews and
 configuration files, and each package's `README.md` for full behavior, limits,
