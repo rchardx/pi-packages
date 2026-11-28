@@ -74,9 +74,11 @@ ask({
 - **Interactive (`tui`):** opens a keyboard-driven component via
   `ctx.ui.custom()` with OSC 7501 `blocked: { kind: "question" }` status,
   single-line `Input` with hardware cursor / CJK IME positioning for `Other…`,
-  and `Tab` / `Shift+Tab` / `←` / `→` tab navigation across multi-question
-  prompts before final review on `✓ Submit`. Pressing `Escape` cancels the
-  entire prompt (`cancelled: true`, `answers: []`).
+  remappable TUI keybindings (`tui.select.*` and `tui.input.submit`), and
+  `Tab` / `Shift+Tab` / `←` / `→` tab navigation across multi-question prompts
+  before final review on `✓ Submit`. Pressing `Escape` (or your configured
+  `tui.select.cancel` key) cancels the entire prompt (`cancelled: true`,
+  `answers: []`).
 - **RPC (`rpc`):** falls back to sequential `ctx.ui.select()` and
   `ctx.ui.input()` dialogs, preserving single-select, multi-select toggling,
   `Other…` free-text entry, and `AbortSignal` cancellation.
@@ -95,7 +97,7 @@ Expanding (`ctrl+o`) reveals each question and its selected or custom answer.
 
 ## Compatibility
 
-Developed against Pi `1.6.1` with Node `>=22.19.0`. Verified on Linux with
-Pi `1.6.1` on Node `22.19.0` and `26.13.1`: Pi discovered and loaded the
+Developed against Pi `1.7.0` with Node `>=22.19.0`. Verified on Linux with
+Pi `1.7.0` on Node `22.19.0` and `26.13.1`: Pi discovered and loaded the
 package, and a local mock model received the selected `ask` answer in both the
 interactive CLI (PTY) and RPC modes.

@@ -30,8 +30,8 @@ mkdir -p "$dev_root/installs"
 ```
 
 To test without changing your normal Pi registrations, launch Pi with an
-isolated agent directory (`PI_CODING_AGENT_DIR` isolates settings and sessions,
-not environment variables or filesystem permissions):
+isolated agent directory (`--agent-dir` / `PI_CODING_AGENT_DIR` isolates
+settings and sessions, not environment variables or filesystem permissions):
 
 ```bash
 install_dir="$dev_root/installs/local.REPLACE_ME"
@@ -42,7 +42,7 @@ mkdir -p "$dev_root/agent" "$dev_root/work"
   for pkg in "$install_dir"/node_modules/@rchardx/pi-*; do
     args+=(-e "$pkg")
   done
-  PI_CODING_AGENT_DIR="$dev_root/agent" pi "${args[@]}"
+  pi --agent-dir "$dev_root/agent" "${args[@]}"
 )
 ```
 

@@ -98,10 +98,7 @@ test("Pi discovers package skills cleanly without diagnostics", async (t: TestCo
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   });
 
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({ packages: [packageRoot], enableInstallTelemetry: false }),
-  );
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageRoot] }));
 
   const settingsManager = SettingsManager.create(cwd, agentDir);
   const modelRuntime = await ModelRuntime.create({

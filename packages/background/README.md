@@ -135,10 +135,11 @@ error and leave running jobs untouched.
 
 ## Settings
 
-Optional user configuration at `~/.pi/agent/background.json`, re-read on every
-command. Invalid or unreadable configuration fails the call before the command
-starts; it does not silently restore defaults or enable automatic backgrounding.
-A missing file uses defaults.
+Optional user configuration at `~/.pi/agent/background.json` (honors
+`--agent-dir` and `PI_CODING_AGENT_DIR`), re-read on every command. Invalid or
+unreadable configuration fails the call before the command starts; it does not
+silently restore defaults or enable automatic backgrounding. A missing file uses
+defaults.
 
 ```json
 {
@@ -201,7 +202,7 @@ A missing file uses defaults.
 
 ## Compatibility
 
-With **Pi 1.6.1 on Linux**, package discovery, extension loading, foreground
+With **Pi 1.7.0 on Linux**, package discovery, extension loading, foreground
 commands, and background job completion, logging, and notification were
 verified on **Node 22.19.0 and 26.13.1**. Process-tree cleanup also covers
 macOS (process groups) and Windows (`taskkill /T`), but those platforms are

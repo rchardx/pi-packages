@@ -36,10 +36,7 @@ async function verifyInstalled(root: string): Promise<void> {
     SettingsManager,
     VERSION,
   } = await import("@earendil-works/pi-coding-agent");
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({ packages: sources, enableInstallTelemetry: false }),
-  );
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: sources }));
   const settingsManager = SettingsManager.create(cwd, agentDir);
   const loader = new DefaultResourceLoader({
     cwd,

@@ -52,7 +52,7 @@ store (`auth.json`), `models.json`, tool arguments, or `web-access.json`.
 Restart Pi after changing its launch environment.
 
 Enable the capabilities and providers you want in `~/.pi/agent/web-access.json`
-(its directory follows `PI_CODING_AGENT_DIR`):
+(its directory follows `--agent-dir` and `PI_CODING_AGENT_DIR`):
 
 ```json
 {
@@ -319,7 +319,7 @@ Cancellation cannot undo provider charges or server-side tool usage.
 
 ## Pi compatibility
 
-Verified with **Pi 1.6.1 on Linux** using **Node 22.19.0 and Node 26.13.1**.
+Verified with **Pi 1.7.0 on Linux** using **Node 22.19.0 and Node 26.13.1**.
 
 SDK tests discover the package through its manifest, load its TypeScript extension,
 and execute both tools across Exa, Parallel, and DeepSeek using synthetic

@@ -181,10 +181,7 @@ test("ask activates in tui and rpc modes with sequential execution and custom/di
     else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
   });
 
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({ packages: [askPackagePath], enableInstallTelemetry: false }),
-  );
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [askPackagePath] }));
 
   const runtime = await createAgentSessionRuntime(
     async ({ cwd: targetCwd, agentDir: targetAgentDir, sessionManager }) => {

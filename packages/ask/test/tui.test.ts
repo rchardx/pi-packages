@@ -5,6 +5,7 @@ import { initTheme, type Theme, ToolExecutionComponent } from "@earendil-works/p
 import {
   CURSOR_MARKER,
   KeybindingsManager,
+  setKeybindings,
   Text,
   type Terminal,
   TuiMainScreen,
@@ -374,4 +375,136 @@ test("TUI component settles at most once across concurrent input and AbortSignal
   assert.deepEqual(outcomes2[0], { cancelled: true, answers: [] });
   comp2.dispose();
   tui2.stop();
+});
+
+test("TUI component honors remapped, conflicting-arrow, and disabled keybindings", (t) => {
+  t.after(() => {
+    setKeybindings(keybindings);
+  });
+
+  // 1. Remapped confirm (right), editor backspace (enter), submit (ctrl+s), and cancel (ctrl+q)
+  const customBindings = new KeybindingsManager(TUI_KEYBINDINGS, {
+    "tui.select.up": "k",
+    "tui.select.down": "j",
+    "tui.select.confirm": "right",
+    "tui.editor.deleteCharBackward": "enter",
+    "tui.input.submit": "ctrl+s",
+    "tui.select.cancel": "ctrl+q",
+  });
+  setKeybindings(customBindings);
+  const questions: AskQuestion[] = [
+    {
+      id: "q1",
+      header: "Q1",
+      question: "First question?",
+      options: [{ label: "A" }, { label: "B" }],
+      multiSelect: false,
+    },
+    {
+      id: "q2",
+      header: "Q2",
+      question: "Second question?",
+      options: [{ label: "X" }, { label: "Y" }],
+      multiSelect: false,
+    },
+  ];
+
+  const tui = createStubTui();
+  let outcome: AskDetails | undefined;
+  const comp = createAskComponent(questions, tui, activeTheme, customBindings, (res) => {
+    outcome = res;
+  });
+  comp.focused = true;
+
+  const listHint = plainText(comp.render(100));
+  assert.match(listHint, /Tab\/Shift\+Tab\/← switch · k\/j move · right select · ctrl\+q cancel/u);
+
+  // Move to Other… with remapped down ('j') and open custom editor with Right (confirm wins over tab switch)
+  comp.handleInput("j");
+  comp.handleInput("j");
+  comp.handleInput(KEY.right);
+
+  const editorHint = plainText(comp.render(100));
+  assert.match(editorHint, /ctrl\+s save · ctrl\+q back/u);
+
+  // Enter reaches Pi's Input as remapped deleteCharBackward instead of submitting or being dropped
+  for (const ch of "custom-ab") comp.handleInput(ch);
+  comp.handleInput(KEY.enter);
+
+  // Submit custom Other… answer with ctrl+s (\x13), advancing to Q2
+  comp.handleInput("\u0013");
+  assert.match(plainText(comp.render(100)), /Second question\?/u);
+
+  // Select second option on Q2 with 'j' + Right -> advances to Review tab
+  comp.handleInput("j");
+  comp.handleInput(KEY.right);
+  const reviewHint = plainText(comp.render(100));
+  assert.match(reviewHint, /right submit · Tab\/Shift\+Tab\/← review · ctrl\+q cancel/u);
+
+  // Right on Review tab submits instead of cycling tabs
+  comp.handleInput(KEY.right);
+  assert.deepEqual(outcome, {
+    cancelled: false,
+    answers: [
+      {
+        id: "q1",
+        header: "Q1",
+        question: "First question?",
+        selected: [],
+        customText: "custom-a",
+      },
+      {
+        id: "q2",
+        header: "Q2",
+        question: "Second question?",
+        selected: ["Y"],
+      },
+    ],
+  });
+  comp.dispose();
+  tui.stop();
+
+  // 2. Per-key tab hints and Review-tab select claims stay aligned when up/down claim tab/arrow keys
+  const mixedNavBindings = new KeybindingsManager(TUI_KEYBINDINGS, {
+    "tui.select.up": "right",
+    "tui.select.down": "tab",
+  });
+  setKeybindings(mixedNavBindings);
+  const tuiMixed = createStubTui();
+  const compMixed = createAskComponent(
+    questions,
+    tuiMixed,
+    activeTheme,
+    mixedNavBindings,
+    () => {},
+  );
+  assert.match(plainText(compMixed.render(100)), /Shift\+Tab\/← switch · right\/tab move/u);
+  // Jump to Review tab with Shift+Tab; Right is claimed by tui.select.up so it must not switch tabs on Review
+  compMixed.handleInput(KEY.shiftTab);
+  assert.match(plainText(compMixed.render(100)), /Review answers[\s\S]*Shift\+Tab\/← navigate/u);
+  compMixed.handleInput(KEY.right);
+  assert.match(plainText(compMixed.render(100)), /Review answers/u);
+  compMixed.dispose();
+  tuiMixed.stop();
+
+  // 3. Explicitly disabled bindings ([]) are omitted from hints instead of advertising inactive defaults
+  const disabledBindings = new KeybindingsManager(TUI_KEYBINDINGS, {
+    "tui.select.confirm": [],
+    "tui.select.cancel": [],
+    "tui.input.submit": [],
+  });
+  setKeybindings(disabledBindings);
+  const tuiDisabled = createStubTui();
+  const compDisabled = createAskComponent(
+    questions.slice(0, 1),
+    tuiDisabled,
+    activeTheme,
+    disabledBindings,
+    () => {},
+  );
+  const disabledHint = plainText(compDisabled.render(100));
+  assert.match(disabledHint, /↑↓ move/u);
+  assert.doesNotMatch(disabledHint, /select|cancel/u);
+  compDisabled.dispose();
+  tuiDisabled.stop();
 });

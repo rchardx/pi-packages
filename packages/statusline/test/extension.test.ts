@@ -90,10 +90,7 @@ test("statusline renders subagents before background on the path line in TUI mod
     else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
   });
 
-  await writeFile(
-    join(agentDir, "settings.json"),
-    JSON.stringify({ packages: [statuslineRoot], enableInstallTelemetry: false }),
-  );
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ packages: [statuslineRoot] }));
 
   let capturedCtx: ExtensionContext | undefined;
   const runtime = await createAgentSessionRuntime(
@@ -237,7 +234,6 @@ test("statusline labels official OAuth subscriptions as (sub) but not Radius OAu
       join(agentDir, "settings.json"),
       JSON.stringify({
         packages: [statuslineRoot],
-        enableInstallTelemetry: false,
       }),
     );
     await writeFile(
